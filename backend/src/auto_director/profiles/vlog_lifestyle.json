@@ -1,0 +1,49 @@
+{
+  "niche": "vlog_lifestyle",
+  "pacing": {
+    "target_cuts_per_min": [5, 8],
+    "silence_trim_aggressive": false,
+    "min_shot_sec": 7.5,
+    "max_shot_sec": 12.0
+  },
+  "transitions": {
+    "default": "fade",
+    "duration_sec": 0.4,
+    "on_topic_change": "fade",
+    "on_punchline": "fade"
+  },
+  "zooms": {
+    "punch_in_scale": 1.1,
+    "punch_in_trigger": "personal_moment",
+    "ken_burns": false
+  },
+  "captions": {
+    "preset_id": "gradient_modern",
+    "words_per_line": 3,
+    "position": "bottom"
+  },
+  "overlays": {
+    "info_cards": false,
+    "lower_thirds": false,
+    "reference_images": "off",
+    "ref_image_at_entity_mentions": false
+  },
+  "broll": {
+    "enabled": true,
+    "source": "pexels",
+    "density_per_min": 1.0
+  },
+  "audio": {
+    "music_mood": "upbeat",
+    "music_volume_0_to_1": 0.2,
+    "ducking_db": -12.0,
+    "sfx_from_user_library": false
+  },
+  "color": {
+    "lut": "punchy"
+  },
+  "hook": {
+    "title_style": "story",
+    "title_seconds": 4.0
+  }
+}
