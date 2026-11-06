@@ -599,6 +599,7 @@ class TaskService(ClipEditingMixin):
                     max_clip_seconds=clip_duration(clip_length).maximum,
                     include_broll=include_broll,
                     broll_session=broll_session,
+                    edl=render_segment.get("edl"),
                 )
                 pending_clip_path = Path(clip_info["path"]) if clip_info else None
                 await check_cancelled()
