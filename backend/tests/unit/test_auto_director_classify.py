@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.auto_director.classify import classify_niche, FALLBACK_RESULT, NICHE_CLASSIFICATION_SYSTEM_PROMPT
+from src.auto_director.classify import classify_niche, FALLBACK_RESULT, NICHE_CLASSIFICATION_SYSTEM_PROMPT, get_niche_classification_agent
 
 
 class TestClassifyNiche:
@@ -24,7 +24,7 @@ class TestClassifyNiche:
             reasons=["Travel destination content", "Cultural exploration", "Location-specific landmarks"],
         )
         mock_agent = SimpleNamespace(run=AsyncMock(return_value=SimpleNamespace(output=mock_output)))
-        monkeypatch.setattr("src.auto_director.classify.get_transcript_agent", lambda *_, **__: mock_agent)
+        monkeypatch.setattr("src.auto_director.classify.get_niche_classification_agent", lambda: mock_agent)
 
         result = await classify_niche(transcript, entities)
 
@@ -45,7 +45,7 @@ class TestClassifyNiche:
             reasons=["Meme format reference", "POV comedy style", "Social media trend awareness"],
         )
         mock_agent = SimpleNamespace(run=AsyncMock(return_value=SimpleNamespace(output=mock_output)))
-        monkeypatch.setattr("src.auto_director.classify.get_transcript_agent", lambda *_, **__: mock_agent)
+        monkeypatch.setattr("src.auto_director.classify.get_niche_classification_agent", lambda: mock_agent)
 
         result = await classify_niche(transcript, entities)
 
@@ -61,7 +61,7 @@ class TestClassifyNiche:
 
         # Mock the agent to raise an exception
         mock_agent = SimpleNamespace(run=AsyncMock(side_effect=ValueError("LLM error")))
-        monkeypatch.setattr("src.auto_director.classify.get_transcript_agent", lambda *_, **__: mock_agent)
+        monkeypatch.setattr("src.auto_director.classify.get_niche_classification_agent", lambda: mock_agent)
 
         result = await classify_niche(transcript, entities)
 
@@ -83,7 +83,7 @@ class TestClassifyNiche:
             reasons=["reason"],
         )
         mock_agent = SimpleNamespace(run=AsyncMock(return_value=SimpleNamespace(output=mock_output)))
-        monkeypatch.setattr("src.auto_director.classify.get_transcript_agent", lambda *_, **__: mock_agent)
+        monkeypatch.setattr("src.auto_director.classify.get_niche_classification_agent", lambda: mock_agent)
 
         result = await classify_niche(transcript, entities)
 
@@ -102,7 +102,7 @@ class TestClassifyNiche:
             reasons=["reason"],
         )
         mock_agent = SimpleNamespace(run=AsyncMock(return_value=SimpleNamespace(output=mock_output)))
-        monkeypatch.setattr("src.auto_director.classify.get_transcript_agent", lambda *_, **__: mock_agent)
+        monkeypatch.setattr("src.auto_director.classify.get_niche_classification_agent", lambda: mock_agent)
 
         result = await classify_niche(transcript, entities)
 
@@ -121,7 +121,7 @@ class TestClassifyNiche:
             reasons=["reason"],
         )
         mock_agent = SimpleNamespace(run=AsyncMock(return_value=SimpleNamespace(output=mock_output)))
-        monkeypatch.setattr("src.auto_director.classify.get_transcript_agent", lambda *_, **__: mock_agent)
+        monkeypatch.setattr("src.auto_director.classify.get_niche_classification_agent", lambda: mock_agent)
 
         result = await classify_niche(transcript, entities)
 
@@ -140,7 +140,7 @@ class TestClassifyNiche:
             reasons=["reason1", "reason2", "reason3", "reason4", "reason5"],
         )
         mock_agent = SimpleNamespace(run=AsyncMock(return_value=SimpleNamespace(output=mock_output)))
-        monkeypatch.setattr("src.auto_director.classify.get_transcript_agent", lambda *_, **__: mock_agent)
+        monkeypatch.setattr("src.auto_director.classify.get_niche_classification_agent", lambda: mock_agent)
 
         result = await classify_niche(transcript, entities)
 
@@ -160,7 +160,7 @@ class TestClassifyNiche:
             reasons=[],
         )
         mock_agent = SimpleNamespace(run=AsyncMock(return_value=SimpleNamespace(output=mock_output)))
-        monkeypatch.setattr("src.auto_director.classify.get_transcript_agent", lambda *_, **__: mock_agent)
+        monkeypatch.setattr("src.auto_director.classify.get_niche_classification_agent", lambda: mock_agent)
 
         result = await classify_niche(transcript, entities)
 
@@ -190,7 +190,7 @@ class TestClassifyNiche:
                 reasons=["reason"],
             )
             mock_agent = SimpleNamespace(run=AsyncMock(return_value=SimpleNamespace(output=mock_output)))
-            monkeypatch.setattr("src.auto_director.classify.get_transcript_agent", lambda *_, **__: mock_agent)
+            monkeypatch.setattr("src.auto_director.classify.get_niche_classification_agent", lambda: mock_agent)
 
             result = await classify_niche(transcript, entities)
 
@@ -204,7 +204,7 @@ class TestClassifyNiche:
 
         # Mock the agent to raise a parsing error
         mock_agent = SimpleNamespace(run=AsyncMock(side_effect=Exception("Failed to parse JSON")))
-        monkeypatch.setattr("src.auto_director.classify.get_transcript_agent", lambda *_, **__: mock_agent)
+        monkeypatch.setattr("src.auto_director.classify.get_niche_classification_agent", lambda: mock_agent)
 
         result = await classify_niche(transcript, entities)
 
