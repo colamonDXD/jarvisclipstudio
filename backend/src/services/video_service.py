@@ -741,6 +741,7 @@ class VideoService:
         max_clip_seconds: float = 60.0,
         include_broll: bool = False,
         broll_session: Optional[BRollSession] = None,
+        edl: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Render a single clip in the thread pool and return clip_info dict, or None on failure.
 
@@ -826,6 +827,7 @@ class VideoService:
                 extend_to_sentence=False,
                 layout_report=render_report,
                 broll_overlays=broll_overlays,
+                edl=edl,
             )
 
             if not success:

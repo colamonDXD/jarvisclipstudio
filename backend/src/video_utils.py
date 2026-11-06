@@ -275,6 +275,7 @@ def create_optimized_clip(
     extend_to_sentence: bool = True,
     layout_report: Optional[Dict[str, Any]] = None,
     broll_overlays: Optional[List[Dict[str, Any]]] = None,
+    edl: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Create clip with optional subtitles. output_format: 'vertical' (9:16) or 'original' (keep source size).
 
@@ -462,6 +463,7 @@ def create_optimized_clip(
                     speaker_words=speaker_words,
                     vertical_plan=vertical_plan,
                     broll_overlays=overlays,
+                    edl=edl,
                 )[0]
 
             framed_ok = render(broll_overlays)
@@ -585,6 +587,7 @@ def create_clips_from_segments(
                 extend_to_sentence=False,
                 layout_report=layout_report,
                 broll_overlays=segment.get("broll_overlays"),
+                edl=segment.get("edl"),
             )
 
             if success:

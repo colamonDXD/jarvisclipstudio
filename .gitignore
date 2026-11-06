@@ -25,3 +25,6 @@ docs/youtube-provider-registry*.json
 
 # Local agent checkouts
 .claude/worktrees/
+
+_samples/
+.env

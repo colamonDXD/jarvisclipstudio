@@ -52,6 +52,7 @@ from .ffmpeg import (
     run_ffmpeg_command,
     subtitles_filter_fragment,
 )
+from .edl_render import render_edl_clip_ffmpeg
 from .broll_overlay import (
     broll_input_args,
     broll_overlay_graph,
@@ -1668,6 +1669,7 @@ def render_reframed_clip_ffmpeg(
     vertical_plan: Optional[Tuple[str, str]] = None,
     speaker_plan: Optional[Dict[str, Any]] = None,
     broll_overlays: Optional[List[Dict[str, Any]]] = None,
+    edl: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, int, int]:
     """Render the final framed clip and (optionally) burn subtitles in one pass.
 
@@ -1676,7 +1678,19 @@ def render_reframed_clip_ffmpeg(
     output and loudness-normalised audio. ``broll_overlays`` (path, start and
     duration on the clip timeline) are composited over the framed picture and
     under the captions.
+
+    If ``edl`` is provided, the clip is rendered according to the Edit Decision
+    List specification (segment transitions, zoom keyframes, info cards,
+    reference images). This enables the auto-director niche-based editing.
     """
+    # EDL-based rendering path (auto-director)
+    if edl and edl.get("segments"):
+        logger.info(f"Rendering clip with EDL: {edl.get('clip_id', 'unknown')}")
+        ok = render_edl_clip_ffmpeg(
+            input_path, output_path, edl, subtitle_ass_path, fonts_dir
+        )
+        return ok, 1080, 1920
+
     width, height = ffprobe_video_size(input_path)
     has_audio = ffprobe_has_audio(input_path)
     subs = (
