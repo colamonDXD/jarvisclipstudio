@@ -45,7 +45,8 @@ def allowance_db():
                 created_at TIMESTAMP, updated_at TIMESTAMP,
                 source_duration_seconds INTEGER, source_metadata JSON,
                 font_family TEXT, font_size INTEGER, font_color TEXT,
-                caption_template TEXT, include_broll BOOLEAN, processing_mode TEXT
+                caption_template TEXT, include_broll BOOLEAN, processing_mode TEXT,
+                niche_override TEXT
             )
         """))
         connection.execute(text("CREATE TABLE sources (id TEXT PRIMARY KEY, url TEXT)"))

@@ -742,6 +742,9 @@ class VideoService:
         include_broll: bool = False,
         broll_session: Optional[BRollSession] = None,
         edl: Optional[Dict[str, Any]] = None,
+        niche_override: Optional[str] = None,
+        project_niche_override: Optional[str] = None,
+        classifier_niche: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Render a single clip in the thread pool and return clip_info dict, or None on failure.
 
@@ -846,13 +849,21 @@ class VideoService:
             # Deliverables are an optional convenience layer. A completed render
             # remains usable even if an image encoder or filesystem is unavailable.
             try:
+                from ..auto_director.niche import resolve_effective_profile
                 from ..deliverable_bundle import write_deliverable_bundle
+
+                effective_profile = resolve_effective_profile(
+                    niche_override,
+                    project_niche_override,
+                    classifier_niche,
+                )
                 await run_in_thread(
                     write_deliverable_bundle,
                     clip_path,
                     edl,
                     segment,
                     segment.get("hook_title"),
+                    profile_name=effective_profile,
                 )
             except Exception as exc:
                 logger.warning("Could not create deliverable bundle for clip %s: %s", clip_index + 1, exc)

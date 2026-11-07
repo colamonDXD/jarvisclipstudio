@@ -38,6 +38,7 @@ from ..youtube_source import load_time_map, localize_segment, restore_clip_timel
 from ..clip_cleanup import normalize_clip_cleanup_settings
 from ..clip_duration import clip_duration, validate_clip_length
 from ..ai import TRANSCRIPT_ANALYSIS_CACHE_VERSION
+from ..auto_director.niche import validate_niche_override
 from ..clip_source_map import load_clip_caption_settings
 from ..media_storage import MediaStorage, media_work
 from ..utils.async_helpers import run_in_thread
@@ -221,6 +222,7 @@ class TaskService(ClipEditingMixin):
         caption_template: str = "default",
         include_broll: bool = False,
         processing_mode: str = "fast",
+        niche_override: Optional[str] = None,
         source_duration_seconds: Optional[int] = None,
         upload_request_key: Optional[str] = None,
     ) -> str:
@@ -279,6 +281,7 @@ class TaskService(ClipEditingMixin):
             caption_template=caption_template,
             include_broll=include_broll,
             processing_mode=processing_mode,
+            niche_override=niche_override,
             source_duration_seconds=source_duration_seconds,
             charge_minutes=self.config.monetization_enabled,
         )
@@ -563,6 +566,7 @@ class TaskService(ClipEditingMixin):
             # Read from the task so queued jobs and resumes honour the setting.
             task_row = await self.task_repo.get_task_by_id(self.db, task_id) or {}
             include_broll = bool(task_row.get("include_broll"))
+            project_niche_override = task_row.get("niche_override")
             broll_session = BRollSession()
 
             for i, segment in enumerate(segments_to_render):
@@ -583,6 +587,20 @@ class TaskService(ClipEditingMixin):
                 # A partial download is a concatenated timeline. Render against
                 # local timestamps, then store the clip against the source.
                 render_segment = localize_segment(segment, time_map) if time_map else segment
+                try:
+                    clip_niche_override = validate_niche_override(
+                        segment.get("niche_override")
+                    )
+                except ValueError:
+                    logger.warning(
+                        "Ignoring invalid niche_override on clip %s", i + 1
+                    )
+                    clip_niche_override = None
+                classifier_niche = (
+                    segment.get("niche")
+                    or segment.get("niche_profile")
+                    or segment.get("classifier_niche")
+                )
                 clip_info = await self.video_service.create_single_clip(
                     video_path,
                     render_segment,
@@ -600,6 +618,9 @@ class TaskService(ClipEditingMixin):
                     include_broll=include_broll,
                     broll_session=broll_session,
                     edl=render_segment.get("edl"),
+                    niche_override=clip_niche_override,
+                    project_niche_override=project_niche_override,
+                    classifier_niche=classifier_niche,
                 )
                 pending_clip_path = Path(clip_info["path"]) if clip_info else None
                 await check_cancelled()
@@ -634,6 +655,7 @@ class TaskService(ClipEditingMixin):
                         shareability_score=clip_info.get("shareability_score", 0),
                         hook_type=clip_info.get("hook_type"),
                         hook_title=clip_info.get("hook_title"),
+                        niche_override=clip_niche_override,
                     )
 
                     # Update task's clip IDs array

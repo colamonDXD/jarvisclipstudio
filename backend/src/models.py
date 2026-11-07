@@ -195,6 +195,10 @@ class Task(Base):
     processing_mode: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default=sql_text("'fast'")
     )
+    # Explicit niche choice for auto-director; NULL means use the classifier.
+    niche_override: Mapped[Optional[str]] = mapped_column(
+        String(40), nullable=True
+    )
     started_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -317,6 +321,10 @@ class GeneratedClip(Base):
         Integer, nullable=True, server_default=sql_text("'0'")
     )
     hook_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    # Per-clip auto-director override; NULL inherits the task override.
+    niche_override: Mapped[Optional[str]] = mapped_column(
+        String(40), nullable=True
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

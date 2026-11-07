@@ -76,6 +76,7 @@ CREATE TABLE tasks (
     caption_template VARCHAR(50) DEFAULT 'default',
     include_broll BOOLEAN DEFAULT false,
     processing_mode VARCHAR(20) NOT NULL DEFAULT 'fast',
+    niche_override VARCHAR(40), -- auto-director niche; NULL uses the classifier
     started_at TIMESTAMP WITH TIME ZONE,
     completed_at TIMESTAMP WITH TIME ZONE,
     cache_hit BOOLEAN NOT NULL DEFAULT false,
@@ -111,6 +112,7 @@ CREATE TABLE generated_clips (
     shareability_score INTEGER DEFAULT 0,
     hook_type VARCHAR(50),
     hook_title VARCHAR(200),         -- AI-written on-screen headline
+    niche_override VARCHAR(40),      -- per-clip auto-director niche
 
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from typing import Any, Mapping
@@ -45,6 +46,37 @@ def _post_text(llm_output: Mapping[str, Any] | None, hook_title: str | None) -> 
     return "\n".join(lines) + "\n"
 
 
+def _image_sources(edl: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """Return every reference image and B-roll asset the EDL asked for."""
+    if not edl:
+        return []
+    sources: list[dict[str, Any]] = []
+    for overlay in edl.get("overlays") or []:
+        if not isinstance(overlay, Mapping) or overlay.get("type") != "reference_image":
+            continue
+        sources.append(
+            {
+                "kind": "reference_image",
+                "source": overlay.get("source") or "unknown",
+                "url": overlay.get("url") or "",
+                "local_path": overlay.get("local_path") or "",
+            }
+        )
+    for broll in edl.get("broll") or []:
+        if not isinstance(broll, Mapping):
+            continue
+        sources.append(
+            {
+                "kind": "broll",
+                "source": broll.get("source") or "unknown",
+                "url": broll.get("url") or "",
+                "local_path": broll.get("local_path") or "",
+                "query": broll.get("query") or "",
+            }
+        )
+    return sources
+
+
 def write_deliverable_bundle(
     rendered_clip: Path,
     edl: Mapping[str, Any] | None,
@@ -52,8 +84,13 @@ def write_deliverable_bundle(
     hook_title: str | None,
     *,
     bundle_dir: Path | None = None,
+    profile_name: str | None = None,
 ) -> Path:
-    """Write ``clip.mp4``, titled ``cover.jpg``, and ``post.txt`` for one clip.
+    """Write the publishable clip bundle and auto-director logs for one clip.
+
+    Besides ``clip.mp4``, ``cover.jpg`` and ``post.txt``, the folder records the
+    exact EDL (``edl.json``), the effective niche profile (``profile.txt``), and
+    every image/B-roll source the EDL referenced (``image_sources.json``).
 
     ``llm_output`` is intentionally data-only: this module never invokes an LLM.
     The returned folder is deterministic beside the rendered clip unless supplied.
@@ -78,4 +115,17 @@ def write_deliverable_bundle(
     if result.returncode != 0:
         raise RuntimeError("Could not create deliverable cover image")
     (target / "post.txt").write_text(_post_text(llm_output, hook_title), encoding="utf-8")
+
+    # Logging only: these files describe what the render used and never feed
+    # back into how the clip is produced.
+    (target / "edl.json").write_text(
+        json.dumps(edl or {}, indent=2, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
+    (target / "profile.txt").write_text(
+        f"{profile_name}\n" if profile_name else "", encoding="utf-8"
+    )
+    (target / "image_sources.json").write_text(
+        json.dumps(_image_sources(edl), indent=2) + "\n", encoding="utf-8"
+    )
     return target
