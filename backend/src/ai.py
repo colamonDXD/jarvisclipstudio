@@ -45,6 +45,12 @@ TRANSCRIPT_ANALYSIS_TIMEOUT_SECONDS = 600
 # low-TPM provider (for example Groq's 8k free tier) never sees one huge call.
 DEFAULT_TRANSCRIPT_ANALYSIS_MAX_TOKENS = 7000
 CHARS_PER_ESTIMATED_TOKEN = 4
+# Provider rate limits: retry the same chunk on 413/429 rather than failing a
+# multi-chunk analysis that shares one per-model token bucket.
+ANALYSIS_RATE_LIMIT_STATUS_CODES = {413, 429}
+ANALYSIS_RATE_LIMIT_MAX_ATTEMPTS = 6
+ANALYSIS_RATE_LIMIT_INITIAL_DELAY_SECONDS = 20.0
+DEFAULT_ANALYSIS_TPM = 8000
 # Long transcripts are analysed in overlapping windows so every part of the
 # source gets the model's full attention; candidates are then reranked together.
 ANALYSIS_WINDOW_SECONDS = 12 * 60
@@ -442,9 +448,14 @@ def build_transcript_system_prompt(clip_length: str = "auto") -> str:
     )
 
 
-# Lazy-loaded agent to avoid import-time failures when API keys aren't set
+# Lazy-loaded agents to avoid import-time failures when API keys aren't set.
+# The single-model path keeps its original global; rotated analysis models get
+# one cached agent each.
 _transcript_agent: Optional[Agent[None, TranscriptAnalysis]] = None
 _transcript_agent_signature: Optional[tuple[str | None, ...]] = None
+_transcript_agents_by_model: dict[
+    str, tuple[tuple[str | None, ...], Agent[None, TranscriptAnalysis]]
+] = {}
 
 SUPPORTED_LLM_PROVIDERS = {"google", "google-gla", "openai", "openrouter", "anthropic", "groq", "ollama"}
 
@@ -579,14 +590,12 @@ def _build_transcript_model(
     )
 
 
-def get_transcript_agent(clip_length: str = "auto") -> Agent[None, TranscriptAnalysis]:
-    """Get or create the transcript analysis agent (lazy initialization)."""
-    global _transcript_agent, _transcript_agent_signature
-    runtime_config = get_config()
-    provider, _ = _split_llm_name(runtime_config.llm)
-    signature = (
+def _transcript_agent_signature_for(
+    clip_length: str, model_name: str, runtime_config: Config
+) -> tuple[str | None, ...]:
+    return (
         clip_length,
-        runtime_config.llm,
+        model_name,
         runtime_config.openai_api_key,
         runtime_config.openrouter_api_key,
         runtime_config.openrouter_fallback_model,
@@ -595,23 +604,59 @@ def get_transcript_agent(clip_length: str = "auto") -> Agent[None, TranscriptAna
         runtime_config.ollama_base_url,
         runtime_config.ollama_api_key,
     )
-    if _transcript_agent is None or _transcript_agent_signature != signature:
-        apply_settings_to_process_env(runtime_config.as_runtime_settings())
-        config_error = _get_missing_llm_key_error(runtime_config.llm, runtime_config)
-        if config_error:
-            raise RuntimeError(config_error)
 
-        _transcript_agent = Agent[None, TranscriptAnalysis](
-            model=_build_transcript_model(runtime_config),
-            output_type=NativeOutput(TranscriptAnalysis, strict=True) if _uses_native_output(runtime_config.llm) else TranscriptAnalysis,
-            system_prompt=build_transcript_system_prompt(clip_length),
-            # Some local Ollama/OpenAI-compatible endpoints can return formatted
-            # prose before settling on schema-valid JSON. Keep retries limited
-            # while still allowing enough repair attempts for local models.
-            output_retries=2 if provider == "ollama" else 2,
-        )
-        _transcript_agent_signature = signature
-    return _transcript_agent
+
+def _create_transcript_agent(
+    runtime_config: Config, model_name: str, clip_length: str
+) -> Agent[None, TranscriptAnalysis]:
+    apply_settings_to_process_env(runtime_config.as_runtime_settings())
+    config_error = _get_missing_llm_key_error(model_name, runtime_config)
+    if config_error:
+        raise RuntimeError(config_error)
+
+    return Agent[None, TranscriptAnalysis](
+        model=_build_transcript_model(runtime_config, model_name),
+        output_type=NativeOutput(TranscriptAnalysis, strict=True)
+        if _uses_native_output(model_name)
+        else TranscriptAnalysis,
+        system_prompt=build_transcript_system_prompt(clip_length),
+        # Some local Ollama/OpenAI-compatible endpoints can return formatted
+        # prose before settling on schema-valid JSON. Keep retries limited
+        # while still allowing enough repair attempts for local models.
+        output_retries=2,
+    )
+
+
+def get_transcript_agent(
+    clip_length: str = "auto", model_name: str | None = None
+) -> Agent[None, TranscriptAnalysis]:
+    """Get or create a transcript analysis agent (lazy initialization).
+
+    With ``model_name`` omitted the original single-model cache is used. A
+    supplied name caches one agent per model so chunk rotation does not rebuild
+    providers on every call.
+    """
+    global _transcript_agent, _transcript_agent_signature
+    runtime_config = get_config()
+    selected_model = model_name or runtime_config.llm
+    signature = _transcript_agent_signature_for(
+        clip_length, selected_model, runtime_config
+    )
+
+    if model_name is None:
+        if _transcript_agent is None or _transcript_agent_signature != signature:
+            _transcript_agent = _create_transcript_agent(
+                runtime_config, selected_model, clip_length
+            )
+            _transcript_agent_signature = signature
+        return _transcript_agent
+
+    cached = _transcript_agents_by_model.get(selected_model)
+    if cached is None or cached[0] != signature:
+        agent = _create_transcript_agent(runtime_config, selected_model, clip_length)
+        _transcript_agents_by_model[selected_model] = (signature, agent)
+        return agent
+    return cached[1]
 
 
 class RankedCandidate(BaseModel):
@@ -1131,34 +1176,174 @@ def _is_transient_model_error(error: Exception) -> bool:
     return False
 
 
+def _exception_headers(error: BaseException) -> dict[str, str]:
+    """Return provider response headers from an error or its cause chain."""
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        headers = getattr(current, "headers", None)
+        if headers:
+            return {str(key).lower(): str(value) for key, value in headers.items()}
+        response = getattr(current, "response", None)
+        response_headers = getattr(response, "headers", None)
+        if response_headers:
+            return {
+                str(key).lower(): str(value)
+                for key, value in response_headers.items()
+            }
+        current = current.__cause__
+    return {}
+
+
+def _parse_duration_seconds(value: str) -> Optional[float]:
+    """Parse values such as ``20``, ``7.5s`` or ``1m2.4s`` into seconds."""
+    text = value.strip().lower()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        pass
+
+    total = 0.0
+    matched = False
+    for amount, unit in re.findall(r"(\d+(?:\.\d+)?)\s*(ms|s|m|h)", text):
+        matched = True
+        total += float(amount) * {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}[unit]
+    return total if matched else None
+
+
+def _is_rate_limit_error(error: BaseException) -> bool:
+    """Recognize a 413/429 anywhere in the provider error chain."""
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if (
+            isinstance(current, ModelHTTPError)
+            and current.status_code in ANALYSIS_RATE_LIMIT_STATUS_CODES
+        ):
+            return True
+        status_code = getattr(current, "status_code", None)
+        if status_code in ANALYSIS_RATE_LIMIT_STATUS_CODES and not isinstance(
+            current, ModelHTTPError
+        ):
+            return True
+        current = current.__cause__
+    return False
+
+
+def _rate_limit_retry_delay(error: BaseException, attempt: int) -> float:
+    """Honour provider reset headers, otherwise back off from 20 seconds."""
+    headers = _exception_headers(error)
+    for name in ("retry-after", "x-ratelimit-reset-tokens"):
+        if name in headers:
+            delay = _parse_duration_seconds(headers[name])
+            if delay is not None and delay > 0:
+                return delay
+    return ANALYSIS_RATE_LIMIT_INITIAL_DELAY_SECONDS * 2 ** (attempt - 1)
+
+
+class _AnalysisPacer:
+    """Keep calls to the same model inside its tokens-per-minute bucket."""
+
+    def __init__(self, min_interval_seconds: float = 0.0, tpm: int = DEFAULT_ANALYSIS_TPM):
+        self.min_interval_seconds = max(0.0, min_interval_seconds)
+        self.tpm = max(1, tpm)
+        self._last_start: dict[str, float] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def interval_for(self, prompt_tokens: int) -> float:
+        """Return 0 when pacing is off, otherwise the token-safe interval."""
+        if self.min_interval_seconds <= 0:
+            return 0.0
+        token_interval = prompt_tokens * 60.0 / self.tpm
+        return max(self.min_interval_seconds, token_interval)
+
+    async def wait(self, model_name: str, prompt_tokens: int) -> None:
+        interval = self.interval_for(prompt_tokens)
+        if interval <= 0:
+            return
+        lock = self._locks.setdefault(model_name, asyncio.Lock())
+        async with lock:
+            now = asyncio.get_running_loop().time()
+            last_start = self._last_start.get(model_name)
+            if last_start is not None:
+                remaining = interval - (now - last_start)
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+                    now = asyncio.get_running_loop().time()
+            self._last_start[model_name] = now
+
+
 async def _run_transcript_analysis(
     agent: Agent,
     prompt: str,
     timeout_seconds: Optional[float] = None,
+    *,
+    model_name: Optional[str] = None,
+    pacer: Optional[_AnalysisPacer] = None,
 ) -> Any:
-    """Retry temporary failures on the configured model within one overall budget.
+    """Run one analysis call, retrying temporary and rate-limit failures.
 
     Agent output retries handle schema repair, not HTTP failures. Retrying only
-    the model step preserves completed downloads and transcription. SDK retries
-    also count against the wall-clock budget, and cancellation passes through.
+    the model step preserves completed downloads and transcription. Rate limits
+    (413/429) retry the same chunk up to six times, honouring provider reset
+    headers. SDK retries also count against the wall-clock budget, and
+    cancellation passes through.
     """
     if timeout_seconds is None:
         timeout_seconds = TRANSCRIPT_ANALYSIS_TIMEOUT_SECONDS
+    prompt_tokens = _estimate_tokens(prompt)
+    rate_limit_attempt = 0
+    transient_attempt = 0
+
     try:
         async with asyncio.timeout(timeout_seconds):
-            for attempt in range(1, TRANSCRIPT_ANALYSIS_MAX_ATTEMPTS + 1):
+            while True:
+                if pacer is not None:
+                    await pacer.wait(model_name or "", prompt_tokens)
                 try:
                     result = await agent.run(prompt)
                     if hasattr(result, "response"):
-                        logger.info("AI analysis completed using model %s", result.response.model_name)
+                        logger.info(
+                            "AI analysis completed using model %s",
+                            result.response.model_name,
+                        )
                     return result
                 except Exception as error:
+                    if _is_rate_limit_error(error):
+                        rate_limit_attempt += 1
+                        if rate_limit_attempt >= ANALYSIS_RATE_LIMIT_MAX_ATTEMPTS:
+                            logger.error(
+                                "AI analysis failed after %s rate-limit attempts "
+                                "(HTTP status %s)",
+                                rate_limit_attempt,
+                                getattr(error, "status_code", None),
+                            )
+                            raise
+                        delay = _rate_limit_retry_delay(error, rate_limit_attempt)
+                        # Do not log provider bodies: they may contain transcript data.
+                        logger.warning(
+                            "AI analysis rate limited (%s, HTTP status %s); "
+                            "retrying attempt %s/%s in %.1fs",
+                            type(error).__name__,
+                            getattr(error, "status_code", None),
+                            rate_limit_attempt + 1,
+                            ANALYSIS_RATE_LIMIT_MAX_ATTEMPTS,
+                            delay,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+
                     if not _is_transient_model_error(error):
                         raise
-                    if attempt == TRANSCRIPT_ANALYSIS_MAX_ATTEMPTS:
+                    transient_attempt += 1
+                    if transient_attempt >= TRANSCRIPT_ANALYSIS_MAX_ATTEMPTS:
                         logger.error(
                             "AI analysis unavailable after %s attempts (%s, HTTP status %s)",
-                            attempt,
+                            transient_attempt,
                             type(error).__name__,
                             getattr(error, "status_code", None),
                         )
@@ -1167,14 +1352,13 @@ async def _run_transcript_analysis(
                             "several attempts. Please try again shortly."
                         ) from None
 
-                    delay = 5 * 2 ** (attempt - 1) + random.uniform(0, 1)
-                    # Do not log provider bodies: they may contain transcript data.
+                    delay = 5 * 2 ** (transient_attempt - 1) + random.uniform(0, 1)
                     logger.warning(
                         "Temporary AI analysis failure (%s, HTTP status %s); "
                         "retrying attempt %s/%s in %.1fs",
                         type(error).__name__,
                         getattr(error, "status_code", None),
-                        attempt + 1,
+                        transient_attempt + 1,
                         TRANSCRIPT_ANALYSIS_MAX_ATTEMPTS,
                         delay,
                     )
@@ -1525,19 +1709,23 @@ async def rerank_candidates(
 
 
 async def _analyze_transcript_windows(
-    agent: Agent,
+    agent: Agent | None,
     windows: List[Dict[str, Any]],
     clip_signals: Optional[str],
     performance_context: Optional[str] = None,
     clip_length: str = "auto",
+    *,
+    model_names: Optional[List[str]] = None,
+    pacer: Optional[_AnalysisPacer] = None,
 ) -> List[TranscriptAnalysis]:
     """Analyse windows with bounded concurrency, tolerating some failures.
 
+    When ``model_names`` is supplied, chunks rotate round-robin across them.
     Raises the first window error only when no window produced an analysis.
     """
     semaphore = asyncio.Semaphore(ANALYSIS_WINDOW_CONCURRENCY)
 
-    async def run_window(window: Dict[str, Any]) -> TranscriptAnalysis:
+    async def run_window(index: int, window: Dict[str, Any]) -> TranscriptAnalysis:
         async with semaphore:
             prompt = build_transcript_analysis_prompt(
                 transcript=window["transcript"],
@@ -1548,10 +1736,28 @@ async def _analyze_transcript_windows(
                 performance_context=performance_context,
                 clip_length=clip_length,
             )
-            result = await _run_transcript_analysis(agent, prompt)
+            window_model = (
+                model_names[index % len(model_names)] if model_names else None
+            )
+            window_agent = (
+                get_transcript_agent(clip_length, model_name=window_model)
+                if window_model
+                else agent
+            )
+            # Pacing is the only consumer of these kwargs. Omitting them when it
+            # is off keeps the original two-argument call signature.
+            extra = (
+                {"model_name": window_model, "pacer": pacer}
+                if pacer is not None and pacer.min_interval_seconds > 0
+                else {}
+            )
+            result = await _run_transcript_analysis(window_agent, prompt, **extra)
             return result.output
 
-    tasks = [asyncio.create_task(run_window(window)) for window in windows]
+    tasks = [
+        asyncio.create_task(run_window(index, window))
+        for index, window in enumerate(windows)
+    ]
     try:
         _, pending = await asyncio.wait(tasks, timeout=ANALYSIS_TOTAL_TIMEOUT_SECONDS)
     except asyncio.CancelledError:
@@ -1778,13 +1984,13 @@ async def get_most_relevant_parts_by_transcript(
     )
 
     try:
-        agent = get_transcript_agent(clip_length)
+        runtime_config = get_config()
         transcript_lines = _parse_transcript_lines(transcript)
         transcript_spans = _parse_transcript_spans(transcript)
         windows = split_transcript_into_windows(transcript)
 
         max_tokens = getattr(
-            get_config(),
+            runtime_config,
             "transcript_analysis_max_tokens",
             DEFAULT_TRANSCRIPT_ANALYSIS_MAX_TOKENS,
         )
@@ -1810,21 +2016,50 @@ async def get_most_relevant_parts_by_transcript(
                 )
             windows = budgeted_windows
 
+        # Rotation is opt-in: an empty ANALYSIS_MODELS keeps the original
+        # single-agent path (and its cache) untouched.
+        configured_models = getattr(runtime_config, "analysis_models", None) or []
+        model_names = configured_models or None
+        default_model = getattr(runtime_config, "llm", None)
+        pacer = _AnalysisPacer(
+            getattr(runtime_config, "analysis_min_interval_sec", 0.0),
+            getattr(runtime_config, "analysis_tpm", DEFAULT_ANALYSIS_TPM),
+        )
+        agent = None if model_names else get_transcript_agent(clip_length)
+
         if len(windows) == 1:
-            result = await _run_transcript_analysis(
-                agent,
-                build_transcript_analysis_prompt(
-                    transcript=transcript,
-                    clip_signals=clip_signals,
-                    performance_context=performance_context,
-                    clip_length=clip_length,
-                )
+            single_model = model_names[0] if model_names else None
+            single_agent = (
+                get_transcript_agent(clip_length, model_name=single_model)
+                if single_model
+                else agent
             )
+            single_prompt = build_transcript_analysis_prompt(
+                transcript=transcript,
+                clip_signals=clip_signals,
+                performance_context=performance_context,
+                clip_length=clip_length,
+            )
+            if pacer.min_interval_seconds > 0:
+                result = await _run_transcript_analysis(
+                    single_agent,
+                    single_prompt,
+                    model_name=single_model or default_model,
+                    pacer=pacer,
+                )
+            else:
+                result = await _run_transcript_analysis(single_agent, single_prompt)
             analyses = [result.output]
         else:
             logger.info("Analysing transcript in %d overlapping windows", len(windows))
             analyses = await _analyze_transcript_windows(
-                agent, windows, clip_signals, performance_context, clip_length
+                agent,
+                windows,
+                clip_signals,
+                performance_context,
+                clip_length,
+                model_names=model_names,
+                pacer=pacer,
             )
 
         candidates: List[TranscriptSegment] = []

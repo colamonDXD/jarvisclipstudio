@@ -136,6 +136,9 @@ These settings affect clip generation speed, throughput, and defaults.
 | `ASSEMBLY_AI_SPEECH_MODEL` | Empty | Overrides the AssemblyAI model for every processing mode. Set `universal-2` to use only the non-Pro model while retaining word timings and speaker labels; takes precedence over `FAST_MODE_TRANSCRIPT_MODEL` |
 | `ASSEMBLY_AI_REQUEST_TIMEOUT_SECONDS` | `60` | Per-request upload/submit timeout (5–300). Transient upload failures retry up to 3 times; the paid submission is attempted once |
 | `TRANSCRIPT_ANALYSIS_MAX_TOKENS` | `7000` | Estimated token budget for one transcript-analysis request. Longer transcripts are split at transcript-line boundaries; lower this for low-TPM providers such as Groq's 8000 tokens/minute free tier |
+| `ANALYSIS_MODELS` | Empty (`LLM`) | Comma-separated `provider:model` list. Analysis chunks rotate round-robin across the entries, so concurrent chunks can use different per-model token buckets |
+| `ANALYSIS_MIN_INTERVAL_SEC` | `0` | Minimum seconds between calls to the same analysis model. `0` disables proactive pacing. When enabled, the interval is at least `chunk_tokens * 60 / ANALYSIS_TPM` |
+| `ANALYSIS_TPM` | `8000` | Per-model tokens-per-minute limit used to derive the proactive pacing interval |
 | `WHISPER_MODEL_SIZE` | `medium` in `.env.example` | Whisper model size when Whisper is used locally |
 | `QUEUED_TASK_TIMEOUT_SECONDS` | `180` | Marks stale queued tasks as failed instead of leaving them stuck forever |
 | `MAX_VIDEO_DURATION` | `5400` | Maximum accepted upload length and baseline YouTube length in seconds |

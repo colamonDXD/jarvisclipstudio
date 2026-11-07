@@ -39,6 +39,15 @@ class Config:
         self.transcript_analysis_max_tokens = max(
             1, self._get_int_env("TRANSCRIPT_ANALYSIS_MAX_TOKENS", 7000)
         )
+        # Optional comma-separated provider:model list. Analysis chunks rotate
+        # across these models; empty keeps the single LLM behaviour.
+        self.analysis_models = self._get_csv_env("ANALYSIS_MODELS", [])
+        # Proactive spacing between calls to the same model. 0 disables it.
+        self.analysis_min_interval_sec = max(
+            0.0, self._get_float_env("ANALYSIS_MIN_INTERVAL_SEC", 0.0)
+        )
+        # Per-model tokens-per-minute bucket used to derive a safe interval.
+        self.analysis_tpm = max(1, self._get_int_env("ANALYSIS_TPM", 8000))
         self.assembly_ai_api_key = self._get_runtime_setting("ASSEMBLY_AI_API_KEY")
         # An explicit deployment choice overrides the model for every processing mode.
         self.assembly_ai_speech_model = os.getenv("ASSEMBLY_AI_SPEECH_MODEL", "").strip()
