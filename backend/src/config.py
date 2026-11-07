@@ -403,7 +403,7 @@ class Config:
     @staticmethod
     def _normalize_transcription_provider(value: str | None) -> str:
         normalized = (value or "").strip().lower().replace("-", "_")
-        if normalized in ("whisper", "youtube_captions"):
+        if normalized in ("whisper", "faster_whisper", "youtube_captions"):
             return normalized
         return "assemblyai"
 

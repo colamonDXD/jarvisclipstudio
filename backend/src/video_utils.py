@@ -81,6 +81,7 @@ from .media.transcription import (
     _assemblyai_speech_models_value,
     _format_words_for_analysis,
     _get_transcript_with_assemblyai,
+    _get_transcript_with_faster_whisper,
     _get_transcript_with_whisper,
     _get_transcript_with_youtube_captions,
     _get_whisper_model,
@@ -93,6 +94,7 @@ from .media.transcription import (
     format_ms_to_timestamp,
     format_transcript_for_analysis,
     load_cached_transcript_data,
+    transcribe_with_faster_whisper,
     transcribe_with_whisper,
     transcribe_with_youtube_captions,
 )

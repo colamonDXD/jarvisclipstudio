@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.121.0",
     "uvicorn>=0.27.0",
     "openai-whisper>=20250625",
+    "faster-whisper>=1.1.0",
     "pydantic-ai>=1.107.7,<2",
     "setuptools-rust>=1.11.1",
     "asyncpg>=0.29.0",
@@ -48,6 +49,9 @@ dev = [
 
 [tool.uv]
 constraint-dependencies = [
+    # faster-whisper 1.2.x calls av.open(..., metadata_errors="ignore"); PyAV
+    # removed that parameter in 14.0, so cap av below it (13.1.0 verified).
+    "av>=12,<14",
     "PyJWT>=2.15.0",
     "anyio>=4.14.2,<5",
     "brotli>=1.2.1",

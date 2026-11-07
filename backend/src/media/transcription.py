@@ -20,8 +20,12 @@ from .common import (
     ANALYSIS_UTTERANCE_SPLIT_THRESHOLD_MS,
     ANALYSIS_UTTERANCE_SPLIT_THRESHOLD_WORDS,
     TRANSCRIPT_CACHE_SCHEMA_VERSION,
+    _FASTER_WHISPER_AVAILABLE,
+    _FASTER_WHISPER_MODEL_CACHE,
     _WHISPER_AVAILABLE,
     _WHISPER_MODEL_CACHE,
+    _ctranslate2,
+    _faster_whisper,
     _whisper,
     logger,
 )
@@ -205,6 +209,132 @@ def transcribe_with_whisper(
     return model.transcribe(str(audio_path), word_timestamps=True, language=whisper_language)
 
 
+def _faster_whisper_device_and_compute_type() -> tuple:
+    """Pick the fastest CTranslate2 execution settings for this machine.
+
+    CUDA runs float16; CPU falls back to int8, the fastest CPU compute type
+    with negligible accuracy loss for transcription.
+    """
+    try:
+        if _ctranslate2 is not None and _ctranslate2.get_cuda_device_count() > 0:
+            return "cuda", "float16"
+    except Exception:  # pragma: no cover - defensive: probe failure means CPU
+        pass
+    return "cpu", "int8"
+
+
+def _get_faster_whisper_model(model_name: str = "base"):
+    """Load and cache a faster-whisper model by name."""
+    if not _FASTER_WHISPER_AVAILABLE:
+        raise RuntimeError(
+            "faster-whisper is not installed. Install it with: uv add faster-whisper"
+        )
+    if model_name not in _FASTER_WHISPER_MODEL_CACHE:
+        device, compute_type = _faster_whisper_device_and_compute_type()
+        logger.info(
+            "Loading faster-whisper model: %s (device: %s, compute: %s)",
+            model_name,
+            device,
+            compute_type,
+        )
+        _FASTER_WHISPER_MODEL_CACHE[model_name] = _faster_whisper.WhisperModel(
+            model_name, device=device, compute_type=compute_type
+        )
+    return _FASTER_WHISPER_MODEL_CACHE[model_name]
+
+
+def _faster_whisper_result_to_whisper_dict(segments, info) -> Dict[str, Any]:
+    """Convert faster-whisper output to the openai-whisper result shape.
+
+    Both engines report timings in seconds, so only the attribute-style
+    segment/word objects need flattening into the plain dicts every consumer
+    (analysis formatting, transcript cache, captions) already understands:
+    ``{"text", "language", "segments": [{"start", "end", "text", "words":
+    [{"word", "start", "end", "probability"}]}]}``.
+    """
+    segment_dicts: List[Dict[str, Any]] = []
+    text_parts: List[str] = []
+    for segment in segments:
+        segment_dicts.append(
+            {
+                "id": getattr(segment, "id", len(segment_dicts)),
+                # Cast to plain floats: faster-whisper may hand back numpy
+                # scalars, which downstream JSON caching cannot serialize.
+                "start": float(segment.start),
+                "end": float(segment.end),
+                "text": segment.text,
+                "words": [
+                    {
+                        "word": word.word,
+                        "start": float(word.start),
+                        "end": float(word.end),
+                        "probability": float(word.probability),
+                    }
+                    for word in segment.words or []
+                ],
+            }
+        )
+        text_parts.append(segment.text)
+
+    return {
+        "text": "".join(text_parts),
+        "language": getattr(info, "language", None),
+        "segments": segment_dicts,
+    }
+
+
+def transcribe_with_faster_whisper(
+    video_path: Path, model_name: str = "base", language: Optional[str] = None
+) -> Dict[str, Any]:
+    """Transcribe video using faster-whisper with word-level timestamps.
+
+    Returns the same dict shape as :func:`transcribe_with_whisper` so no
+    downstream consumer changes. Silence is skipped with the VAD filter and
+    the batched pipeline is used when the installed faster-whisper provides
+    it, falling back to the plain sequential transcribe on any failure.
+    """
+    audio_path = _prepare_audio_for_transcription(video_path)
+    model = _get_faster_whisper_model(model_name)
+    whisper_language = language.split("_", 1)[0] if language else None
+    logger.info(
+        "Starting faster-whisper transcription with model: %s (language: %s)",
+        model_name,
+        whisper_language or "auto",
+    )
+    transcribe_kwargs: Dict[str, Any] = {
+        "language": whisper_language,
+        "word_timestamps": True,
+        "vad_filter": True,
+    }
+
+    segments = None
+    info = None
+    batched_pipeline_cls = getattr(_faster_whisper, "BatchedInferencePipeline", None)
+    if batched_pipeline_cls is not None:
+        try:
+            batched = batched_pipeline_cls(model=model)
+            raw_segments, info = batched.transcribe(
+                str(audio_path), batch_size=16, **transcribe_kwargs
+            )
+            # The segments are a lazy generator: materialize inside the try
+            # so decode failures also fall back to the sequential path.
+            segments = list(raw_segments)
+        except Exception:
+            logger.warning(
+                "Batched faster-whisper transcription failed; "
+                "falling back to sequential transcription",
+                exc_info=True,
+            )
+            segments = None
+            info = None
+
+    if segments is None:
+        raw_segments, info = model.transcribe(str(audio_path), **transcribe_kwargs)
+        segments = list(raw_segments)
+
+    return _faster_whisper_result_to_whisper_dict(segments, info)
+
+
 def _whisper_result_to_transcript_data(whisper_result: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a Whisper result dict to the standard transcript-cache format.
 
@@ -323,9 +453,10 @@ def get_video_transcript(
 ) -> str:
     """Get a video transcript using the configured provider.
 
-    Dispatches to AssemblyAI, local Whisper, or YouTube captions based on
-    ``TRANSCRIPTION_PROVIDER``. ``source_url`` enables the youtube_captions
-    provider, which needs the original URL rather than a local file path.
+    Dispatches to AssemblyAI, local Whisper, faster-whisper, or YouTube
+    captions based on ``TRANSCRIPTION_PROVIDER``. ``source_url`` enables the
+    youtube_captions provider, which needs the original URL rather than a
+    local file path.
     """
     logger.info(f"Getting transcript for: {video_path}")
     runtime_config = get_config()
@@ -333,6 +464,8 @@ def get_video_transcript(
 
     if provider == "whisper":
         return _get_transcript_with_whisper(video_path, runtime_config)
+    if provider == "faster_whisper":
+        return _get_transcript_with_faster_whisper(video_path, runtime_config)
     if provider == "youtube_captions":
         if not source_url:
             raise ValueError(
@@ -428,6 +561,26 @@ def _get_transcript_with_whisper(video_path: Path, runtime_config) -> str:
     result = "\n".join(formatted_lines)
     logger.info(
         "Whisper transcript formatted: %d segments, %d chars",
+        len(formatted_lines),
+        len(result),
+    )
+    return result
+
+
+def _get_transcript_with_faster_whisper(video_path: Path, runtime_config) -> str:
+    """Get transcript using local faster-whisper with word-level timestamps."""
+    model_name = runtime_config.whisper_model
+    logger.info("Starting faster-whisper transcription with model: %s", model_name)
+    whisper_result = transcribe_with_faster_whisper(
+        video_path, model_name, runtime_config.transcription_language or None
+    )
+
+    formatted_lines = format_transcript_for_analysis(whisper_result)
+    cache_transcript_data(video_path, whisper_result)
+
+    result = "\n".join(formatted_lines)
+    logger.info(
+        "faster-whisper transcript formatted: %d segments, %d chars",
         len(formatted_lines),
         len(result),
     )

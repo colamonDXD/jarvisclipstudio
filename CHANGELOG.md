@@ -5,6 +5,7 @@ What changed in SupoClip for people using the product. Newest dates are first.
 Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
 
 ## 2026-11-07
+- **Improved:** Local transcription is much faster with the new faster-whisper engine (TRANSCRIPTION_PROVIDER=faster-whisper): typically 2-4x faster than the previous local engine at the same model size, and silence is skipped automatically. The original whisper engine remains available. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 
 - **Improved:** Generations finish much faster: a task's clips now render in parallel (up to 3 at once, adjustable with CLIP_RENDER_CONCURRENCY), and final encodes use the NVIDIA GPU automatically when one is available, falling back to the CPU encoder otherwise (FORCE_CPU_ENCODE=true forces the CPU). ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 - **New:** Choose a content niche before creating clips, with an automatic option when you prefer SupoClip to choose. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
