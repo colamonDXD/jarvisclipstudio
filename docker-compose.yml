@@ -118,6 +118,7 @@ services:
       - clips:/app/clips
       - ./backend/fonts:/app/fonts
       - ./backend/transitions:/app/transitions
+      - ./assets:/assets:ro
     environment:
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
@@ -301,6 +302,7 @@ services:
       - clips:/app/clips
       - ./backend/fonts:/app/fonts
       - ./backend/transitions:/app/transitions
+      - ./assets:/assets:ro
     environment: &worker-environment
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
@@ -454,6 +456,7 @@ services:
     volumes:
       - ./backend/src:/app/src
       - uploads:/app/uploads
+      - ./assets:/assets:ro
     environment: *worker-environment
     restart: unless-stopped
     depends_on:
