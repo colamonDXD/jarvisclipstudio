@@ -36,6 +36,7 @@ import { fetchGenerations, type GenerationSummary } from "@/lib/generations";
 import { CLIP_LENGTHS, isClipLength, type ClipLength } from "@/lib/clip-duration";
 import { cn } from "@/lib/utils";
 import { FontSelectOption, type FontOption } from "@/components/font-select-option";
+import { NICHE_OPTIONS, type NicheOverride } from "@/lib/niches";
 
 interface CaptionTemplate {
   id: string;
@@ -105,6 +106,7 @@ export default function HomeApp() {
   const [pauseThresholdMs, setPauseThresholdMs] = useState("1200");
   const [removeFillerWords, setRemoveFillerWords] = useState(true);
   const [filteredWords, setFilteredWords] = useState("");
+  const [nicheOverride, setNicheOverride] = useState<NicheOverride | null>(null);
 
   const [recent, setRecent] = useState<GenerationSummary[] | null>(null);
   const [billingSummary, updateBillingSummary] = useBillingSummary(Boolean(session?.user?.id));
@@ -335,6 +337,7 @@ export default function HomeApp() {
           pause_threshold_ms: normalizedPauseThreshold,
           remove_filler_words: removeFillerWords,
           filtered_words: normalizedFilteredWords,
+          niche_override: nicheOverride,
         }),
       });
 
@@ -646,6 +649,16 @@ export default function HomeApp() {
                   </div>
                 </PopoverContent>
               </Popover>
+
+              <Select value={nicheOverride ?? "auto"} onValueChange={(value) => setNicheOverride(value === "auto" ? null : value as NicheOverride)}>
+                <SelectTrigger className="h-8 w-[148px] text-xs" aria-label="Niche">
+                  <SelectValue placeholder="Auto-detect" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">Auto-detect</SelectItem>
+                  {NICHE_OPTIONS.map((niche) => <SelectItem key={niche.value} value={niche.value}>{niche.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
 
               {brollAvailable && (
                 // Icon-only so the desktop composer stays on one row.

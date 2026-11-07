@@ -16,6 +16,8 @@ import { getClipUrl } from "@/lib/clip-actions";
 import { formatClipDuration } from "@/lib/generations";
 import { DELAY_MESSAGE_KEYS, isDownloadRecovery } from "@/lib/download-recovery";
 import { cn } from "@/lib/utils";
+import { NICHE_OPTIONS, nicheLabel, type NicheOverride } from "@/lib/niches";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 export interface WallClip {
   id: string;
@@ -34,18 +36,20 @@ export interface WallClip {
   shareability_score: number;
   hook_type: string | null;
   hook_title: string | null;
+  niche_override?: NicheOverride | null;
 }
 
 function clipTitle(clip: WallClip, fallback: string) {
   return clip.hook_title || fallback;
 }
 
-export function ClipTile({ clip, taskId, busy, best, editable, onOpen, onDownload, onDelete }: {
+export function ClipTile({ clip, taskId, busy, best, editable, profile, onOpen, onDownload, onDelete }: {
   clip: WallClip;
   taskId: string;
   busy: boolean;
   best: boolean;
   editable: boolean;
+  profile?: NicheOverride | null;
   onOpen: () => void;
   onDownload: () => void;
   onDelete?: () => void;
@@ -84,6 +88,17 @@ export function ClipTile({ clip, taskId, busy, best, editable, onOpen, onDownloa
       <div className="mt-2.5 px-0.5">
         <h3 className="line-clamp-2 text-sm font-semibold leading-snug">{title}</h3>
         <p className="mt-0.5 text-xs tabular-nums text-muted-foreground">{clip.start_time} – {clip.end_time}</p>
+        <p className="mt-1 text-xs text-muted-foreground">Profile: {nicheLabel(clip.niche_override ?? profile)}</p>
+        {editable && (
+          <Select disabled value="">
+            <SelectTrigger className="mt-2 h-7 w-full text-xs" aria-label={`Re-render ${title} as a niche`}>
+              <SelectValue placeholder="Re-render as…" />
+            </SelectTrigger>
+            <SelectContent>
+              {NICHE_OPTIONS.map((niche) => <SelectItem key={niche.value} value={niche.value}>{niche.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        )}
         <div className="mt-2 flex items-center gap-1">
           <Button size="sm" variant="outline" className="h-7 flex-1 px-2 text-xs" onClick={onDownload} disabled={busy} aria-label={t("downloadNamed", { title })}>
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}<span className="hidden @min-[190px]:inline">{t("download")}</span>

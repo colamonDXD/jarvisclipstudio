@@ -75,6 +75,7 @@ import {
   type SocialPost,
   type SocialProviderStatus,
 } from "@/lib/social";
+import { type NicheOverride } from "@/lib/niches";
 
 interface Clip {
   id: string;
@@ -97,6 +98,7 @@ interface Clip {
   shareability_score: number;
   hook_type: string | null;
   hook_title: string | null;
+  niche_override?: NicheOverride | null;
 }
 
 interface TaskDetails {
@@ -123,6 +125,7 @@ interface TaskDetails {
   filtered_words?: string[];
   include_broll?: boolean;
   share_enabled?: boolean;
+  niche_override?: NicheOverride | null;
 }
 
 function sourceLabel(source: VideoSourceKind, uploadLabel: string) {
@@ -691,6 +694,7 @@ export default function TaskPage() {
       onDownload={() => handleDownloadClip(clip)}
       onDelete={readOnly ? undefined : () => setDeletingClipId(clip.id)}
       editable={task?.status === "completed" && !readOnly}
+      profile={task?.niche_override}
     />
   );
 
