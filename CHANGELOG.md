@@ -7,6 +7,7 @@ Add a line here when a pull request changes something a user can see. Use **New*
 ## 2026-11-07
 
 - **New:** Choose a content niche before creating clips, with an automatic option when you prefer SupoClip to choose. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+- **New:** Auto-director clips can now finish their audio with background music from your own library (ducked under the voice), sound-effect hits at chosen moments, and a consistent -14 LUFS loudness finish. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 
 ## 2026-11-06
 

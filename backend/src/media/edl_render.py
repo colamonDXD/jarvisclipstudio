@@ -4,10 +4,19 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
-from .common import OUTPUT_FPS, logger
+from .common import LOUDNORM_FILTER, OUTPUT_FPS, logger
 from .ffmpeg import build_audio_output_args, build_final_video_encode_args, run_ffmpeg_command, subtitles_filter_fragment
 
 TRANSITION_MAP = {"hard_cut": None, "cut": None, "none": None, "cross_dissolve": "fade", "fade": "fade", "slide": "slideleft", "wipe": "wipeleft"}
+
+# User asset library (repo-root assets/music and assets/sfx). Files are
+# resolved by the exact name the EDL/profile asks for, or by file stem with
+# any common audio extension. Anything missing is skipped silently.
+ASSETS_DIR = Path(__file__).resolve().parents[3] / "assets"
+AUDIO_FILE_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus")
+# Every stream entering the audio-finishing mix is normalised to this format
+# so amix/sidechaincompress always see matching sample rate and layout.
+_AUDIO_NORMALIZE = "aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
 
 
 @lru_cache(maxsize=1)
@@ -144,15 +153,143 @@ def build_edl_filter_graph(edl: dict[str, Any], input_path: Path, subtitle_ass_p
     return extra_inputs, ";".join(graph), encoder_args, current
 
 
-def render_edl_clip_ffmpeg(input_path: Path, output_path: Path, edl: dict[str, Any], subtitle_ass_path: Optional[Path] = None, fonts_dir: Optional[Path] = None) -> bool:
-    if not edl or not edl.get("segments"):
-        return False
-    extra_inputs, graph, encoder_args, video_label = build_edl_filter_graph(edl, input_path, subtitle_ass_path, fonts_dir)
-    command = ["ffmpeg", "-y", "-i", str(input_path), *extra_inputs, "-filter_complex", graph, "-map", video_label, "-map", "0:a?", *encoder_args, *build_audio_output_args(True), "-shortest", "-movflags", "+faststart", str(output_path)]
-    logger.info("Rendering EDL clip: %s", output_path)
+def _resolve_asset_file(folder: Path, name: str) -> Optional[Path]:
+    """Resolve an asset by exact filename, or by stem with an audio extension."""
+    if not name or not folder.is_dir():
+        return None
+    candidate = folder / name
+    if candidate.is_file():
+        return candidate
+    if Path(name).suffix:
+        return None
+    for extension in AUDIO_FILE_EXTENSIONS:
+        candidate = folder / f"{name}{extension}"
+        if candidate.is_file():
+            return candidate
+    for entry in sorted(folder.iterdir()):
+        if entry.is_file() and entry.stem == name:
+            return entry
+    return None
+
+
+def _rendered_duration(edl: dict[str, Any]) -> float:
+    """Total output duration of an EDL, mirroring build_edl_filter_graph's joins."""
+    segments = edl.get("segments") or []
+    if not segments:
+        return max(0.0, float(edl.get("duration") or 0))
+    duration = float(edl.get("duration") or 0)
+    rendered = float(segments[0].get("end", duration)) - float(segments[0].get("start", 0))
+    for segment in segments[1:]:
+        next_duration = float(segment.get("end", duration)) - float(segment.get("start", 0))
+        transition = str(segment.get("transition_in", "cut")).lower()
+        requested = max(0.0, float(segment.get("transition_duration", 0)))
+        fade = min(requested, rendered, next_duration) if TRANSITION_MAP.get(transition) else 0.0
+        rendered += next_duration - fade
+    return max(0.0, rendered)
+
+
+def build_edl_audio_graph(edl: dict[str, Any], first_input_index: int, assets_dir: Optional[Path] = None) -> Optional[tuple[list[str], str, str]]:
+    """Plan the audio-finishing graph (music ducking + SFX events) for an EDL.
+
+    Returns (extra ffmpeg inputs, filter-graph fragment, output audio label),
+    or None when the EDL carries no music track or SFX event that resolves to
+    a file in the asset library — the caller then keeps the legacy audio path
+    untouched. The fragment ends with the -14 LUFS loudnorm as its last step:
+    FFmpeg refuses a -af chain on a stream fed from a complex filtergraph, so
+    the finished path carries loudnorm inside the graph and the caller drops
+    it from the output args (the legacy path keeps it via -af).
+    """
+    assets = Path(assets_dir) if assets_dir is not None else ASSETS_DIR
+    duration = _rendered_duration(edl)
+    if duration <= 0:
+        return None
+    audio = edl.get("audio") or {}
+    try:
+        volume = float(audio.get("music_volume_0_to_1", audio.get("music_volume", 0.0)) or 0.0)
+        ducking_db = float(audio.get("ducking_db", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    track_name = str(audio.get("music_track") or audio.get("music_mood") or "").strip()
+    music_path = None
+    if track_name and track_name.lower() != "none" and volume > 0:
+        music_path = _resolve_asset_file(assets / "music", track_name)
+
+    sfx_events: list[tuple[Path, float, float]] = []
+    for event in edl.get("sfx_events") or []:
+        if not isinstance(event, dict):
+            continue
+        name = str(event.get("name") or "").strip()
+        if not name:
+            continue
+        sfx_path = _resolve_asset_file(assets / "sfx", name)
+        if sfx_path is None:
+            continue
+        try:
+            at_sec = max(0.0, float(event.get("at_sec", 0) or 0))
+            gain_db = float(event.get("gain_db", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        sfx_events.append((sfx_path, at_sec, gain_db))
+
+    if music_path is None and not sfx_events:
+        return None
+
+    ducking = music_path is not None and ducking_db > 0
+    extra_inputs: list[str] = []
+    graph: list[str] = []
+    if ducking:
+        graph.append(f"[0:a]atrim=0:{duration:.3f},asetpts=PTS-STARTPTS,{_AUDIO_NORMALIZE},asplit=2[a_voice][a_voice_sc]")
+    else:
+        graph.append(f"[0:a]atrim=0:{duration:.3f},asetpts=PTS-STARTPTS,{_AUDIO_NORMALIZE}[a_voice]")
+    mix_labels = ["[a_voice]"]
+    next_index = first_input_index
+    if music_path is not None:
+        extra_inputs.extend(["-stream_loop", "-1", "-i", str(music_path)])
+        graph.append(f"[{next_index}:a]atrim=0:{duration:.3f},asetpts=PTS-STARTPTS,{_AUDIO_NORMALIZE},volume={volume:.6f}[a_music]")
+        next_index += 1
+        if ducking:
+            # ducking_db drives the compressor ratio: more requested ducking,
+            # harder the music is pushed under the voice.
+            ratio = min(20.0, 2.0 + ducking_db)
+            graph.append(f"[a_music][a_voice_sc]sidechaincompress=threshold=0.02:ratio={ratio:.2f}:attack=20:release=300[a_music_ducked]")
+            mix_labels.append("[a_music_ducked]")
+        else:
+            mix_labels.append("[a_music]")
+    for position, (sfx_path, at_sec, gain_db) in enumerate(sfx_events):
+        extra_inputs.extend(["-i", str(sfx_path)])
+        gain = 10 ** (gain_db / 20.0)
+        delay_ms = int(round(at_sec * 1000))
+        graph.append(f"[{next_index}:a]{_AUDIO_NORMALIZE},adelay={delay_ms}:all=1,volume={gain:.6f}[a_sfx{position}]")
+        next_index += 1
+        mix_labels.append(f"[a_sfx{position}]")
+    graph.append(f"{''.join(mix_labels)}amix=inputs={len(mix_labels)}:duration=first:dropout_transition=0:normalize=0[a_mix]")
+    graph.append(f"[a_mix]{LOUDNORM_FILTER}[a_out]")
+    return extra_inputs, ";".join(graph), "[a_out]"
+
+
+def _run_render_command(command: list[str]) -> bool:
     try:
         result = run_ffmpeg_command(command, timeout=3600)
     except OSError as exc:
         logger.error("EDL render could not start: %s", exc)
         return False
     return result.returncode == 0
+
+
+def render_edl_clip_ffmpeg(input_path: Path, output_path: Path, edl: dict[str, Any], subtitle_ass_path: Optional[Path] = None, fonts_dir: Optional[Path] = None, assets_dir: Optional[Path] = None) -> bool:
+    if not edl or not edl.get("segments"):
+        return False
+    extra_inputs, graph, encoder_args, video_label = build_edl_filter_graph(edl, input_path, subtitle_ass_path, fonts_dir)
+    plain_command = ["ffmpeg", "-y", "-i", str(input_path), *extra_inputs, "-filter_complex", graph, "-map", video_label, "-map", "0:a?", *encoder_args, *build_audio_output_args(True), "-shortest", "-movflags", "+faststart", str(output_path)]
+    audio_plan = build_edl_audio_graph(edl, 1 + extra_inputs.count("-i"), assets_dir)
+    logger.info("Rendering EDL clip: %s", output_path)
+    if audio_plan is None:
+        return _run_render_command(plain_command)
+    audio_inputs, audio_graph, audio_label = audio_plan
+    command = ["ffmpeg", "-y", "-i", str(input_path), *extra_inputs, *audio_inputs, "-filter_complex", f"{graph};{audio_graph}", "-map", video_label, "-map", audio_label, *encoder_args, *build_audio_output_args(True, loudnorm=False), "-shortest", "-movflags", "+faststart", str(output_path)]
+    if _run_render_command(command):
+        return True
+    # Audio finishing must never cost the clip itself: fall back to the
+    # long-standing plain audio path (e.g. a source with no audio stream).
+    logger.warning("EDL audio finishing failed for %s; retrying with plain audio path", output_path)
+    return _run_render_command(plain_command)
