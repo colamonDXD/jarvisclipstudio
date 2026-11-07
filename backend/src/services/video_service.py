@@ -843,6 +843,20 @@ class VideoService:
                     # A higher-resolution clip beats losing the clip entirely.
                     logger.warning(f"Keeping full-size clip {clip_index + 1}: {e}")
 
+            # Deliverables are an optional convenience layer. A completed render
+            # remains usable even if an image encoder or filesystem is unavailable.
+            try:
+                from ..deliverable_bundle import write_deliverable_bundle
+                await run_in_thread(
+                    write_deliverable_bundle,
+                    clip_path,
+                    edl,
+                    segment,
+                    segment.get("hook_title"),
+                )
+            except Exception as exc:
+                logger.warning("Could not create deliverable bundle for clip %s: %s", clip_index + 1, exc)
+
             from ..media.ffmpeg import output_offsets_for_ranges
             save_clip_source_ranges(clip_path, keep_ranges, output_offsets_for_ranges(keep_ranges))
             save_clip_broll(clip_path, broll_placements)
