@@ -34,9 +34,9 @@
     "density_per_min": 0.5
   },
   "audio": {
-    "music_mood": "none",
-    "music_volume_0_to_1": 0.0,
-    "ducking_db": 0.0,
+    "music_mood": "calm",
+    "music_volume_0_to_1": 0.1,
+    "ducking_db": -15.0,
     "sfx_from_user_library": false
   },
   "color": {
