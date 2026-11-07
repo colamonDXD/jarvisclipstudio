@@ -12,6 +12,8 @@ Add a line here when a pull request changes something a user can see. Use **New*
 - **New:** Auto-director clips can now finish their audio with background music from your own library (ducked under the voice), sound-effect hits at chosen moments, and a consistent -14 LUFS loudness finish. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 - **Improved:** Niche editing profiles retuned to viral short-form pacing (faster cuts, hook titles that land inside the first seconds, karaoke captions for tutorials and finance, a new Classic Box caption style), and clip selection now prefers openings where the hook line, title and a visual change land together. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 
+- **New:** Six new editing niches. True crime, Hindi podcast and music artist clips are detected automatically; football edits, Japan travel cinematic and anime funk edits can be picked manually when creating a task. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+
 ## 2026-11-06
 
 - **Under the hood:** New features can be switched on for the web and iPhone apps separately, without an update. ([#340](https://github.com/FujiwaraChoki/supoclip/pull/340))

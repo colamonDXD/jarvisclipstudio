@@ -15,6 +15,12 @@ _NICHES = {
     "education_tutorial",
     "finance_business",
     "vlog_lifestyle",
+    "true_crime",
+    "hindi_podcast",
+    "music_artist",
+    "football_edit",
+    "japan_travel_cinematic",
+    "anime_funk_edit",
 }
 
 

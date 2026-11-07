@@ -406,6 +406,10 @@ COLD-OPEN HOOK ("hook_start_time"/"hook_end_time" per segment, optional):
 - Use timestamps from the transcript lines inside the segment, at least 3 seconds after start_time
 - Set both to null when the clip already opens on its strongest line, or when replaying the line would just repeat it
 
+TRUE CRIME / MYSTERY NARRATION:
+- When the content is a true-crime case or a mystery story, open on the strangest unexplained fact of the case, not on background, introductions or host banter
+- Keep the outcome withheld: prefer segments whose resolution, verdict or reveal lands in the final 15% of the clip, and lower the score for segments that give away the outcome early
+
 HOOK TYPES to identify:
 - "question": Opens with a question that creates curiosity
 - "statement": Bold claim or surprising statement

@@ -17,9 +17,14 @@ NicheLiteral = Literal[
     "education_tutorial",
     "finance_business",
     "vlog_lifestyle",
+    "true_crime",
+    "hindi_podcast",
+    "music_artist",
 ]
 
-NICHE_VALUES: set[NicheLiteral] = {
+# Every niche the system knows about, including manual-only ones. Kept in
+# sync with niche.NICHE_VALUES (override validation) by a unit test.
+NICHE_VALUES: set[str] = {
     "podcast_news",
     "travel_vlog",
     "meme_comedy",
@@ -28,7 +33,41 @@ NICHE_VALUES: set[NicheLiteral] = {
     "education_tutorial",
     "finance_business",
     "vlog_lifestyle",
+    "true_crime",
+    "hindi_podcast",
+    "music_artist",
+    "football_edit",
+    "japan_travel_cinematic",
+    "anime_funk_edit",
 }
+
+# Niches the classifier may return. These are exactly the NicheLiteral
+# values: the structured-output schema cannot even express a manual-only
+# niche, and classify_niche() double-checks against this set.
+AUTO_NICHE_VALUES: set[NicheLiteral] = {
+    "podcast_news",
+    "travel_vlog",
+    "meme_comedy",
+    "gaming",
+    "sports",
+    "education_tutorial",
+    "finance_business",
+    "vlog_lifestyle",
+    "true_crime",
+    "hindi_podcast",
+    "music_artist",
+}
+
+# Visual/beat-driven niches with no usable transcript signal. They are
+# reachable only through an explicit niche_override (manual selection),
+# never from classify_niche().
+MANUAL_ONLY_NICHES: frozenset[str] = frozenset(
+    {
+        "football_edit",
+        "japan_travel_cinematic",
+        "anime_funk_edit",
+    }
+)
 
 FALLBACK_RESULT = {
     "niche": "podcast_news",
@@ -63,11 +102,14 @@ NICHE CATEGORIES:
 - education_tutorial: How-to guides, tutorials, educational explanations, skill teaching
 - finance_business: Investing, entrepreneurship, business advice, market analysis, personal finance
 - vlog_lifestyle: Personal vlogs, daily routines, lifestyle tips, life updates, Q&A
+- true_crime: True crime narration, real criminal cases, investigations, trials and verdicts, mystery storytelling about crimes
+- hindi_podcast: Hindi or Hinglish (mixed Hindi-English) podcasts, interviews and creator discussions spoken mainly in Hindi
+- music_artist: Singers and rappers performing, songs and lyric breakdowns, music releases, artist content built around the music itself
 
 OUTPUT REQUIREMENTS:
 - Return valid JSON only. No markdown, no code fences, no extra text.
 - JSON keys: "niche", "confidence", "reasons"
-- "niche" must be exactly one of the 8 categories listed above
+- "niche" must be exactly one of the 11 categories listed above
 - "confidence" must be a float between 0.0 and 1.0
 - "reasons" must be an array of 1-3 short strings (max 50 chars each)"""
 
@@ -146,8 +188,10 @@ async def classify_niche(transcript_sample: str, entities: list[str]) -> dict:
         result = await agent.run(prompt)
         classification = result.output
 
-        # Validate the niche value is in our enum
-        if classification.niche not in NICHE_VALUES:
+        # Validate the niche value is one the classifier may return.
+        # Manual-only niches (MANUAL_ONLY_NICHES) are never accepted here,
+        # even if a model emits one anyway.
+        if classification.niche not in AUTO_NICHE_VALUES:
             return FALLBACK_RESULT
 
         # Validate confidence range

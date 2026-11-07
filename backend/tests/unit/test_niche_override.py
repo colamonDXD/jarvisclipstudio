@@ -10,9 +10,12 @@ import pytest
 from fastapi import HTTPException
 
 from src.api.routes import tasks
+from src.auto_director import classify as classifier_module
 from src.auto_director.classify import NICHE_VALUES as CLASSIFIER_NICHES
 from src.auto_director.edl import load_profile
 from src.auto_director.niche import (
+    AUTO_NICHE_VALUES,
+    MANUAL_ONLY_NICHES,
     NICHE_VALUES,
     resolve_effective_profile,
     validate_niche_override,
@@ -22,6 +25,41 @@ from src.services.video_service import VideoService
 
 def test_niche_values_match_the_classifier_contract():
     assert NICHE_VALUES == CLASSIFIER_NICHES
+
+
+def test_auto_and_manual_sets_match_the_classifier_contract():
+    assert AUTO_NICHE_VALUES == classifier_module.AUTO_NICHE_VALUES
+    assert MANUAL_ONLY_NICHES == classifier_module.MANUAL_ONLY_NICHES
+    assert AUTO_NICHE_VALUES.isdisjoint(MANUAL_ONLY_NICHES)
+    assert AUTO_NICHE_VALUES | MANUAL_ONLY_NICHES == NICHE_VALUES
+    assert len(NICHE_VALUES) == 14
+
+
+@pytest.mark.parametrize(
+    "niche", ["football_edit", "japan_travel_cinematic", "anime_funk_edit"]
+)
+def test_manual_only_niches_are_valid_overrides(niche):
+    """Visual/beat-driven niches are reachable by explicit selection."""
+    assert validate_niche_override(niche) == niche
+    effective = resolve_effective_profile(niche, None, "podcast_news")
+    assert effective == niche
+    assert load_profile(effective)["niche"] == niche
+
+
+@pytest.mark.parametrize(
+    "niche", ["football_edit", "japan_travel_cinematic", "anime_funk_edit"]
+)
+def test_manual_only_niches_are_never_classifier_results(niche):
+    """A manual-only value arriving as the classifier result is ignored and
+    resolution falls back, exactly as an unknown value would."""
+    assert resolve_effective_profile(None, None, niche) == "podcast_news"
+
+
+@pytest.mark.parametrize("niche", ["true_crime", "hindi_podcast", "music_artist"])
+def test_new_auto_niches_resolve_and_load(niche):
+    assert validate_niche_override(niche) == niche
+    assert resolve_effective_profile(None, None, niche) == niche
+    assert load_profile(niche)["niche"] == niche
 
 
 def test_no_override_uses_the_classifier_profile():

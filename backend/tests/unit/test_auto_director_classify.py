@@ -178,6 +178,9 @@ class TestClassifyNiche:
             "education_tutorial",
             "finance_business",
             "vlog_lifestyle",
+            "true_crime",
+            "hindi_podcast",
+            "music_artist",
         ]
 
         for niche in valid_niches:
@@ -218,8 +221,48 @@ class TestClassifyNiche:
             "reasons": ["fallback"],
         }
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "manual_niche", ["football_edit", "japan_travel_cinematic", "anime_funk_edit"]
+    )
+    async def test_manual_only_niches_never_auto_selected(self, monkeypatch, manual_niche):
+        """Manual-only niches are rejected even if a model emits one anyway.
+
+        They are visual/beat-driven formats with no transcript signal, so the
+        classifier must fall back rather than auto-select them.
+        """
+        mock_output = SimpleNamespace(
+            niche=manual_niche,
+            confidence=0.95,
+            reasons=["reason"],
+        )
+        mock_agent = SimpleNamespace(run=AsyncMock(return_value=SimpleNamespace(output=mock_output)))
+        monkeypatch.setattr("src.auto_director.classify.get_niche_classification_agent", lambda: mock_agent)
+
+        result = await classify_niche("Some content here", ["entity1"])
+
+        assert result == FALLBACK_RESULT
+
+    def test_auto_and_manual_sets_partition_all_niches(self):
+        """AUTO + MANUAL_ONLY partition NICHE_VALUES, and the structured
+        output literal can only express auto niches."""
+        from typing import get_args
+
+        from src.auto_director.classify import (
+            AUTO_NICHE_VALUES,
+            MANUAL_ONLY_NICHES,
+            NICHE_VALUES,
+            NicheLiteral,
+        )
+
+        assert AUTO_NICHE_VALUES.isdisjoint(MANUAL_ONLY_NICHES)
+        assert set(AUTO_NICHE_VALUES) | set(MANUAL_ONLY_NICHES) == set(NICHE_VALUES)
+        assert set(get_args(NicheLiteral)) == set(AUTO_NICHE_VALUES)
+        assert len(NICHE_VALUES) == 14
+
     def test_system_prompt_contains_all_categories(self):
-        """System prompt should mention all 8 niche categories."""
+        """System prompt should mention all 11 auto-detectable categories
+        and none of the manual-only ones."""
         prompt = NICHE_CLASSIFICATION_SYSTEM_PROMPT
         categories = [
             "podcast_news",
@@ -230,9 +273,14 @@ class TestClassifyNiche:
             "education_tutorial",
             "finance_business",
             "vlog_lifestyle",
+            "true_crime",
+            "hindi_podcast",
+            "music_artist",
         ]
         for cat in categories:
             assert cat in prompt, f"Category {cat} not found in system prompt"
+        for manual_only in ["football_edit", "japan_travel_cinematic", "anime_funk_edit"]:
+            assert manual_only not in prompt, f"Manual-only {manual_only} leaked into system prompt"
 
     def test_system_prompt_requires_json_only(self):
         """System prompt should require JSON-only output."""

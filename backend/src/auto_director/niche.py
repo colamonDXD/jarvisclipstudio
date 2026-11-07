@@ -1,12 +1,14 @@
 """Niche override validation and effective-profile resolution.
 
-The classifier's eight niches are repeated here as plain data so that the
+The classifier's niches are repeated here as plain data so that the
 render-completion logging path never has to import the LLM stack. A unit test
-keeps this set in sync with ``classify.NICHE_VALUES``.
+keeps these sets in sync with ``classify``'s ``NICHE_VALUES``,
+``AUTO_NICHE_VALUES`` and ``MANUAL_ONLY_NICHES``.
 """
 
 from typing import Optional
 
+# Every niche a user may select explicitly (manual override / dropdown).
 NICHE_VALUES = frozenset(
     {
         "podcast_news",
@@ -17,6 +19,40 @@ NICHE_VALUES = frozenset(
         "education_tutorial",
         "finance_business",
         "vlog_lifestyle",
+        "true_crime",
+        "hindi_podcast",
+        "music_artist",
+        "football_edit",
+        "japan_travel_cinematic",
+        "anime_funk_edit",
+    }
+)
+
+# Niches the transcript classifier may return (mirrors classify's
+# AUTO_NICHE_VALUES / NicheLiteral).
+AUTO_NICHE_VALUES = frozenset(
+    {
+        "podcast_news",
+        "travel_vlog",
+        "meme_comedy",
+        "gaming",
+        "sports",
+        "education_tutorial",
+        "finance_business",
+        "vlog_lifestyle",
+        "true_crime",
+        "hindi_podcast",
+        "music_artist",
+    }
+)
+
+# Visual/beat-driven niches with no usable transcript signal: selectable
+# only via an explicit override, never from the classifier.
+MANUAL_ONLY_NICHES = frozenset(
+    {
+        "football_edit",
+        "japan_travel_cinematic",
+        "anime_funk_edit",
     }
 )
 
@@ -51,12 +87,14 @@ def resolve_effective_profile(
     """Resolve the niche profile used to build a clip's EDL.
 
     Precedence: explicit clip override, then project/task override, then the
-    classifier result. Unknown classifier values fall back to the classifier's
-    own fallback niche rather than failing a render.
+    classifier result. Overrides may name any known niche, including the
+    manual-only ones; the classifier result is only honoured when it is an
+    auto-detectable niche. Unknown classifier values fall back to the
+    classifier's own fallback niche rather than failing a render.
     """
     for candidate in (clip_override, project_override):
         if candidate in NICHE_VALUES:
             return candidate
-    if classifier_niche in NICHE_VALUES:
+    if classifier_niche in AUTO_NICHE_VALUES:
         return classifier_niche
     return FALLBACK_NICHE

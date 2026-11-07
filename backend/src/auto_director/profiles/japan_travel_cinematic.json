@@ -1,0 +1,49 @@
+{
+  "niche": "japan_travel_cinematic",
+  "pacing": {
+    "target_cuts_per_min": [10, 20],
+    "silence_trim_aggressive": false,
+    "min_shot_sec": 3.0,
+    "max_shot_sec": 6.0
+  },
+  "transitions": {
+    "default": "wipe",
+    "duration_sec": 0.4,
+    "on_topic_change": "wipe",
+    "on_punchline": "wipe"
+  },
+  "zooms": {
+    "punch_in_scale": 1.05,
+    "punch_in_trigger": "scenic_reveal",
+    "ken_burns": true
+  },
+  "captions": {
+    "preset_id": "classic_box",
+    "words_per_line": 4,
+    "position": "bottom"
+  },
+  "overlays": {
+    "info_cards": false,
+    "lower_thirds": false,
+    "reference_images": "off",
+    "ref_image_at_entity_mentions": false
+  },
+  "broll": {
+    "enabled": true,
+    "source": "pexels",
+    "density_per_min": 2.0
+  },
+  "audio": {
+    "music_mood": "calm",
+    "music_volume_0_to_1": 0.25,
+    "ducking_db": -12.0,
+    "sfx_from_user_library": false
+  },
+  "color": {
+    "lut": "warm_soft"
+  },
+  "hook": {
+    "title_style": "statement",
+    "title_seconds": 2.0
+  }
+}

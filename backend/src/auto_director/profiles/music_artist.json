@@ -1,0 +1,49 @@
+{
+  "niche": "music_artist",
+  "pacing": {
+    "target_cuts_per_min": [15, 25],
+    "silence_trim_aggressive": false,
+    "min_shot_sec": 2.4,
+    "max_shot_sec": 4.0
+  },
+  "transitions": {
+    "default": "cut",
+    "duration_sec": 0.0,
+    "on_topic_change": "cut",
+    "on_punchline": "cut"
+  },
+  "zooms": {
+    "punch_in_scale": 1.2,
+    "punch_in_trigger": "energy_peak",
+    "ken_burns": false
+  },
+  "captions": {
+    "preset_id": "neon",
+    "words_per_line": 3,
+    "position": "center"
+  },
+  "overlays": {
+    "info_cards": false,
+    "lower_thirds": false,
+    "reference_images": "off",
+    "ref_image_at_entity_mentions": false
+  },
+  "broll": {
+    "enabled": false,
+    "source": "off",
+    "density_per_min": 0.0
+  },
+  "audio": {
+    "music_mood": "none",
+    "music_volume_0_to_1": 0.0,
+    "ducking_db": 0.0,
+    "sfx_from_user_library": false
+  },
+  "color": {
+    "lut": "punchy"
+  },
+  "hook": {
+    "title_style": "statement",
+    "title_seconds": 2.0
+  }
+}
