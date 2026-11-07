@@ -4,7 +4,9 @@ Task service - orchestrates task creation and processing workflow.
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict, Any, Optional, Callable
+import asyncio
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 import json
@@ -47,6 +49,22 @@ from ..stream_source import cleanup_stream_path, cleanup_stream_task, seed_strea
 
 logger = logging.getLogger(__name__)
 PROCESSING_CACHE_VERSION = "20260319_grounded_segments_v1"
+
+DEFAULT_CLIP_RENDER_CONCURRENCY = 3
+
+
+def clip_render_concurrency() -> int:
+    """How many clips may render at once (CLIP_RENDER_CONCURRENCY, default 3).
+
+    Rendering is thread-pool ffmpeg work, so clips overlap safely; the bound
+    keeps a many-clip task from saturating the CPU/GPU and the temp disk.
+    Unset, invalid or non-positive values fall back to the default.
+    """
+    try:
+        value = int(os.environ.get("CLIP_RENDER_CONCURRENCY", "").strip())
+    except ValueError:
+        return DEFAULT_CLIP_RENDER_CONCURRENCY
+    return value if value > 0 else DEFAULT_CLIP_RENDER_CONCURRENCY
 
 
 class TaskService(ClipEditingMixin):
@@ -368,6 +386,11 @@ class TaskService(ClipEditingMixin):
         video_path: Optional[Path] = None
         pending_clip_path: Optional[Path] = None
         clips_output_dir = Path(self.config.temp_dir) / "clips"
+        # Concurrent clip renders in flight, and the files they produced that
+        # were committed to the DB. The finally block cancels the former and
+        # removes any rendered file that was never persisted.
+        pending_render_tasks: Dict[int, asyncio.Task] = {}
+        persisted_clip_paths: set = set()
 
         async def check_cancelled():
             if should_cancel and await should_cancel():
@@ -569,6 +592,76 @@ class TaskService(ClipEditingMixin):
             project_niche_override = task_row.get("niche_override")
             broll_session = BRollSession()
 
+            # Clips render concurrently, bounded by CLIP_RENDER_CONCURRENCY.
+            # Rendering is thread-pool ffmpeg work, so positions overlap while
+            # the persistence loop below stays sequential and in plan order:
+            # clip IDs, ordering, checkpoints and SSE notifications are
+            # unchanged. Render outcomes are (clip_info, niche_override) pairs.
+            render_semaphore = asyncio.Semaphore(clip_render_concurrency())
+
+            async def render_segment(
+                position: int, segment: Dict[str, Any]
+            ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+                async with render_semaphore:
+                    # A partial download is a concatenated timeline. Render against
+                    # local timestamps, then store the clip against the source.
+                    localized = localize_segment(segment, time_map) if time_map else segment
+                    try:
+                        niche_override = validate_niche_override(
+                            segment.get("niche_override")
+                        )
+                    except ValueError:
+                        logger.warning(
+                            "Ignoring invalid niche_override on clip %s", position + 1
+                        )
+                        niche_override = None
+                    classifier_niche = (
+                        segment.get("niche")
+                        or segment.get("niche_profile")
+                        or segment.get("classifier_niche")
+                    )
+                    try:
+                        clip_info = await self.video_service.create_single_clip(
+                            video_path,
+                            localized,
+                            position,
+                            clips_output_dir,
+                            font_family,
+                            font_size,
+                            font_color,
+                            caption_template,
+                            output_format,
+                            add_subtitles,
+                            normalized_cleanup_settings,
+                            max_short_side=output_short_side,
+                            max_clip_seconds=clip_duration(clip_length).maximum,
+                            include_broll=include_broll,
+                            broll_session=broll_session,
+                            edl=localized.get("edl"),
+                            niche_override=niche_override,
+                            project_niche_override=project_niche_override,
+                            classifier_niche=classifier_niche,
+                        )
+                    except Exception:
+                        # One clip's render must not take the whole task down.
+                        # create_single_clip normally reports failure as None,
+                        # so this only catches unexpected crashes.
+                        logger.exception(
+                            "Clip %s crashed during render; marking it failed",
+                            position + 1,
+                        )
+                        clip_info = None
+                    return clip_info, niche_override
+
+            render_tasks: Dict[int, asyncio.Task] = {
+                i: asyncio.create_task(render_segment(i, segment))
+                for i, segment in enumerate(segments_to_render)
+                if i + 1 not in completed_positions
+            }
+            # Shared with the outer finally, which cancels and cleans up any
+            # render whose clip was never persisted (cancellation, errors).
+            pending_render_tasks.update(render_tasks)
+
             for i, segment in enumerate(segments_to_render):
                 # Check cancellation
                 await check_cancelled()
@@ -584,44 +677,7 @@ class TaskService(ClipEditingMixin):
                     f"Creating clip {i + 1}/{total_clips}...",
                 )
 
-                # A partial download is a concatenated timeline. Render against
-                # local timestamps, then store the clip against the source.
-                render_segment = localize_segment(segment, time_map) if time_map else segment
-                try:
-                    clip_niche_override = validate_niche_override(
-                        segment.get("niche_override")
-                    )
-                except ValueError:
-                    logger.warning(
-                        "Ignoring invalid niche_override on clip %s", i + 1
-                    )
-                    clip_niche_override = None
-                classifier_niche = (
-                    segment.get("niche")
-                    or segment.get("niche_profile")
-                    or segment.get("classifier_niche")
-                )
-                clip_info = await self.video_service.create_single_clip(
-                    video_path,
-                    render_segment,
-                    i,
-                    clips_output_dir,
-                    font_family,
-                    font_size,
-                    font_color,
-                    caption_template,
-                    output_format,
-                    add_subtitles,
-                    normalized_cleanup_settings,
-                    max_short_side=output_short_side,
-                    max_clip_seconds=clip_duration(clip_length).maximum,
-                    include_broll=include_broll,
-                    broll_session=broll_session,
-                    edl=render_segment.get("edl"),
-                    niche_override=clip_niche_override,
-                    project_niche_override=project_niche_override,
-                    classifier_niche=classifier_niche,
-                )
+                clip_info, clip_niche_override = await render_tasks[i]
                 pending_clip_path = Path(clip_info["path"]) if clip_info else None
                 await check_cancelled()
                 if clip_info is None:
@@ -667,6 +723,7 @@ class TaskService(ClipEditingMixin):
 
                     await check_cancelled()
                 pending_clip_path = None
+                persisted_clip_paths.add(Path(clip_info["path"]))
                 clip_ids_by_order[clip_order] = clip_id
                 completed_positions.add(i + 1)
 
@@ -784,6 +841,29 @@ class TaskService(ClipEditingMixin):
                     logger.exception("Could not publish task failure for %s", task_id)
             raise
         finally:
+            if pending_render_tasks:
+                # Cancel renders nobody will persist (cancellation or an error
+                # part-way through the plan) and remove their orphaned files.
+                # Clips committed to the DB are kept: retries resume from them.
+                for render_task in pending_render_tasks.values():
+                    if not render_task.done():
+                        render_task.cancel()
+                outcomes = await asyncio.gather(
+                    *pending_render_tasks.values(), return_exceptions=True
+                )
+                for outcome in outcomes:
+                    if not (isinstance(outcome, tuple) and outcome[0]):
+                        continue
+                    orphan = Path(outcome[0]["path"])
+                    if orphan in persisted_clip_paths or orphan == pending_clip_path:
+                        continue
+                    try:
+                        orphan.unlink(missing_ok=True)
+                        orphan.with_suffix(".source_map.json").unlink(missing_ok=True)
+                    except OSError:
+                        logger.warning(
+                            "Could not remove unpersisted clip %s", orphan
+                        )
             await run_in_thread(self._cleanup_source_video, video_path, source_type, url)
             if source_type in {"twitch", "kick"}:
                 # Also handles failures before process_video_complete returns a

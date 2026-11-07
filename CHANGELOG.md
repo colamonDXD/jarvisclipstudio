@@ -6,6 +6,7 @@ Add a line here when a pull request changes something a user can see. Use **New*
 
 ## 2026-11-07
 
+- **Improved:** Generations finish much faster: a task's clips now render in parallel (up to 3 at once, adjustable with CLIP_RENDER_CONCURRENCY), and final encodes use the NVIDIA GPU automatically when one is available, falling back to the CPU encoder otherwise (FORCE_CPU_ENCODE=true forces the CPU). ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 - **New:** Choose a content niche before creating clips, with an automatic option when you prefer SupoClip to choose. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 - **New:** Auto-director clips can now finish their audio with background music from your own library (ducked under the voice), sound-effect hits at chosen moments, and a consistent -14 LUFS loudness finish. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 

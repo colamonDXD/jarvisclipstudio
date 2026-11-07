@@ -144,6 +144,13 @@ FINAL_VIDEO_CRF = 19
 
 FINAL_VIDEO_PRESET = "medium"
 
+# NVENC counterpart of the libx264 final pass: p4 is NVENC's balanced
+# quality/speed preset, and CQ runs a few points above CRF for a comparable
+# bitrate on typical sources (CRF 19 -> CQ 22, the value the EDL path used).
+FINAL_VIDEO_NVENC_PRESET = "p4"
+
+FINAL_VIDEO_NVENC_CQ_OFFSET = 3
+
 INTERMEDIATE_CRF = 16
 
 OUTPUT_FPS = 30

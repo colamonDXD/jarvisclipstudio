@@ -6,13 +6,17 @@ from pathlib import Path
 from typing import Tuple
 from ..clip_source_map import normalize_source_ranges
 from ..config import get_config
+from functools import lru_cache
 import json
+import os
 import re
 import subprocess
 from .common import (
     AUDIO_BITRATE,
     CROSSFADE_MAX_SECONDS,
     FINAL_VIDEO_CRF,
+    FINAL_VIDEO_NVENC_CQ_OFFSET,
+    FINAL_VIDEO_NVENC_PRESET,
     FINAL_VIDEO_PRESET,
     INTERMEDIATE_CRF,
     LOUDNORM_FILTER,
@@ -300,17 +304,80 @@ def ffmpeg_escape_filter_path(path: Path) -> str:
     return ffmpeg_escape_filter_value(str(path))
 
 
+@lru_cache(maxsize=1)
+def check_nvenc_available() -> bool:
+    """Return whether this host can actually encode with NVIDIA's H.264 encoder.
+
+    Some FFmpeg builds advertise h264_nvenc even when the host has no usable
+    GPU, so listing the encoder is not enough: a one-frame probe encode
+    decides. The result is cached; the probe runs once per process.
+    """
+    try:
+        result = run_ffmpeg_command(["ffmpeg", "-hide_banner", "-encoders"], timeout=30)
+    except OSError:
+        return False
+    if result.returncode != 0 or "h264_nvenc" not in result.stdout:
+        return False
+    probe = run_ffmpeg_command(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+            "-i", "color=size=64x64:rate=1", "-frames:v", "1",
+            "-c:v", "h264_nvenc", "-f", "null", "-",
+        ],
+        timeout=30,
+    )
+    return probe.returncode == 0
+
+
+def force_cpu_encode() -> bool:
+    """FORCE_CPU_ENCODE=true pins final encodes to libx264 (debugging, CI)."""
+    return os.environ.get("FORCE_CPU_ENCODE", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def build_nvenc_final_video_encode_args(
+    crf: int = FINAL_VIDEO_CRF,
+    fps: int | str = OUTPUT_FPS,
+    level: str = "4.1",
+) -> List[str]:
+    """h264_nvenc args mirroring the libx264 final pass (CFR, H.264 High).
+
+    NVENC has no CRF; its CQ scale runs a few points above x264's CRF for a
+    comparable bitrate, hence the offset. NVENC has no GOP-tuning equivalent
+    of the x264 params below, so the defaults stand.
+    """
+    cq = max(0, min(51, crf + FINAL_VIDEO_NVENC_CQ_OFFSET))
+    return [
+        "-c:v", "h264_nvenc",
+        "-preset", FINAL_VIDEO_NVENC_PRESET,
+        "-rc", "vbr",
+        "-cq", str(cq),
+        "-pix_fmt", "yuv420p",
+        "-profile:v", "high",
+        "-level", level,
+        "-r", str(fps),
+    ]
+
+
 def build_final_video_encode_args(
     crf: int = FINAL_VIDEO_CRF,
     preset: str = FINAL_VIDEO_PRESET,
     fps: int | str = OUTPUT_FPS,
     level: str = "4.1",
 ) -> List[str]:
-    """libx264 args for the quality-determining final pass (CFR, H.264 High).
+    """Args for the quality-determining final pass (CFR, H.264 High).
+
+    This is the single encoder-selection point for every final encode in the
+    pipeline: h264_nvenc when the probe finds a working NVIDIA GPU, libx264
+    otherwise or when FORCE_CPU_ENCODE is set. ``preset`` only applies to
+    the libx264 branch.
 
     Level 4.1 covers 1080p30. Original-format output at 60 fps (or 59.94)
     needs 4.2 or x264 rejects the stream.
     """
+    if not force_cpu_encode() and check_nvenc_available():
+        return build_nvenc_final_video_encode_args(crf=crf, fps=fps, level=level)
     return [
         "-c:v", "libx264",
         "-preset", preset,
