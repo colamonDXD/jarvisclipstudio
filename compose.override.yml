@@ -1,0 +1,49 @@
+services:
+  backend:
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - ANALYSIS_MODELS=${ANALYSIS_MODELS}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+  worker:
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - ANALYSIS_MODELS=${ANALYSIS_MODELS}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+  ai-worker:
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - ANALYSIS_MODELS=${ANALYSIS_MODELS}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}

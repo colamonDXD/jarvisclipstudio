@@ -1,0 +1,29 @@
+model_list:
+  - model_name: clip-fast
+    litellm_params:
+      model: openai/nvidia/nemotron-3-ultra-550b-a55b
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
+  - model_name: or-ultra-free
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+      api_key: os.environ/OPENROUTER_API_KEY
+  - model_name: nim-deepseek
+    litellm_params:
+      model: openai/deepseek-ai/deepseek-v4.1-flash
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
+  - model_name: clip-assured
+    litellm_params:
+      model: groq/openai/gpt-oss-120b
+      api_key: os.environ/GROQ_API_KEY
+  - model_name: groq-20b
+    litellm_params:
+      model: groq/openai/gpt-oss-20b
+      api_key: os.environ/GROQ_API_KEY
+router_settings:
+  fallbacks:
+    - clip-fast: ["or-ultra-free", "nim-deepseek"]
+    - clip-assured: ["groq-20b"]
+  num_retries: 1
+  cooldown_time: 60
