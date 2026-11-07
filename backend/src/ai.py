@@ -40,6 +40,11 @@ MAX_ACCEPTED_CLIP_SECONDS = 60
 TRANSCRIPT_ANALYSIS_CACHE_VERSION = "windowed-rerank-v6"
 TRANSCRIPT_ANALYSIS_MAX_ATTEMPTS = 3
 TRANSCRIPT_ANALYSIS_TIMEOUT_SECONDS = 600
+# Rough English token estimate: transcript text averages about four characters
+# per token. Requests above this budget are split into sequential chunks so a
+# low-TPM provider (for example Groq's 8k free tier) never sees one huge call.
+DEFAULT_TRANSCRIPT_ANALYSIS_MAX_TOKENS = 7000
+CHARS_PER_ESTIMATED_TOKEN = 4
 # Long transcripts are analysed in overlapping windows so every part of the
 # source gets the model's full attention; candidates are then reranked together.
 ANALYSIS_WINDOW_SECONDS = 12 * 60
@@ -1241,6 +1246,102 @@ def split_transcript_into_windows(
     return windows
 
 
+def _estimate_tokens(text: str) -> int:
+    """Estimate request tokens from text length (about four chars per token)."""
+    return max(1, (len(text) + CHARS_PER_ESTIMATED_TOKEN - 1) // CHARS_PER_ESTIMATED_TOKEN)
+
+
+def _window_bounds_from_lines(
+    lines: List[str], fallback_start: int, fallback_end: int
+) -> tuple[int, int]:
+    """Return the absolute start/end carried by a chunk's transcript lines."""
+    starts: List[int] = []
+    ends: List[int] = []
+    for line in lines:
+        match = TRANSCRIPT_SPAN_RE.match(line.strip())
+        if not match:
+            continue
+        try:
+            starts.append(_parse_transcript_timestamp_seconds(match.group("start")))
+            ends.append(_parse_transcript_timestamp_seconds(match.group("end")))
+        except ValueError:
+            continue
+    if starts and ends:
+        return min(starts), max(ends)
+    return fallback_start, fallback_end
+
+
+def _split_window_for_token_budget(
+    window: Dict[str, Any],
+    max_tokens: int,
+    clip_signals: Optional[str] = None,
+    performance_context: Optional[str] = None,
+    clip_length: str = "auto",
+) -> List[Dict[str, Any]]:
+    """Split one duration window at line boundaries until each prompt fits.
+
+    Splitting only happens between transcript spans, so a selected segment can
+    never start or end mid-sentence because of this budget. When the window is
+    already under budget it is returned unchanged, preserving the high-limit
+    single-request path.
+    """
+    transcript = window["transcript"]
+    bounds = (window["start"], window["end"])
+
+    def prompt_for(text: str) -> str:
+        return build_transcript_analysis_prompt(
+            transcript=text,
+            clip_signals=clip_signals,
+            window=bounds,
+            performance_context=performance_context,
+            clip_length=clip_length,
+        )
+
+    if _estimate_tokens(prompt_for(transcript)) <= max_tokens:
+        return [window]
+
+    lines = [line for line in transcript.splitlines() if line.strip()]
+    if len(lines) <= 1:
+        logger.warning(
+            "A transcript window exceeds the %s-token budget but has no line boundary to split on",
+            max_tokens,
+        )
+        return [window]
+
+    chunks: List[List[str]] = []
+    current: List[str] = []
+    for line in lines:
+        candidate = current + [line]
+        if current and _estimate_tokens(prompt_for("\n".join(candidate))) > max_tokens:
+            chunks.append(current)
+            current = [line]
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+
+    if len(chunks) <= 1:
+        logger.warning(
+            "A single transcript line exceeds the %s-token budget; keeping it intact",
+            max_tokens,
+        )
+        return [window]
+
+    result: List[Dict[str, Any]] = []
+    for chunk in chunks:
+        chunk_start, chunk_end = _window_bounds_from_lines(
+            chunk, bounds[0], bounds[1]
+        )
+        result.append(
+            {
+                "start": chunk_start,
+                "end": chunk_end,
+                "transcript": "\n".join(chunk),
+            }
+        )
+    return result
+
+
 def _filter_clip_signals_for_window(
     clip_signals: Optional[str], window_start: int, window_end: int
 ) -> Optional[str]:
@@ -1668,7 +1769,9 @@ async def get_most_relevant_parts_by_transcript(
 
     Short transcripts are analysed in one call. Long ones are split into
     overlapping windows analysed concurrently, then deduplicated and reranked
-    in one comparative call so scores are comparable across windows.
+    in one comparative call so scores are comparable across windows. Windows
+    that would exceed the configured token budget are further split at
+    transcript-line boundaries so each provider request stays small.
     """
     logger.info(
         f"Starting AI analysis of transcript ({len(transcript)} chars)"
@@ -1679,6 +1782,33 @@ async def get_most_relevant_parts_by_transcript(
         transcript_lines = _parse_transcript_lines(transcript)
         transcript_spans = _parse_transcript_spans(transcript)
         windows = split_transcript_into_windows(transcript)
+
+        max_tokens = getattr(
+            get_config(),
+            "transcript_analysis_max_tokens",
+            DEFAULT_TRANSCRIPT_ANALYSIS_MAX_TOKENS,
+        )
+        if max_tokens and max_tokens > 0:
+            budgeted_windows: List[Dict[str, Any]] = []
+            for window in windows:
+                budgeted_windows.extend(
+                    _split_window_for_token_budget(
+                        window,
+                        max_tokens=max_tokens,
+                        clip_signals=_filter_clip_signals_for_window(
+                            clip_signals, window["start"], window["end"]
+                        ),
+                        performance_context=performance_context,
+                        clip_length=clip_length,
+                    )
+                )
+            if len(budgeted_windows) != len(windows):
+                logger.info(
+                    "Split %d transcript window(s) into %d token-budget chunks",
+                    len(windows),
+                    len(budgeted_windows),
+                )
+            windows = budgeted_windows
 
         if len(windows) == 1:
             result = await _run_transcript_analysis(

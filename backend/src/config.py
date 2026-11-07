@@ -34,6 +34,11 @@ class Config:
         self.llm = self._get_runtime_setting("LLM") or self._infer_default_llm()
         # Optional separate model for the cross-window candidate rerank pass.
         self.rerank_llm = self._get_optional_env("RERANK_LLM") or self.llm
+        # Estimated tokens allowed in one transcript-analysis request. Low-TPM
+        # providers (for example Groq's 8k free tier) need this below their cap.
+        self.transcript_analysis_max_tokens = max(
+            1, self._get_int_env("TRANSCRIPT_ANALYSIS_MAX_TOKENS", 7000)
+        )
         self.assembly_ai_api_key = self._get_runtime_setting("ASSEMBLY_AI_API_KEY")
         # An explicit deployment choice overrides the model for every processing mode.
         self.assembly_ai_speech_model = os.getenv("ASSEMBLY_AI_SPEECH_MODEL", "").strip()
