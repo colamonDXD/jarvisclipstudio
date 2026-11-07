@@ -1,16 +1,16 @@
 {
   "niche": "travel_vlog",
   "pacing": {
-    "target_cuts_per_min": [3, 5],
+    "target_cuts_per_min": [12, 20],
     "silence_trim_aggressive": false,
-    "min_shot_sec": 12.0,
-    "max_shot_sec": 20.0
+    "min_shot_sec": 3.0,
+    "max_shot_sec": 5.0
   },
   "transitions": {
-    "default": "cross_dissolve",
-    "duration_sec": 0.8,
-    "on_topic_change": "cross_dissolve",
-    "on_punchline": "cross_dissolve"
+    "default": "wipe",
+    "duration_sec": 0.4,
+    "on_topic_change": "wipe",
+    "on_punchline": "wipe"
   },
   "zooms": {
     "punch_in_scale": 1.08,
@@ -18,7 +18,7 @@
     "ken_burns": true
   },
   "captions": {
-    "preset_id": "cinematic_minimal",
+    "preset_id": "classic_box",
     "words_per_line": 4,
     "position": "bottom"
   },
@@ -44,6 +44,6 @@
   },
   "hook": {
     "title_style": "question",
-    "title_seconds": 4.0
+    "title_seconds": 3.0
   }
 }

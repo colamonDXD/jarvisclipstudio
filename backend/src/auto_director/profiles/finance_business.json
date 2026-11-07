@@ -1,16 +1,16 @@
 {
   "niche": "finance_business",
   "pacing": {
-    "target_cuts_per_min": [6, 9],
+    "target_cuts_per_min": [8, 12],
     "silence_trim_aggressive": false,
-    "min_shot_sec": 6.7,
-    "max_shot_sec": 10.0
+    "min_shot_sec": 5.0,
+    "max_shot_sec": 7.5
   },
   "transitions": {
-    "default": "slide",
-    "duration_sec": 0.25,
+    "default": "hard_cut",
+    "duration_sec": 0.05,
     "on_topic_change": "slide",
-    "on_punchline": "slide"
+    "on_punchline": "hard_cut"
   },
   "zooms": {
     "punch_in_scale": 1.1,
@@ -18,8 +18,8 @@
     "ken_burns": false
   },
   "captions": {
-    "preset_id": "professional_boxed",
-    "words_per_line": 4,
+    "preset_id": "hormozi",
+    "words_per_line": 3,
     "position": "bottom"
   },
   "overlays": {
@@ -43,7 +43,7 @@
     "lut": "none"
   },
   "hook": {
-    "title_style": "statement",
-    "title_seconds": 3.5
+    "title_style": "statistic",
+    "title_seconds": 2.0
   }
 }

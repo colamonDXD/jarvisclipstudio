@@ -1,10 +1,10 @@
 {
   "niche": "meme_comedy",
   "pacing": {
-    "target_cuts_per_min": [10, 15],
+    "target_cuts_per_min": [15, 25],
     "silence_trim_aggressive": true,
-    "min_shot_sec": 4.0,
-    "max_shot_sec": 6.0
+    "min_shot_sec": 2.4,
+    "max_shot_sec": 4.0
   },
   "transitions": {
     "default": "cut",
@@ -44,6 +44,6 @@
   },
   "hook": {
     "title_style": "contrast",
-    "title_seconds": 3.0
+    "title_seconds": 2.0
   }
 }

@@ -1,10 +1,10 @@
 {
   "niche": "podcast_news",
   "pacing": {
-    "target_cuts_per_min": [8, 12],
+    "target_cuts_per_min": [10, 15],
     "silence_trim_aggressive": true,
-    "min_shot_sec": 5.0,
-    "max_shot_sec": 7.5
+    "min_shot_sec": 4.0,
+    "max_shot_sec": 6.0
   },
   "transitions": {
     "default": "hard_cut",
@@ -44,6 +44,6 @@
   },
   "hook": {
     "title_style": "statement",
-    "title_seconds": 3.5
+    "title_seconds": 2.0
   }
 }

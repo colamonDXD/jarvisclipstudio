@@ -1,16 +1,16 @@
 {
   "niche": "gaming",
   "pacing": {
-    "target_cuts_per_min": [7, 10],
-    "silence_trim_aggressive": false,
-    "min_shot_sec": 6.0,
-    "max_shot_sec": 8.5
+    "target_cuts_per_min": [15, 30],
+    "silence_trim_aggressive": true,
+    "min_shot_sec": 2.0,
+    "max_shot_sec": 4.0
   },
   "transitions": {
-    "default": "cut_wipe",
-    "duration_sec": 0.15,
-    "on_topic_change": "cut_wipe",
-    "on_punchline": "cut_wipe"
+    "default": "cut",
+    "duration_sec": 0.0,
+    "on_topic_change": "cut",
+    "on_punchline": "cut"
   },
   "zooms": {
     "punch_in_scale": 1.2,
@@ -37,13 +37,13 @@
     "music_mood": "energetic",
     "music_volume_0_to_1": 0.18,
     "ducking_db": -12.0,
-    "sfx_from_user_library": false
+    "sfx_from_user_library": true
   },
   "color": {
     "lut": "punchy"
   },
   "hook": {
     "title_style": "statement",
-    "title_seconds": 3.5
+    "title_seconds": 2.0
   }
 }

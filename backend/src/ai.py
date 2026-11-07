@@ -392,6 +392,10 @@ CLIP BOUNDARIES — OPENING AND ENDING:
 - Do not start on a one-word answer to a question the clip leaves out ("Catharsis."), or on a conjunction that continues an earlier point ("But the main reason...", "And then...", "So that's why..."); start where the thought stands alone, or include the question or claim it answers
 - Lower hook_score for a segment whose opening still depends on missing context
 
+TRIPLE HOOK (the first 2 seconds):
+- The strongest openings align all three at once: the spoken hook line, a hook_title that works on screen from frame 1, and something visibly changing within the first 2 seconds (a speaker switch, a gesture or reaction, a camera move, a new slide or topic)
+- Prefer start times that land on or just before such a visual change, and lower hook_score when the opening seconds are visually static, even if the words are strong
+
 VISUAL SUITABILITY:
 - The clip is a video. Avoid segments where the speech says the picture is interrupted, unavailable or broken: a technical problem, "these images cannot be shown", "we'll be right back", a frozen or lost stream, a test or placeholder screen
 - Those passages usually play over a still slate or black, so they are not ready-to-post highlights no matter how strong the words are

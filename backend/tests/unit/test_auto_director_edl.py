@@ -13,7 +13,7 @@ def test_load_profile_podcast_news():
     """Test loading podcast_news profile."""
     profile = load_profile("podcast_news")
     assert profile["niche"] == "podcast_news"
-    assert profile["pacing"]["target_cuts_per_min"] == [8, 12]
+    assert profile["pacing"]["target_cuts_per_min"] == [10, 15]
     assert profile["transitions"]["default"] == "hard_cut"
     assert profile["transitions"]["duration_sec"] == 0.05
     assert profile["zooms"]["punch_in_scale"] == 1.25
@@ -23,9 +23,9 @@ def test_load_profile_travel_vlog():
     """Test loading travel_vlog profile."""
     profile = load_profile("travel_vlog")
     assert profile["niche"] == "travel_vlog"
-    assert profile["pacing"]["target_cuts_per_min"] == [3, 5]
-    assert profile["transitions"]["default"] == "cross_dissolve"
-    assert profile["transitions"]["duration_sec"] == 0.8
+    assert profile["pacing"]["target_cuts_per_min"] == [12, 20]
+    assert profile["transitions"]["default"] == "wipe"
+    assert profile["transitions"]["duration_sec"] == 0.4
     assert profile["zooms"]["ken_burns"] is True
 
 
@@ -80,8 +80,8 @@ def test_build_edl_podcast_hard_cut_and_punch_in():
     assert len(ken_burns) == 0
 
 
-def test_build_edl_travel_fade_and_ken_burns():
-    """Travel fixture -> fade 0.8 + ken_burns."""
+def test_build_edl_travel_wipe_and_ken_burns():
+    """Travel fixture -> wipe 0.4 + ken_burns."""
     profile = load_profile("travel_vlog")
 
     clip = {"id": "clip2", "start": 0, "end": 60, "duration": 60}
@@ -94,13 +94,13 @@ def test_build_edl_travel_fade_and_ken_burns():
 
     edl = build_edl(clip, transcript_words, profile, energy_peaks)
 
-    # Check fade transitions (cross_dissolve 0.8s)
+    # Check wipe transitions (wipe 0.4s, the whip-pan family)
     for i, seg in enumerate(edl["segments"]):
         if i == 0:
             assert seg["transition_in"] == "none"
         else:
-            assert seg["transition_in"] == "cross_dissolve"
-            assert seg["transition_duration"] == 0.8
+            assert seg["transition_in"] == "wipe"
+            assert seg["transition_duration"] == 0.4
 
     # Check ken_burns keyframe
     ken_burns = [z for z in edl["zoom_keyframes"] if z["type"] == "ken_burns"]
@@ -268,7 +268,61 @@ def test_hook_settings_from_profile():
     edl = build_edl(clip, transcript_words, profile, energy_peaks)
 
     assert edl["hook"]["title_style"] == "question"
-    assert edl["hook"]["title_seconds"] == 4.0
+    assert edl["hook"]["title_seconds"] == 2.0
+
+
+def test_all_profiles_schema_and_pacing_consistency():
+    """All 8 v2 profiles load, carry the full key structure, and keep the
+    pacing invariant min_shot = 60/hi-cuts, max_shot = 60/lo-cuts."""
+    niches = [
+        "podcast_news", "travel_vlog", "meme_comedy", "gaming",
+        "sports", "education_tutorial", "finance_business", "vlog_lifestyle",
+    ]
+    required_sections = {
+        "pacing", "transitions", "zooms", "captions",
+        "overlays", "broll", "audio", "color", "hook",
+    }
+    # Mirrors TRANSITION_MAP in src/media/edl_render.py: a profile default the
+    # renderer cannot map would silently degrade to a hard concat.
+    renderable_defaults = {"hard_cut", "cut", "none", "cross_dissolve", "fade", "slide", "wipe"}
+
+    for niche in niches:
+        profile = load_profile(niche)
+        assert profile["niche"] == niche
+        assert required_sections <= set(profile.keys()), niche
+        pacing = profile["pacing"]
+        lo, hi = pacing["target_cuts_per_min"]
+        assert 0 < lo < hi, niche
+        assert abs(pacing["min_shot_sec"] - 60 / hi) <= 0.1, niche
+        assert abs(pacing["max_shot_sec"] - 60 / lo) <= 0.1, niche
+        # Viral-grammar hook rule: the hook title never lingers past the
+        # niche's hook window as an intro card (max 3s across all niches).
+        assert profile["hook"]["title_seconds"] <= 3.0, niche
+        assert profile["transitions"]["default"] in renderable_defaults, niche
+
+
+def test_classic_box_caption_template_registered():
+    """S8: the classic box preset exists in the caption-style set."""
+    from src.caption_templates import get_template, get_template_names
+
+    assert "classic_box" in get_template_names()
+    template = get_template("classic_box")
+    assert template["background"] is True
+    assert template["background_color"] == "#00000099"  # 60% black box
+    assert "Serif" in template["font_family"]
+    assert template["animation"] == "fade"  # no karaoke highlight sweep
+
+
+def test_travel_edl_uses_classic_box_preset():
+    """Travel profile v2 flows the classic_box preset into the EDL."""
+    profile = load_profile("travel_vlog")
+
+    clip = {"id": "clip11", "start": 0, "end": 30, "duration": 30}
+    transcript_words = [{"word": "Kyoto", "start": 0, "end": 0.5}]
+    edl = build_edl(clip, transcript_words, profile, [])
+
+    assert edl["captions"]["preset_id"] == "classic_box"
+    assert edl["captions"]["position"] == "bottom"
 
 
 def run_all_tests():
@@ -278,7 +332,7 @@ def run_all_tests():
         ("load_profile_travel_vlog", test_load_profile_travel_vlog),
         ("load_profile_unknown_niche", test_load_profile_unknown_niche),
         ("build_edl_podcast_hard_cut_and_punch_in", test_build_edl_podcast_hard_cut_and_punch_in),
-        ("build_edl_travel_fade_and_ken_burns", test_build_edl_travel_fade_and_ken_burns),
+        ("build_edl_travel_wipe_and_ken_burns", test_build_edl_travel_wipe_and_ken_burns),
         ("no_numbers_in_transcript_zero_info_cards", test_no_numbers_in_transcript_zero_info_cards),
         ("numbers_in_transcript_creates_info_cards", test_numbers_in_transcript_creates_info_cards),
         ("extract_verbatim_quotes_and_numbers", test_extract_verbatim_quotes_and_numbers),
@@ -288,6 +342,9 @@ def run_all_tests():
         ("audio_settings_from_profile", test_audio_settings_from_profile),
         ("color_lut_from_profile", test_color_lut_from_profile),
         ("hook_settings_from_profile", test_hook_settings_from_profile),
+        ("all_profiles_schema_and_pacing_consistency", test_all_profiles_schema_and_pacing_consistency),
+        ("classic_box_caption_template_registered", test_classic_box_caption_template_registered),
+        ("travel_edl_uses_classic_box_preset", test_travel_edl_uses_classic_box_preset),
     ]
 
     passed = 0

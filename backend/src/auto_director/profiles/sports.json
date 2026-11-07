@@ -1,10 +1,10 @@
 {
   "niche": "sports",
   "pacing": {
-    "target_cuts_per_min": [8, 11],
+    "target_cuts_per_min": [12, 20],
     "silence_trim_aggressive": false,
-    "min_shot_sec": 5.5,
-    "max_shot_sec": 7.5
+    "min_shot_sec": 3.0,
+    "max_shot_sec": 5.0
   },
   "transitions": {
     "default": "cut",
@@ -20,7 +20,7 @@
   "captions": {
     "preset_id": "bold_uppercase",
     "words_per_line": 3,
-    "position": "bottom"
+    "position": "center"
   },
   "overlays": {
     "info_cards": true,
@@ -37,13 +37,13 @@
     "music_mood": "energetic",
     "music_volume_0_to_1": 0.2,
     "ducking_db": -10.0,
-    "sfx_from_user_library": false
+    "sfx_from_user_library": true
   },
   "color": {
     "lut": "punchy"
   },
   "hook": {
     "title_style": "statistic",
-    "title_seconds": 3.5
+    "title_seconds": 3.0
   }
 }
