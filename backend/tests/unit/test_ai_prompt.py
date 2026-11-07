@@ -1,7 +1,9 @@
 from types import SimpleNamespace
 
+from pydantic_ai.models.groq import GroqModel
 from pydantic_ai.models.ollama import OllamaModel
 
+from src import ai
 from src.ai import (
     IDEAL_CLIP_MAX_SECONDS,
     IDEAL_CLIP_MIN_SECONDS,
@@ -86,6 +88,33 @@ def test_ollama_llm_builds_native_ollama_model():
     assert isinstance(model, OllamaModel)
     assert model.model_name == "gpt-oss:20b"
     assert model.base_url == "http://ollama.example/v1/"
+
+
+def test_groq_llm_builds_agent_without_unsupported_provider_error(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    runtime_config = SimpleNamespace(
+        llm="groq:llama-3.3-70b-versatile",
+        rerank_llm="groq:llama-3.3-70b-versatile",
+        openai_api_key=None,
+        openrouter_api_key=None,
+        openrouter_fallback_model=None,
+        google_api_key=None,
+        anthropic_api_key=None,
+        ollama_base_url=None,
+        ollama_api_key=None,
+        as_runtime_settings=lambda: {},
+    )
+    monkeypatch.setattr(ai, "get_config", lambda: runtime_config)
+    monkeypatch.setattr(ai, "apply_settings_to_process_env", lambda settings: None)
+    monkeypatch.setattr(ai, "_transcript_agent", None)
+    monkeypatch.setattr(ai, "_transcript_agent_signature", None)
+
+    assert _get_missing_llm_key_error(runtime_config.llm, runtime_config) is None
+
+    agent = ai.get_transcript_agent()
+
+    assert isinstance(agent.model, GroqModel)
+    assert agent.model.model_name == "llama-3.3-70b-versatile"
 
 
 def test_parse_transcript_timestamp_supports_minute_and_hour_formats():

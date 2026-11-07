@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional, Literal
 import asyncio
 import logging
 import math
+import os
 import random
 import re
 
@@ -15,11 +16,13 @@ from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models import Model
 from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models.groq import GroqModel
 from pydantic_ai.models.ollama import OllamaModel
 from pydantic_ai.models.openrouter import OpenRouterModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.profiles.anthropic import AnthropicModelProfile
 from pydantic_ai.providers.anthropic import AnthropicProvider
+from pydantic_ai.providers.groq import GroqProvider
 from pydantic_ai.providers.ollama import OllamaProvider
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic import AliasChoices, BaseModel, Field, field_validator
@@ -438,7 +441,7 @@ def build_transcript_system_prompt(clip_length: str = "auto") -> str:
 _transcript_agent: Optional[Agent[None, TranscriptAnalysis]] = None
 _transcript_agent_signature: Optional[tuple[str | None, ...]] = None
 
-SUPPORTED_LLM_PROVIDERS = {"google", "google-gla", "openai", "openrouter", "anthropic", "ollama"}
+SUPPORTED_LLM_PROVIDERS = {"google", "google-gla", "openai", "openrouter", "anthropic", "groq", "ollama"}
 
 
 def _split_llm_name(model_name: str) -> tuple[str, str | None]:
@@ -456,7 +459,7 @@ def _get_missing_llm_key_error(model_name: str, runtime_config: Config) -> Optio
     if provider not in SUPPORTED_LLM_PROVIDERS:
         return (
             f"Unsupported LLM provider '{provider}'. "
-            "Use google-gla:*, openai:*, openrouter:*, anthropic:*, or ollama:*."
+            "Use google-gla:*, openai:*, openrouter:*, anthropic:*, groq:*, or ollama:*."
         )
 
     if not provider_model_name:
@@ -487,6 +490,12 @@ def _get_missing_llm_key_error(model_name: str, runtime_config: Config) -> Optio
         return (
             "Selected LLM provider is Anthropic, but ANTHROPIC_API_KEY is not set. "
             "Set ANTHROPIC_API_KEY or choose another provider with a matching API key."
+        )
+
+    if provider == "groq" and not os.getenv("GROQ_API_KEY"):
+        return (
+            "Selected LLM provider is Groq, but GROQ_API_KEY is not set. "
+            "Set GROQ_API_KEY or choose another provider with a matching API key."
         )
 
     if provider == "ollama":
@@ -541,6 +550,12 @@ def _build_transcript_model(
                 "max_tokens": 8192,
             },
         )
+    if provider == "groq":
+        return GroqModel(
+            provider_model_name,
+            provider=GroqProvider(api_key=os.getenv("GROQ_API_KEY")),
+        )
+
     if provider != "ollama":
         return model_name
 
