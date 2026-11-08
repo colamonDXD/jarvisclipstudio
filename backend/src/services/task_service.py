@@ -46,7 +46,10 @@ from ..auto_director.niche import (
     validate_niche_override,
 )
 from ..clip_source_map import load_clip_caption_settings
+from ..auto_director.edl import load_profile
+from ..media.clip_qc import ClipQcContext, run_clip_qc
 from ..media.ffmpeg import check_nvenc_available
+from ..media.timeline import parse_timestamp_to_seconds
 from ..media_storage import MediaStorage, media_work
 from ..utils.async_helpers import run_in_thread
 from ..repositories.media_repository import queue_delete, guard_source_creation
@@ -359,6 +362,269 @@ class TaskService(ClipEditingMixin):
 
     def _task_run_guard(self, task_id: str):
         return task_run_guard(self.db, task_id)
+
+    async def _qc_persisted_clip(
+        self,
+        *,
+        task_id: str,
+        clip_id: str,
+        segment: Dict[str, Any],
+        clip_niche_override: Optional[str],
+        project_niche_override: Optional[str],
+        output_format: str,
+        output_short_side: Optional[int],
+        music_override: Optional[str],
+    ) -> None:
+        """Run AI quality control over one freshly persisted clip.
+
+        Stores the QC report on the clip row. A hard failure (missing /
+        corrupt file, wrong duration, wrong resolution, all-black,
+        frozen-and-silent) earns exactly one re-render through the Lane-5
+        path — same niche, same music pick — and a second QC pass; the clip
+        ships either way, flagged if it is still bad. QC must never fail
+        the task: unexpected QC errors land on the clip as qc_status
+        "error" and processing continues. Cancellation still propagates.
+        """
+        try:
+            await self._qc_persisted_clip_inner(
+                task_id=task_id,
+                clip_id=clip_id,
+                segment=segment,
+                clip_niche_override=clip_niche_override,
+                project_niche_override=project_niche_override,
+                output_format=output_format,
+                output_short_side=output_short_side,
+                music_override=music_override,
+            )
+        except TaskCancelled:
+            raise
+        except Exception:
+            logger.exception(
+                "Clip QC crashed for clip %s of task %s; shipping the clip "
+                "with qc_status=error",
+                clip_id,
+                task_id,
+            )
+            try:
+                await self.clip_repo.update_clip_qc(
+                    self.db,
+                    clip_id,
+                    "error",
+                    {
+                        "version": 1,
+                        "status": "error",
+                        "hard_fail": False,
+                        "checks": [],
+                        "detail": "QC raised an unexpected error; see worker logs",
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "Could not store the QC error state for clip %s", clip_id
+                )
+
+    async def _qc_persisted_clip_inner(
+        self,
+        *,
+        task_id: str,
+        clip_id: str,
+        segment: Dict[str, Any],
+        clip_niche_override: Optional[str],
+        project_niche_override: Optional[str],
+        output_format: str,
+        output_short_side: Optional[int],
+        music_override: Optional[str],
+    ) -> None:
+        clip = await self.clip_repo.get_clip_by_id(self.db, clip_id)
+        if not clip:
+            return
+        effective_niche = resolve_effective_profile(
+            clip_niche_override,
+            project_niche_override,
+            segment.get("niche")
+            or segment.get("niche_profile")
+            or segment.get("classifier_niche"),
+        )
+        # Music expectation, mirroring how the render itself decided: an
+        # explicit user pick always counts; otherwise the effective
+        # profile's mood counts when it names a track at audible volume.
+        music_expected = False
+        music_label: Optional[str] = None
+        if music_override:
+            music_expected = True
+            music_label = music_override
+        else:
+            try:
+                profile = load_profile(effective_niche)
+                audio = profile.get("audio") or {}
+                mood = str(audio.get("music_mood") or "none").strip()
+                volume = float(audio.get("music_volume_0_to_1") or 0.0)
+                if mood and mood.lower() != "none" and volume > 0:
+                    music_expected = True
+                    music_label = f"{mood} (profile mood track)"
+            except Exception:
+                logger.warning(
+                    "QC could not load profile %s for the music expectation",
+                    effective_niche,
+                    exc_info=True,
+                )
+
+        sibling_rows = await self.clip_repo.get_clips_by_task(self.db, task_id)
+        context = self._build_qc_context(
+            clip,
+            sibling_rows,
+            output_format=output_format,
+            output_short_side=output_short_side,
+            music_expected=music_expected,
+            music_label=music_label,
+        )
+        local_path = await run_in_thread(
+            MediaStorage().local_path, clip["file_path"]
+        )
+        report = await run_in_thread(run_clip_qc, local_path, context)
+        report["attempts"] = 1
+        await self.clip_repo.update_clip_qc(
+            self.db, clip_id, report["status"], report
+        )
+        self._log_qc_result(task_id, clip, report)
+        if not report.get("hard_fail"):
+            return
+
+        logger.warning(
+            "Clip %s of task %s failed QC (%s); re-rendering once as %s",
+            clip_id,
+            task_id,
+            ", ".join(
+                entry["name"]
+                for entry in report.get("checks", [])
+                if entry.get("status") == "fail"
+            ),
+            effective_niche,
+        )
+        try:
+            # The edit-transaction guard refuses user edits while a task is
+            # processing; the pipeline itself owns this task right now, so
+            # enter the processing variant and let the Lane-5 re-render run
+            # inside it (its own guard nests on the same task).
+            async with task_edit_transaction(self.db, task_id, processing=True):
+                await self.rerender_clip(
+                    task_id,
+                    clip_id,
+                    effective_niche,
+                    music_override=music_override,
+                )
+        except TaskCancelled:
+            raise
+        except Exception:
+            logger.exception(
+                "QC re-render failed for clip %s of task %s; keeping the "
+                "flagged original render",
+                clip_id,
+                task_id,
+            )
+            report = {**report, "retry": {"attempted": True, "succeeded": False}}
+            await self.clip_repo.update_clip_qc(
+                self.db, clip_id, report["status"], report
+            )
+            return
+
+        refreshed = await self.clip_repo.get_clip_by_id(self.db, clip_id)
+        if not refreshed:
+            return
+        context = self._build_qc_context(
+            refreshed,
+            sibling_rows,
+            output_format=output_format,
+            output_short_side=output_short_side,
+            music_expected=music_expected,
+            music_label=music_label,
+        )
+        local_path = await run_in_thread(
+            MediaStorage().local_path, refreshed["file_path"]
+        )
+        report = await run_in_thread(run_clip_qc, local_path, context)
+        report["attempts"] = 2
+        report["retry"] = {"attempted": True, "succeeded": True}
+        await self.clip_repo.update_clip_qc(
+            self.db, clip_id, report["status"], report
+        )
+        self._log_qc_result(task_id, refreshed, report)
+
+    @staticmethod
+    def _build_qc_context(
+        clip: Dict[str, Any],
+        sibling_rows: Any,
+        *,
+        output_format: str,
+        output_short_side: Optional[int],
+        music_expected: bool,
+        music_label: Optional[str],
+    ) -> ClipQcContext:
+        def _seconds(value: Any) -> Optional[float]:
+            if value is None or value == "":
+                return None
+            return parse_timestamp_to_seconds(str(value))
+
+        siblings = []
+        for row in sibling_rows or []:
+            if row.get("id") == clip.get("id"):
+                continue
+            sha256 = None
+            raw_report = row.get("qc_report")
+            if raw_report:
+                try:
+                    parsed = (
+                        json.loads(raw_report)
+                        if isinstance(raw_report, str)
+                        else raw_report
+                    )
+                    sha256 = (parsed.get("file") or {}).get("sha256")
+                except (ValueError, AttributeError):
+                    sha256 = None
+            siblings.append(
+                {
+                    "start": _seconds(row.get("start_time")),
+                    "end": _seconds(row.get("end_time")),
+                    "sha256": sha256,
+                    "label": f"clip {row.get('clip_order')}",
+                }
+            )
+        return ClipQcContext(
+            expected_duration=clip.get("duration"),
+            output_format=output_format,
+            max_short_side=output_short_side,
+            source_start=_seconds(clip.get("start_time")),
+            source_end=_seconds(clip.get("end_time")),
+            music_expected=music_expected,
+            music_label=music_label,
+            siblings=tuple(siblings),
+        )
+
+    @staticmethod
+    def _log_qc_result(
+        task_id: str, clip: Dict[str, Any], report: Dict[str, Any]
+    ) -> None:
+        """Leave a per-clip QC trail in the worker log next to the report."""
+        flagged = [
+            entry
+            for entry in report.get("checks", [])
+            if entry.get("status") in {"warn", "fail"}
+        ]
+        if not flagged:
+            logger.info(
+                "QC pass for clip %s of task %s", clip.get("id"), task_id
+            )
+            return
+        for entry in flagged:
+            log = logger.error if entry.get("status") == "fail" else logger.warning
+            log(
+                "QC %s for clip %s of task %s [%s]: %s",
+                entry.get("status"),
+                clip.get("id"),
+                task_id,
+                entry.get("name"),
+                entry.get("detail"),
+            )
 
     async def _seed_stream_source(self, task_id: str) -> None:
         """Reuse the preflight's length and any cheap actor result in the worker."""
@@ -743,6 +1009,21 @@ class TaskService(ClipEditingMixin):
                     await save_checkpoint({"completed_positions": sorted(completed_positions | {i + 1})})
 
                     await check_cancelled()
+                # AI quality control: inspect the rendered file, store the
+                # report on the clip, and give a hard failure exactly one
+                # re-render through the Lane-5 path before flagging it. QC
+                # never fails the task — its own errors land on the clip as
+                # qc_status "error" and processing continues.
+                await self._qc_persisted_clip(
+                    task_id=task_id,
+                    clip_id=clip_id,
+                    segment=segment,
+                    clip_niche_override=clip_niche_override,
+                    project_niche_override=project_niche_override,
+                    output_format=output_format,
+                    output_short_side=output_short_side,
+                    music_override=project_music_override,
+                )
                 pending_clip_path = None
                 persisted_clip_paths.add(Path(clip_info["path"]))
                 clip_ids_by_order[clip_order] = clip_id

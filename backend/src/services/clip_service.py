@@ -338,6 +338,7 @@ class ClipEditingMixin:
         niche_override: str,
         caption_template: Optional[str] = None,
         transition: Optional[str] = None,
+        music_override: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Re-render one clip with a different niche profile.
 
@@ -457,6 +458,13 @@ class ClipEditingMixin:
                 target_niche,
                 transition,
             )
+            if music_override:
+                # Mirror the main pipeline (VideoService.build_pipeline_edl):
+                # an explicit user track beats the profile's mood, including
+                # the audible defaults for otherwise-silent profiles.
+                from ..media.music_library import apply_music_override
+
+                apply_music_override(edl, music_override)
             effective_caption_template = (
                 caption_template or task.get("caption_template") or "default"
             )

@@ -153,7 +153,7 @@ class ClipRepository:
                         SELECT id, filename, file_path, start_time, end_time, duration,
                                text, relevance_score, reasoning, clip_order, created_at,
                                virality_score, hook_score, engagement_score, value_score, shareability_score, hook_type,
-                               hook_title, niche_override
+                               hook_title, niche_override, qc_status, qc_report
                         FROM generated_clips
                         WHERE task_id = :task_id
                         ORDER BY clip_order ASC
@@ -198,6 +198,8 @@ class ClipRepository:
                     "hook_type": getattr(row, "hook_type", None),
                     "hook_title": getattr(row, "hook_title", None),
                     "niche_override": getattr(row, "niche_override", None),
+                    "qc_status": getattr(row, "qc_status", None),
+                    "qc_report": getattr(row, "qc_report", None),
                 }
             )
 
@@ -264,7 +266,7 @@ class ClipRepository:
                         SELECT id, task_id, filename, file_path, start_time, end_time, duration,
                                text, relevance_score, reasoning, clip_order,
                                virality_score, hook_score, engagement_score, value_score, shareability_score, hook_type,
-                               hook_title, niche_override, created_at
+                               hook_title, niche_override, qc_status, qc_report, created_at
                         FROM generated_clips
                         WHERE id = :clip_id
                         """
@@ -309,6 +311,8 @@ class ClipRepository:
             "hook_type": getattr(row, "hook_type", None),
             "hook_title": getattr(row, "hook_title", None),
             "niche_override": getattr(row, "niche_override", None),
+            "qc_status": getattr(row, "qc_status", None),
+            "qc_report": getattr(row, "qc_report", None),
             "created_at": row.created_at.isoformat(),
             "video_url": f"/tasks/{row.task_id}/clips/{row.id}/file",
         }
@@ -375,6 +379,34 @@ class ClipRepository:
                 """
             ),
             {"clip_id": clip_id, "niche_override": niche_override},
+        )
+        await commit_unless_editing(db)
+
+    @staticmethod
+    async def update_clip_qc(
+        db: AsyncSession,
+        clip_id: str,
+        qc_status: Optional[str],
+        qc_report: Optional[Dict[str, Any]],
+    ) -> None:
+        """Store the AI quality-control verdict and evidence report on a clip."""
+        import json
+
+        await db.execute(
+            sa_text(
+                """
+                UPDATE generated_clips
+                SET qc_status = :qc_status,
+                    qc_report = :qc_report,
+                    updated_at = NOW()
+                WHERE id = :clip_id
+                """
+            ),
+            {
+                "clip_id": clip_id,
+                "qc_status": qc_status,
+                "qc_report": json.dumps(qc_report) if qc_report is not None else None,
+            },
         )
         await commit_unless_editing(db)
 

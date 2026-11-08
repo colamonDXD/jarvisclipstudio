@@ -330,6 +330,10 @@ class GeneratedClip(Base):
     niche_override: Mapped[Optional[str]] = mapped_column(
         String(40), nullable=True
     )
+    # AI quality-control verdict for the rendered file (pass/warn/fail/error)
+    # plus the JSON evidence report, written by the pipeline QC seam.
+    qc_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    qc_report: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
