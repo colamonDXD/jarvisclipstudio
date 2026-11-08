@@ -37,6 +37,7 @@ import { CLIP_LENGTHS, isClipLength, type ClipLength } from "@/lib/clip-duration
 import { cn } from "@/lib/utils";
 import { FontSelectOption, type FontOption } from "@/components/font-select-option";
 import { NICHE_OPTIONS, type NicheOverride } from "@/lib/niches";
+import { MusicSelect } from "@/components/music-select";
 
 interface CaptionTemplate {
   id: string;
@@ -107,6 +108,7 @@ export default function HomeApp() {
   const [removeFillerWords, setRemoveFillerWords] = useState(true);
   const [filteredWords, setFilteredWords] = useState("");
   const [nicheOverride, setNicheOverride] = useState<NicheOverride | null>(null);
+  const [musicOverride, setMusicOverride] = useState<string | null>(null);
 
   const [recent, setRecent] = useState<GenerationSummary[] | null>(null);
   const [billingSummary, updateBillingSummary] = useBillingSummary(Boolean(session?.user?.id));
@@ -338,6 +340,8 @@ export default function HomeApp() {
           remove_filler_words: removeFillerWords,
           filtered_words: normalizedFilteredWords,
           niche_override: nicheOverride,
+          // Omit for Auto so the profile's mood keeps choosing, as before.
+          ...(musicOverride ? { music_override: musicOverride } : {}),
         }),
       });
 
@@ -659,6 +663,8 @@ export default function HomeApp() {
                   {NICHE_OPTIONS.map((niche) => <SelectItem key={niche.value} value={niche.value}>{niche.label}</SelectItem>)}
                 </SelectContent>
               </Select>
+
+              <MusicSelect value={musicOverride} onChange={setMusicOverride} disabled={controlsDisabled} />
 
               {brollAvailable && (
                 // Icon-only so the desktop composer stays on one row.

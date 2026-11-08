@@ -199,6 +199,11 @@ class Task(Base):
     niche_override: Mapped[Optional[str]] = mapped_column(
         String(40), nullable=True
     )
+    # Explicit background-music choice (a music-library filename); NULL
+    # means the niche profile's mood picks the track.
+    music_override: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
     started_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

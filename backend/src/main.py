@@ -187,6 +187,7 @@ def create_app(
     app.include_router(admin_router)
 
     from .api.routes.media import router as media_router
+    from .api.routes.music import router as music_router
     from .api.routes.feedback import router as feedback_router
     from .api.routes.billing import router as billing_router
     from .api.routes.api_keys import router as api_keys_router
@@ -196,6 +197,7 @@ def create_app(
     from .api.routes.feature_flags import router as feature_flags_router
 
     app.include_router(media_router)
+    app.include_router(music_router)
     app.include_router(feedback_router)
     app.include_router(billing_router)
     app.include_router(api_keys_router)

@@ -245,6 +245,7 @@ class TaskService(ClipEditingMixin):
         include_broll: bool = False,
         processing_mode: str = "fast",
         niche_override: Optional[str] = None,
+        music_override: Optional[str] = None,
         source_duration_seconds: Optional[int] = None,
         upload_request_key: Optional[str] = None,
     ) -> str:
@@ -304,6 +305,7 @@ class TaskService(ClipEditingMixin):
             include_broll=include_broll,
             processing_mode=processing_mode,
             niche_override=niche_override,
+            music_override=music_override,
             source_duration_seconds=source_duration_seconds,
             charge_minutes=self.config.monetization_enabled,
         )
@@ -594,6 +596,7 @@ class TaskService(ClipEditingMixin):
             task_row = await self.task_repo.get_task_by_id(self.db, task_id) or {}
             include_broll = bool(task_row.get("include_broll"))
             project_niche_override = task_row.get("niche_override")
+            project_music_override = task_row.get("music_override")
             broll_session = BRollSession()
 
             # Clips render concurrently, bounded by CLIP_RENDER_CONCURRENCY.
@@ -645,6 +648,7 @@ class TaskService(ClipEditingMixin):
                             niche_override=niche_override,
                             project_niche_override=project_niche_override,
                             classifier_niche=classifier_niche,
+                            music_override=project_music_override,
                         )
                     except Exception:
                         # One clip's render must not take the whole task down.

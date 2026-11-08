@@ -35,6 +35,7 @@ class TaskRepository:
         include_broll: bool = False,
         processing_mode: str = "fast",
         niche_override: Optional[str] = None,
+        music_override: Optional[str] = None,
         source_duration_seconds: Optional[int] = None,
         charge_minutes: bool = False,
     ) -> str:
@@ -47,12 +48,12 @@ class TaskRepository:
                     INSERT INTO tasks (
                         id, user_id, source_id, status, font_family, font_size, font_color,
                         caption_template, include_broll, processing_mode, niche_override,
-                        source_duration_seconds, created_at, updated_at
+                        music_override, source_duration_seconds, created_at, updated_at
                     )
                     VALUES (
                         :task_id, :user_id, :source_id, :status, :font_family, :font_size, :font_color,
                         :caption_template, :include_broll, :processing_mode, :niche_override,
-                        :source_duration_seconds, NOW(), NOW()
+                        :music_override, :source_duration_seconds, NOW(), NOW()
                     )
                     RETURNING id
                 """),
@@ -68,6 +69,7 @@ class TaskRepository:
                     "include_broll": include_broll,
                     "processing_mode": processing_mode,
                     "niche_override": niche_override,
+                    "music_override": music_override,
                     "source_duration_seconds": source_duration_seconds,
                 },
             )
@@ -177,6 +179,7 @@ class TaskRepository:
             "include_broll": getattr(row, "include_broll", False),
             "processing_mode": getattr(row, "processing_mode", "fast"),
             "niche_override": getattr(row, "niche_override", None),
+            "music_override": getattr(row, "music_override", None),
             "cache_hit": getattr(row, "cache_hit", False),
             "error_code": getattr(row, "error_code", None),
             "stage_timings_json": getattr(row, "stage_timings_json", None),
@@ -426,6 +429,7 @@ class TaskRepository:
                     "status": row.status,
                     "processing_mode": getattr(row, "processing_mode", "fast"),
                     "niche_override": getattr(row, "niche_override", None),
+                    "music_override": getattr(row, "music_override", None),
                     "completion_notification_sent_at": getattr(
                         row, "completion_notification_sent_at", None
                     ),

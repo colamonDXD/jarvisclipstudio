@@ -75,6 +75,15 @@
   "noCaptions": "Tanpa caption",
   "broll": "B-roll",
   "brollHint": "Menambahkan stok video dari Pexels saat pembicara menyebut sesuatu yang bisa ditampilkan",
+  "music": {
+    "label": "Musik",
+    "auto": "Otomatis",
+    "customMusic": "Musik kustom…",
+    "uploading": "Mengunggah…",
+    "uploadFailed": "Tidak dapat mengunggah file itu",
+    "preview": "Pratinjau {name}",
+    "stopPreview": "Hentikan pratinjau"
+  },
   "cleanup": "Pembersihan",
   "cleanupTitle": "Pembersihan clip",
   "cleanupBody": "Rapatkan jeda kosong dan potong suara pengisi saat render.",

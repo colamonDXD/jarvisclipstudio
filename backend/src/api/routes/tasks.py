@@ -53,6 +53,7 @@ from ...stream_source import (
 )
 from ...font_registry import is_font_accessible
 from ...auto_director.niche import validate_niche_override
+from ...media.music_library import validate_music_override
 from ...clip_duration import normalize_clip_length, validate_clip_length
 from ...clip_cleanup import (
     new_task_cleanup_settings,
@@ -542,6 +543,10 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
         niche_override = validate_niche_override(data.get("niche_override"))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
+    try:
+        music_override = validate_music_override(data.get("music_override"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     cleanup_settings = new_task_cleanup_settings(data)
     if not raw_source or not raw_source.get("url"):
         raise HTTPException(status_code=400, detail="Source URL is required")
@@ -558,6 +563,7 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
             "include_broll": include_broll,
             "processing_mode": processing_mode,
             "niche_override": niche_override,
+            "music_override": music_override,
             "output_format": output_format,
             "add_subtitles": add_subtitles,
             "clip_length": clip_length,
@@ -622,6 +628,7 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
                 include_broll=include_broll,
                 processing_mode=processing_mode,
                 niche_override=niche_override,
+                music_override=music_override,
                 source_duration_seconds=math.ceil(duration_seconds),
                 upload_request_key=upload_request_key,
             )

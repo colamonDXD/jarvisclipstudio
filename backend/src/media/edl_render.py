@@ -231,6 +231,22 @@ def _resolve_asset_file(folder: Path, name: str) -> Optional[Path]:
     return None
 
 
+def _resolve_user_music_file(name: str) -> Optional[Path]:
+    """Resolve a music name against the user-uploaded music folder.
+
+    The bundled library (``assets/music``) always wins; this is the
+    second stop for profiles and per-task overrides that name a track
+    the user uploaded through the music library API.
+    """
+    try:
+        from .music_library import user_music_dir
+
+        folder = user_music_dir()
+    except Exception:
+        return None
+    return _resolve_asset_file(folder, name)
+
+
 def _rendered_duration(edl: dict[str, Any]) -> float:
     """Total output duration of an EDL, mirroring build_edl_filter_graph's joins."""
     segments = edl.get("segments") or []
@@ -273,14 +289,25 @@ def build_edl_audio_graph(edl: dict[str, Any], first_input_index: int, assets_di
     if track_name and track_name.lower() != "none" and volume > 0:
         music_path = _resolve_asset_file(assets / "music", track_name)
         if music_path is None:
+            music_path = _resolve_user_music_file(track_name)
+        if music_path is None:
             # The profile asked for music and none resolved: say so loudly,
-            # naming the track, or a missing/renamed library file is
-            # indistinguishable from a profile that never wanted music.
+            # naming the track and both library locations, or a
+            # missing/renamed library file is indistinguishable from a
+            # profile that never wanted music.
+            try:
+                from .music_library import user_music_dir
+
+                user_music = str(user_music_dir())
+            except Exception:
+                user_music = "<user music folder>"
             logger.warning(
                 "EDL expects music %r but no audio plan was built — no file "
-                "matching it was found in %s; check assets/music",
+                "matching it was found in %s or in the user music folder %s; "
+                "check assets/music and the uploaded-music library",
                 track_name,
                 assets / "music",
+                user_music,
             )
 
     sfx_events: list[tuple[Path, float, float]] = []

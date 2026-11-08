@@ -732,6 +732,7 @@ class VideoService:
         project_niche_override: Optional[str] = None,
         classifier_niche: Optional[str] = None,
         duration: Optional[float] = None,
+        music_override: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Build the auto-director EDL for a main-pipeline clip, or None.
 
@@ -791,7 +792,15 @@ class VideoService:
                 except (TypeError, ValueError):
                     word_start, word_end = 0.0, 0.0
                 words.append({"word": text, "start": word_start, "end": word_end})
-            return build_edl(clip, words, profile, [])
+            edl = build_edl(clip, words, profile, [])
+            if music_override:
+                # A track the user picked in the create bar beats the
+                # profile's mood; silent profiles get audible defaults so
+                # the choice actually plays (see music_library).
+                from ..media.music_library import apply_music_override
+
+                apply_music_override(edl, music_override)
+            return edl
         except Exception:
             logger.warning(
                 "Could not build EDL for clip; rendering without it", exc_info=True
@@ -816,6 +825,7 @@ class VideoService:
         include_broll: bool = False,
         broll_session: Optional[BRollSession] = None,
         edl: Optional[Dict[str, Any]] = None,
+        music_override: Optional[str] = None,
         niche_override: Optional[str] = None,
         project_niche_override: Optional[str] = None,
         classifier_niche: Optional[str] = None,
@@ -932,6 +942,7 @@ class VideoService:
                     project_niche_override,
                     classifier_niche,
                     duration=rendered_ranges_duration(keep_ranges),
+                    music_override=music_override,
                 )
 
             success = await run_in_thread(

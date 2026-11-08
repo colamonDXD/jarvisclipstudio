@@ -75,6 +75,15 @@
   "noCaptions": "Sem legendas",
   "broll": "B-roll",
   "brollHint": "Adiciona imagens de banco do Pexels quando quem fala cita algo que dá para mostrar",
+  "music": {
+    "label": "Música",
+    "auto": "Automático",
+    "customMusic": "Música personalizada…",
+    "uploading": "Enviando…",
+    "uploadFailed": "Não foi possível enviar esse arquivo",
+    "preview": "Ouvir {name}",
+    "stopPreview": "Parar prévia"
+  },
   "cleanup": "Limpeza",
   "cleanupTitle": "Limpeza do clipe",
   "cleanupBody": "Encurta os silêncios e corta sons de preenchimento na renderização.",

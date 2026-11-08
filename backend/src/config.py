@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 import math
 import os
+from pathlib import Path
 
 from .runtime_settings import get_cached_setting, setting_prefers_admin
 
@@ -134,6 +135,13 @@ class Config:
         self.clip_duration = int(os.getenv("CLIP_DURATION", "30"))  # seconds
 
         self.temp_dir = os.getenv("TEMP_DIR", "temp")
+        # User-uploaded background music. Defaults under the shared temp
+        # tree (the Docker `uploads` volume) so backend, worker and
+        # ai-worker all see uploads at the same path; USER_MUSIC_DIR
+        # overrides it for non-Docker deployments.
+        self.user_music_dir = os.getenv("USER_MUSIC_DIR") or str(
+            Path(self.temp_dir) / "user_music"
+        )
         self.media_storage = os.getenv("MEDIA_STORAGE", "local").strip().lower()
         if self.media_storage not in {"local", "s3"}:
             raise ValueError("MEDIA_STORAGE must be local or s3")

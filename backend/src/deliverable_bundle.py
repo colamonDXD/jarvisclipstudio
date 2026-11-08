@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from .media.edl_render import build_drawtext_filter
 from .media.ffmpeg import run_ffmpeg_command
+from .media.music_library import music_credit_line
 
 
 def _peak_timestamp(edl: Mapping[str, Any] | None) -> float:
@@ -130,7 +131,14 @@ def write_deliverable_bundle(
     )
     if result.returncode != 0:
         raise RuntimeError("Could not create deliverable cover image")
-    (target / "post.txt").write_text(_post_text(llm_output, hook_title), encoding="utf-8")
+    post_text = _post_text(llm_output, hook_title)
+    # Licence hygiene: when the clip used an exact library track that a
+    # CREDITS.json manifest covers, the post copy carries the credit line.
+    # No manifest (or no exact track) leaves post.txt byte-identical.
+    credit = music_credit_line(edl)
+    if credit:
+        post_text = f"{post_text}Music: {credit}\n"
+    (target / "post.txt").write_text(post_text, encoding="utf-8")
 
     # Logging only: these files describe what the render used and never feed
     # back into how the clip is produced.

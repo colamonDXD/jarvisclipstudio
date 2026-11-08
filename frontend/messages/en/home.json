@@ -75,6 +75,15 @@
   "noCaptions": "No captions",
   "broll": "B-roll",
   "brollHint": "Adds stock footage from Pexels where the speaker names something you can show",
+  "music": {
+    "label": "Music",
+    "auto": "Auto",
+    "customMusic": "Custom music…",
+    "uploading": "Uploading…",
+    "uploadFailed": "Could not upload that file",
+    "preview": "Preview {name}",
+    "stopPreview": "Stop preview"
+  },
   "cleanup": "Cleanup",
   "cleanupTitle": "Clip cleanup",
   "cleanupBody": "Tighten dead air and cut filler sounds while rendering.",

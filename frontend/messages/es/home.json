@@ -75,6 +75,15 @@
   "noCaptions": "Sin subtítulos",
   "broll": "B-roll",
   "brollHint": "Añade metraje de archivo de Pexels cuando se menciona algo que se puede mostrar",
+  "music": {
+    "label": "Música",
+    "auto": "Automático",
+    "customMusic": "Música personalizada…",
+    "uploading": "Subiendo…",
+    "uploadFailed": "No se pudo subir ese archivo",
+    "preview": "Escuchar {name}",
+    "stopPreview": "Detener vista previa"
+  },
   "cleanup": "Limpieza",
   "cleanupTitle": "Limpieza del clip",
   "cleanupBody": "Reduce los silencios y corta sonidos de relleno al renderizar.",

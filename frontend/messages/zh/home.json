@@ -75,6 +75,15 @@
   "noCaptions": "无字幕",
   "broll": "B-roll 素材",
   "brollHint": "在说话者提到可展示的事物时，自动插入 Pexels 素材视频",
+  "music": {
+    "label": "音乐",
+    "auto": "自动",
+    "customMusic": "自定义音乐…",
+    "uploading": "上传中…",
+    "uploadFailed": "无法上传该文件",
+    "preview": "试听 {name}",
+    "stopPreview": "停止试听"
+  },
   "cleanup": "清理",
   "cleanupTitle": "片段清理",
   "cleanupBody": "渲染时收紧空白，并切掉填充音。",
