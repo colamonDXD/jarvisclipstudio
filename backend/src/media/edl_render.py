@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .common import LOUDNORM_FILTER, OUTPUT_FPS, logger
-from .ffmpeg import build_audio_output_args, build_final_video_encode_args, crossfade_fade_for_ranges, run_ffmpeg_command, subtitles_filter_fragment
+from .ffmpeg import build_audio_output_args, build_final_video_encode_args, crossfade_fade_for_ranges, force_cpu_encode, run_ffmpeg_command, subtitles_filter_fragment
 
 # The full FFmpeg xfade catalog: 58 named transitions (verified against the
 # xfade filter documentation). Each name maps to itself, so any of them can
@@ -85,7 +85,11 @@ CPU_FALLBACK_CRF = 20
 
 
 def get_video_encoder(use_nvenc: bool = True) -> tuple[str, list[str]]:
-    if use_nvenc and check_nvenc_available():
+    # FORCE_CPU_ENCODE pins the EDL final encode to libx264 as well: the
+    # shared kill-switch in ffmpeg.force_cpu_encode previously only covered
+    # the plain render path, so there was no way to take NVENC out of an
+    # EDL render while debugging a failing clip.
+    if use_nvenc and not force_cpu_encode() and check_nvenc_available():
         return "h264_nvenc", ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "22", "-pix_fmt", "yuv420p", "-profile:v", "high"]
     return "libx264", build_final_video_encode_args(crf=CPU_FALLBACK_CRF, preset=CPU_FALLBACK_PRESET)
 
