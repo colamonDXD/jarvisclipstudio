@@ -250,13 +250,34 @@ def ass_font_name(font_family: Optional[str]) -> str:
     return font_family or "Arial"
 
 
+def _is_poisoned_fonts_dir(directory: Path) -> bool:
+    """Whether libass would choke scanning this directory as a fontsdir.
+
+    libass tries to load EVERY file in a fontsdir as a font. A directory
+    that also holds plain files (the bundled fonts folder carries
+    README.md / SOURCES.md, and it reaches the container through a bind
+    mount that bypasses the image build) makes the subtitles filter fail
+    on some libass builds, killing every captioned render. Such a
+    directory must never be handed to libass.
+    """
+    try:
+        return any(
+            entry.is_file() and entry.suffix.lower() not in (".ttf", ".otf")
+            for entry in directory.iterdir()
+        )
+    except OSError:
+        return True
+
+
 def ass_fonts_dir(font_family: Optional[str]) -> Optional[Path]:
     if not font_family:
         return FONTS_DIR if FONTS_DIR.exists() else None
     font_path = find_font_path(font_family, allow_all_user_fonts=True)
     if font_path:
         return font_path.parent
-    return FONTS_DIR if FONTS_DIR.exists() else None
+    if FONTS_DIR.exists() and not _is_poisoned_fonts_dir(FONTS_DIR):
+        return FONTS_DIR
+    return None
 
 
 # Bundled font used when the chosen one lacks glyphs for the clip's text. Its
