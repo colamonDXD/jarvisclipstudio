@@ -69,6 +69,40 @@ def test_reference_image_pip_is_bottom_right_and_capped_at_three_seconds(monkeyp
     assert "between(t\\,1.000\\,4.000)" in graph
 
 
+def test_edl_render_seeks_input_to_first_kept_moment(monkeypatch, tmp_path):
+    """A clip at minute 10 must not decode the first 10 minutes of source."""
+    monkeypatch.setattr(edl_render, "get_video_encoder", _encoder)
+    commands = []
+
+    def _capture(command, **_kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(edl_render, "run_ffmpeg_command", _capture)
+    edl = {
+        "duration": 5,
+        "segments": [{"start": 0, "end": 5}],
+        "source_ranges": [[600.0, 605.0]],
+    }
+
+    ok = edl_render.render_edl_clip_ffmpeg(
+        tmp_path / "input.mp4", tmp_path / "output.mp4", edl
+    )
+
+    assert ok is True
+    command = commands[0]
+    input_at = command.index("-i")
+    assert command[input_at - 4 : input_at] == [
+        "-ss",
+        "600.000",
+        "-t",
+        "6.000",
+    ]
+    graph = command[command.index("-filter_complex") + 1]
+    assert "trim=start=0.000:end=5.000" in graph
+    assert "trim=start=600.000" not in graph
+
+
 def test_no_edl_uses_existing_reframe_renderer(monkeypatch, tmp_path):
     """The non-EDL route remains the existing standard single-filter render."""
     # The production source-limit helper is POSIX-only; the tested path never

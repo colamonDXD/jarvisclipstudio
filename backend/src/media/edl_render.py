@@ -224,6 +224,35 @@ def _source_audio_prestage_fragments(
     return fragments, "[srca]"
 
 
+def _source_window(
+    edl: dict[str, Any],
+) -> tuple[list[str], dict[str, Any], list[tuple[float, float]]]:
+    """Seek the input to the first kept moment before decoding.
+
+    The EDL's source ranges live on the original timeline, so a clip taken
+    from minute 10 used to open the file at t=0 and decode the whole prefix
+    through every trim filter. ``-ss`` before ``-i`` starts the input at the
+    first kept moment and resets timestamps to zero, so the caller must shift
+    every range by the returned origin. Mirrors
+    ``ffmpeg._input_window_for_ranges`` (the non-EDL path already does this).
+    """
+    ranges = _source_ranges(edl)
+    if not ranges:
+        return [], edl, ranges
+    origin = min(start for start, _ in ranges)
+    end = max(stop for _, stop in ranges)
+    if origin <= 0.05:
+        return [], edl, ranges
+    shifted = {
+        **edl,
+        "source_ranges": [
+            [start - origin, stop - origin] for start, stop in ranges
+        ],
+    }
+    seek_args = ["-ss", f"{origin:.3f}", "-t", f"{max(0.2, end - origin + 1.0):.3f}"]
+    return seek_args, shifted, ranges
+
+
 def build_edl_filter_graph(edl: dict[str, Any], input_path: Path, subtitle_ass_path: Optional[Path] = None, fonts_dir: Optional[Path] = None) -> tuple[list[str], str, list[str], str]:
     """Build the EDL video graph without changing the non-EDL render path."""
     segments = edl.get("segments") or []
@@ -576,8 +605,13 @@ def render_edl_clip_ffmpeg(input_path: Path, output_path: Path, edl: dict[str, A
         resolve_edl_broll(edl)
     except Exception as exc:
         logger.warning("B-roll resolution skipped: %s", exc)
-    extra_inputs, graph, encoder_args, video_label = build_edl_filter_graph(edl, input_path, subtitle_ass_path, fonts_dir)
-    ranges = _source_ranges(edl)
+    # Seek the input to the first kept moment: without this the graph decodes
+    # the whole source from t=0 for every clip (minutes of wasted decode per
+    # clip on a long video). Segment/caption timestamps are already relative
+    # to the compacted source, so only the source ranges are shifted.
+    seek_args, graph_edl, _ = _source_window(edl)
+    extra_inputs, graph, encoder_args, video_label = build_edl_filter_graph(graph_edl, input_path, subtitle_ass_path, fonts_dir)
+    ranges = _source_ranges(graph_edl)
     audio_source_label = "[0:a]"
     if ranges:
         # Direct-from-source mode: the EDL carries the keep ranges, so the
@@ -590,16 +624,16 @@ def render_edl_clip_ffmpeg(input_path: Path, output_path: Path, edl: dict[str, A
         audio_prestage, audio_source_label = _source_audio_prestage_fragments(ranges)
         graph = ";".join([*audio_prestage, graph])
         plain_graph = f"{graph};{audio_source_label}{LOUDNORM_FILTER}[a_out]"
-        plain_command = ["ffmpeg", "-y", "-i", str(input_path), *extra_inputs, "-filter_complex", plain_graph, "-map", video_label, "-map", "[a_out]", *encoder_args, *build_audio_output_args(True, loudnorm=False), "-shortest", "-movflags", "+faststart", str(output_path)]
+        plain_command = ["ffmpeg", "-y", *seek_args, "-i", str(input_path), *extra_inputs, "-filter_complex", plain_graph, "-map", video_label, "-map", "[a_out]", *encoder_args, *build_audio_output_args(True, loudnorm=False), "-shortest", "-movflags", "+faststart", str(output_path)]
     else:
-        plain_command = ["ffmpeg", "-y", "-i", str(input_path), *extra_inputs, "-filter_complex", graph, "-map", video_label, "-map", "0:a?", *encoder_args, *build_audio_output_args(True), "-shortest", "-movflags", "+faststart", str(output_path)]
+        plain_command = ["ffmpeg", "-y", *seek_args, "-i", str(input_path), *extra_inputs, "-filter_complex", graph, "-map", video_label, "-map", "0:a?", *encoder_args, *build_audio_output_args(True), "-shortest", "-movflags", "+faststart", str(output_path)]
     audio_plan = build_edl_audio_graph(edl, 1 + extra_inputs.count("-i"), assets_dir, audio_source_label=audio_source_label or "[0:a]")
     logger.info("Rendering EDL clip: %s", output_path)
     if audio_plan is None:
         ok, _ = _run_render_command(plain_command)
         return ok
     audio_inputs, audio_graph, audio_label = audio_plan
-    command = ["ffmpeg", "-y", "-i", str(input_path), *extra_inputs, *audio_inputs, "-filter_complex", f"{graph};{audio_graph}", "-map", video_label, "-map", audio_label, *encoder_args, *build_audio_output_args(True, loudnorm=False), "-shortest", "-movflags", "+faststart", str(output_path)]
+    command = ["ffmpeg", "-y", *seek_args, "-i", str(input_path), *extra_inputs, *audio_inputs, "-filter_complex", f"{graph};{audio_graph}", "-map", video_label, "-map", audio_label, *encoder_args, *build_audio_output_args(True, loudnorm=False), "-shortest", "-movflags", "+faststart", str(output_path)]
     ok, stderr = _run_render_command(command)
     if ok:
         return True
