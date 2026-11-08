@@ -46,6 +46,7 @@ from ..auto_director.niche import (
     validate_niche_override,
 )
 from ..clip_source_map import load_clip_caption_settings
+from ..media.ffmpeg import check_nvenc_available
 from ..media_storage import MediaStorage, media_work
 from ..utils.async_helpers import run_in_thread
 from ..repositories.media_repository import queue_delete, guard_source_creation
@@ -56,19 +57,31 @@ PROCESSING_CACHE_VERSION = "20260319_grounded_segments_v1"
 
 DEFAULT_CLIP_RENDER_CONCURRENCY = 3
 
+# Without NVENC the final encodes are libx264: N concurrent encodes divide
+# the same physical cores, so a wide fan-out inflates every clip's wall
+# time instead of improving throughput. Cap the fan-out on CPU-only hosts
+# (the probe result is cached, so this costs one probe per process).
+CPU_RENDER_CONCURRENCY_CAP = 2
+
 
 def clip_render_concurrency() -> int:
     """How many clips may render at once (CLIP_RENDER_CONCURRENCY, default 3).
 
     Rendering is thread-pool ffmpeg work, so clips overlap safely; the bound
     keeps a many-clip task from saturating the CPU/GPU and the temp disk.
-    Unset, invalid or non-positive values fall back to the default.
+    Unset, invalid or non-positive values fall back to the default. When
+    NVENC is unavailable the result is capped at
+    ``CPU_RENDER_CONCURRENCY_CAP`` — see the constant's comment.
     """
     try:
         value = int(os.environ.get("CLIP_RENDER_CONCURRENCY", "").strip())
     except ValueError:
-        return DEFAULT_CLIP_RENDER_CONCURRENCY
-    return value if value > 0 else DEFAULT_CLIP_RENDER_CONCURRENCY
+        value = DEFAULT_CLIP_RENDER_CONCURRENCY
+    if value <= 0:
+        value = DEFAULT_CLIP_RENDER_CONCURRENCY
+    if not check_nvenc_available():
+        value = min(value, CPU_RENDER_CONCURRENCY_CAP)
+    return value
 
 
 class TaskService(ClipEditingMixin):

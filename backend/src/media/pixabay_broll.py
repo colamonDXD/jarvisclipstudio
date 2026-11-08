@@ -227,6 +227,19 @@ def resolve_edl_broll(
     entries = edl.get("broll") or []
     if not entries:
         return 0
+    # Planning-time resolution stamps local_path on every entry it can, so
+    # at render time this must be a cheap no-op: when nothing is left
+    # unresolved, return before a client is even constructed — no HTTP,
+    # no network setup on the render path.
+    unresolved = [
+        entry
+        for entry in entries
+        if isinstance(entry, dict)
+        and not entry.get("local_path")
+        and str(entry.get("query") or "").strip()
+    ]
+    if not unresolved:
+        return 0
 
     own_client = client is None
     client = client or _new_client()

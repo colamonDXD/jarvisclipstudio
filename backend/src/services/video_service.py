@@ -800,6 +800,22 @@ class VideoService:
                 from ..media.music_library import apply_music_override
 
                 apply_music_override(edl, music_override)
+            if edl.get("broll"):
+                # Resolve stock footage while the EDL is being planned, not
+                # inside the render: the Pixabay search/download then never
+                # sits on the render path, and the renderer's own resolve
+                # call is a no-op for the stamped entries. Best-effort by
+                # design — a resolution failure leaves entries unresolved
+                # and the renderer skips them, exactly as before.
+                try:
+                    from ..media.pixabay_broll import resolve_edl_broll
+
+                    resolve_edl_broll(edl)
+                except Exception:
+                    logger.warning(
+                        "B-roll resolution failed during EDL planning",
+                        exc_info=True,
+                    )
             return edl
         except Exception:
             logger.warning(

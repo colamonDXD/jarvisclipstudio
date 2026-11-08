@@ -1,11 +1,13 @@
 """FFmpeg execution of auto-director edit decision lists."""
 
+import os
+import subprocess
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
 from .common import LOUDNORM_FILTER, OUTPUT_FPS, logger
-from .ffmpeg import build_audio_output_args, build_final_video_encode_args, run_ffmpeg_command, subtitles_filter_fragment
+from .ffmpeg import build_audio_output_args, build_final_video_encode_args, crossfade_fade_for_ranges, run_ffmpeg_command, subtitles_filter_fragment
 
 # The full FFmpeg xfade catalog: 58 named transitions (verified against the
 # xfade filter documentation). Each name maps to itself, so any of them can
@@ -67,10 +69,21 @@ def check_nvenc_available() -> bool:
     return probe.returncode == 0
 
 
+# CPU fallback for the EDL final encode. The shared defaults behind
+# build_final_video_encode_args (libx264 preset medium, CRF 19) are a
+# quality-first setting that costs roughly 2x the wall time of veryfast/CRF 20
+# per clip — and several clips render concurrently, dividing the same cores.
+# When NVENC is unavailable the EDL path therefore encodes veryfast/CRF 20;
+# the NVENC arguments above are unchanged, and non-EDL final encodes keep
+# the shared defaults.
+CPU_FALLBACK_PRESET = "veryfast"
+CPU_FALLBACK_CRF = 20
+
+
 def get_video_encoder(use_nvenc: bool = True) -> tuple[str, list[str]]:
     if use_nvenc and check_nvenc_available():
         return "h264_nvenc", ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "22", "-pix_fmt", "yuv420p", "-profile:v", "high"]
-    return "libx264", build_final_video_encode_args()
+    return "libx264", build_final_video_encode_args(crf=CPU_FALLBACK_CRF, preset=CPU_FALLBACK_PRESET)
 
 
 def _label(name: str) -> str:
@@ -106,6 +119,103 @@ def build_drawtext_filter(text: str, start_time: float, end_time: float, input_l
     return f"{input_label}drawtext=text='{escaped}':fontsize=48:fontcolor=white:box=1:boxcolor=0x000000AA:boxborderw=10:x=(w-text_w)/2:y=h*0.85:enable='{enable}'{output_label}"
 
 
+def _source_ranges(edl: dict[str, Any]) -> list[tuple[float, float]]:
+    """Validated (start, end) source-timeline ranges carried by an EDL.
+
+    An EDL's segments tile the clip timeline (the concatenation of the
+    keep ranges). When the EDL also carries ``source_ranges`` the renderer
+    can build that concatenation in-graph from the original source file
+    instead of requiring a pre-rendered intermediate: the trim/concat
+    pre-stage reproduces the intermediate's exact timeline.
+    """
+    ranges: list[tuple[float, float]] = []
+    for entry in edl.get("source_ranges") or []:
+        try:
+            start, end = float(entry[0]), float(entry[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+        if end > start >= 0:
+            ranges.append((start, end))
+    return ranges
+
+
+def _source_prestage_fragments(
+    ranges: list[tuple[float, float]], with_audio: bool
+) -> tuple[list[str], str, Optional[str]]:
+    """Trim+join pre-stage reproducing the intermediate clip in-graph.
+
+    Returns (fragments, video_label, audio_label). The video label replaces
+    ``[0:v]`` as the segment source; the audio label (when requested)
+    replaces ``[0:a]`` for the audio-finishing graph.
+
+    The join mirrors render_source_ranges_ffmpeg exactly — same per-range
+    normalisation, same crossfade decision (crossfade_fade_for_ranges),
+    same fade and offsets — because every timeline consumer (captions,
+    the EDL's own segment tiling, stored durations) reads the
+    crossfade-compacted timeline the intermediate produces. A plain hard
+    concat here would lengthen multi-range clips and desync all of them.
+    """
+    fade = crossfade_fade_for_ranges(list(ranges))
+    fragments: list[str] = []
+    for index, (start, end) in enumerate(ranges):
+        fragments.append(
+            f"[0:v]trim=start={start:.3f}:end={end:.3f},setpts=PTS-STARTPTS,"
+            f"fps={OUTPUT_FPS},format=yuv420p,setsar=1[vpre{index}]"
+        )
+    if len(ranges) == 1:
+        fragments.append("[vpre0]null[srcv]")
+    else:
+        current = "[vpre0]"
+        cumulative = ranges[0][1] - ranges[0][0]
+        for index in range(1, len(ranges)):
+            output = "[srcv]" if index == len(ranges) - 1 else f"[vjoin{index}]"
+            if fade > 0:
+                fragments.append(
+                    f"{current}[vpre{index}]xfade=transition=fade:"
+                    f"duration={fade:.6f}:offset={cumulative - fade:.6f}{output}"
+                )
+            else:
+                fragments.append(f"{current}[vpre{index}]concat=n=2:v=1:a=0{output}")
+            cumulative += (ranges[index][1] - ranges[index][0]) - fade
+            current = output
+    audio_label: Optional[str] = None
+    if with_audio:
+        audio_fragments, audio_label = _source_audio_prestage_fragments(ranges)
+        fragments.extend(audio_fragments)
+    return fragments, "[srcv]", audio_label
+
+
+def _source_audio_prestage_fragments(
+    ranges: list[tuple[float, float]],
+) -> tuple[list[str], str]:
+    """Audio half of the source pre-stage: join the ranges' audio.
+
+    Mirrors the intermediate's audio stitch (acrossfade when the video
+    crossfades, hard concat otherwise) so the compacted timelines agree.
+    Kept separate from the video pre-stage because build_edl_filter_graph
+    already emits the video half; the render entry point adds this half
+    when it assembles the full graph for the audio paths.
+    """
+    fade = crossfade_fade_for_ranges(list(ranges))
+    fragments: list[str] = []
+    for index, (start, end) in enumerate(ranges):
+        fragments.append(
+            f"[0:a]atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS[apre{index}]"
+        )
+    if len(ranges) == 1:
+        fragments.append("[apre0]anull[srca]")
+    else:
+        current = "[apre0]"
+        for index in range(1, len(ranges)):
+            output = "[srca]" if index == len(ranges) - 1 else f"[ajoin{index}]"
+            if fade > 0:
+                fragments.append(f"{current}[apre{index}]acrossfade=d={fade:.6f}{output}")
+            else:
+                fragments.append(f"{current}[apre{index}]concat=n=2:v=0:a=1{output}")
+            current = output
+    return fragments, "[srca]"
+
+
 def build_edl_filter_graph(edl: dict[str, Any], input_path: Path, subtitle_ass_path: Optional[Path] = None, fonts_dir: Optional[Path] = None) -> tuple[list[str], str, list[str], str]:
     """Build the EDL video graph without changing the non-EDL render path."""
     segments = edl.get("segments") or []
@@ -115,12 +225,17 @@ def build_edl_filter_graph(edl: dict[str, Any], input_path: Path, subtitle_ass_p
     graph: list[str] = []
     labels: list[str] = []
     next_id = 0
+    segment_input = "[0:v]"
+    ranges = _source_ranges(edl)
+    if ranges:
+        prestage, segment_input, _ = _source_prestage_fragments(ranges, with_audio=False)
+        graph.extend(prestage)
     for index, segment in enumerate(segments):
         start, end = max(0.0, float(segment.get("start", 0))), float(segment.get("end", duration))
         if end <= start:
             raise ValueError(f"EDL segment {index} has an invalid range")
         name = f"seg{index}"
-        graph.append(f"[0:v]trim=start={start:.3f}:end={end:.3f},setpts=PTS-STARTPTS,fps={OUTPUT_FPS},scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,format=yuv420p{_label(name)}")
+        graph.append(f"{segment_input}trim=start={start:.3f}:end={end:.3f},setpts=PTS-STARTPTS,fps={OUTPUT_FPS},scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,format=yuv420p{_label(name)}")
         label = _label(name)
         for zoom in edl.get("zoom_keyframes") or []:
             zoom_type = zoom.get("type")
@@ -137,7 +252,18 @@ def build_edl_filter_graph(edl: dict[str, Any], input_path: Path, subtitle_ass_p
                     next_id += 1
                     graph.append(build_kenburns_filter(overlap_start - start, overlap_end - start, float(zoom.get("scale_start", 1)), float(zoom.get("scale_end", 1.05)), label, output))
                     label = output
-        labels.append(label)
+        # xfade refuses inputs whose timebases differ ("timebase (1/30) do
+        # not match"): a plain segment keeps the source timebase while a
+        # zoompan segment leaves at the frame-rate timebase, so a mixed
+        # concat+xfade EDL hard-failed. Normalise every segment stream to
+        # the same timebase and frame rate before any join sees it. Order
+        # matters: fps first, then settb LAST — with settb first, the fps
+        # filter re-derives a 1/fps timebase on some branches (zoompan)
+        # and the mismatch survives (reproduced on FFmpeg 8.1.2).
+        normalised = _label(f"norm{next_id}")
+        next_id += 1
+        graph.append(f"{label}fps={OUTPUT_FPS},settb=AVTB{normalised}")
+        labels.append(normalised)
 
     current = labels[0]
     rendered_duration = float(segments[0].get("end", duration)) - float(segments[0].get("start", 0))
@@ -263,7 +389,7 @@ def _rendered_duration(edl: dict[str, Any]) -> float:
     return max(0.0, rendered)
 
 
-def build_edl_audio_graph(edl: dict[str, Any], first_input_index: int, assets_dir: Optional[Path] = None) -> Optional[tuple[list[str], str, str]]:
+def build_edl_audio_graph(edl: dict[str, Any], first_input_index: int, assets_dir: Optional[Path] = None, audio_source_label: str = "[0:a]") -> Optional[tuple[list[str], str, str]]:
     """Plan the audio-finishing graph (music ducking + SFX events) for an EDL.
 
     Returns (extra ffmpeg inputs, filter-graph fragment, output audio label),
@@ -338,9 +464,9 @@ def build_edl_audio_graph(edl: dict[str, Any], first_input_index: int, assets_di
     extra_inputs: list[str] = []
     graph: list[str] = []
     if ducking:
-        graph.append(f"[0:a]atrim=0:{duration:.3f},asetpts=PTS-STARTPTS,{_AUDIO_NORMALIZE},asplit=2[a_voice][a_voice_sc]")
+        graph.append(f"{audio_source_label}atrim=0:{duration:.3f},asetpts=PTS-STARTPTS,{_AUDIO_NORMALIZE},asplit=2[a_voice][a_voice_sc]")
     else:
-        graph.append(f"[0:a]atrim=0:{duration:.3f},asetpts=PTS-STARTPTS,{_AUDIO_NORMALIZE}[a_voice]")
+        graph.append(f"{audio_source_label}atrim=0:{duration:.3f},asetpts=PTS-STARTPTS,{_AUDIO_NORMALIZE}[a_voice]")
     mix_labels = ["[a_voice]"]
     next_index = first_input_index
     if music_path is not None:
@@ -367,21 +493,75 @@ def build_edl_audio_graph(edl: dict[str, Any], first_input_index: int, assets_di
     return extra_inputs, ";".join(graph), "[a_out]"
 
 
-def _run_render_command(command: list[str]) -> bool:
+DEFAULT_RENDER_TIMEOUT_SEC = 900
+
+
+def render_timeout_sec() -> int:
+    """Per-attempt EDL render timeout (env RENDER_TIMEOUT_SEC, default 900).
+
+    A wedged encode must surface as a failed clip in minutes, not stall a
+    task for the hour the previous 3600 s allowance permitted. Unset,
+    invalid or non-positive values fall back to the default.
+    """
     try:
-        result = run_ffmpeg_command(command, timeout=3600)
+        value = int(os.environ.get("RENDER_TIMEOUT_SEC", "").strip())
+    except ValueError:
+        return DEFAULT_RENDER_TIMEOUT_SEC
+    return value if value > 0 else DEFAULT_RENDER_TIMEOUT_SEC
+
+
+# stderr fragments that blame the audio-finishing graph (its filters, its
+# stream labels, or the source audio pad it reads). Only failures carrying
+# one of these can plausibly be cured by retrying without the audio graph;
+# anything else (video graph, encoder, muxer) would fail identically on the
+# plain path, so the clip fails fast with the original error instead of
+# paying a second full encode.
+_AUDIO_GRAPH_ERROR_MARKERS = (
+    "sidechaincompress",
+    "loudnorm",
+    "amix",
+    "adelay",
+    "[a_mix]",
+    "[a_out]",
+    "[a_voice]",
+    "[a_music]",
+    "[a_sfx",
+    "[0:a]",
+)
+
+
+def _failure_implicates_audio(stderr: Optional[str]) -> bool:
+    """Whether an ffmpeg failure plausibly came from the audio graph."""
+    if not stderr:
+        return False
+    text = stderr.lower()
+    return any(marker in text for marker in _AUDIO_GRAPH_ERROR_MARKERS)
+
+
+def _run_render_command(command: list[str]) -> tuple[bool, str]:
+    try:
+        result = run_ffmpeg_command(command, timeout=render_timeout_sec())
+    except subprocess.TimeoutExpired:
+        logger.error(
+            "EDL render timed out after %ss: %s",
+            render_timeout_sec(),
+            " ".join(command),
+        )
+        return False, ""
     except OSError as exc:
         logger.error("EDL render could not start: %s", exc)
-        return False
-    return result.returncode == 0
+        return False, ""
+    return result.returncode == 0, result.stderr or ""
 
 
 def render_edl_clip_ffmpeg(input_path: Path, output_path: Path, edl: dict[str, Any], subtitle_ass_path: Optional[Path] = None, fonts_dir: Optional[Path] = None, assets_dir: Optional[Path] = None) -> bool:
     if not edl or not edl.get("segments"):
         return False
-    # Stock B-roll resolves lazily at render time (Pixabay). Without an
-    # API key — or on any fetch failure — this is a no-op and the EDL
-    # renders exactly as before; B-roll must never cost the clip.
+    # Stock B-roll resolves at EDL planning time (build_pipeline_edl stamps
+    # local_path); this call only mops up entries a caller built without
+    # planning. Entries already carrying local_path are skipped without any
+    # HTTP, and without an API key — or on any fetch failure — this is a
+    # no-op; B-roll must never cost the clip.
     try:
         from .pixabay_broll import resolve_edl_broll
 
@@ -389,16 +569,44 @@ def render_edl_clip_ffmpeg(input_path: Path, output_path: Path, edl: dict[str, A
     except Exception as exc:
         logger.warning("B-roll resolution skipped: %s", exc)
     extra_inputs, graph, encoder_args, video_label = build_edl_filter_graph(edl, input_path, subtitle_ass_path, fonts_dir)
-    plain_command = ["ffmpeg", "-y", "-i", str(input_path), *extra_inputs, "-filter_complex", graph, "-map", video_label, "-map", "0:a?", *encoder_args, *build_audio_output_args(True), "-shortest", "-movflags", "+faststart", str(output_path)]
-    audio_plan = build_edl_audio_graph(edl, 1 + extra_inputs.count("-i"), assets_dir)
+    ranges = _source_ranges(edl)
+    audio_source_label = "[0:a]"
+    if ranges:
+        # Direct-from-source mode: the EDL carries the keep ranges, so the
+        # graph's pre-stage already concatenated them from the original
+        # file (build_edl_filter_graph). The audio side needs the same
+        # pre-stage, and the plain path can no longer map the raw input
+        # audio — it takes the concatenated stream through loudnorm inside
+        # the graph, like the finished path. The caller only sets
+        # source_ranges when the source has an audio stream.
+        audio_prestage, audio_source_label = _source_audio_prestage_fragments(ranges)
+        graph = ";".join([*audio_prestage, graph])
+        plain_graph = f"{graph};{audio_source_label}{LOUDNORM_FILTER}[a_out]"
+        plain_command = ["ffmpeg", "-y", "-i", str(input_path), *extra_inputs, "-filter_complex", plain_graph, "-map", video_label, "-map", "[a_out]", *encoder_args, *build_audio_output_args(True, loudnorm=False), "-shortest", "-movflags", "+faststart", str(output_path)]
+    else:
+        plain_command = ["ffmpeg", "-y", "-i", str(input_path), *extra_inputs, "-filter_complex", graph, "-map", video_label, "-map", "0:a?", *encoder_args, *build_audio_output_args(True), "-shortest", "-movflags", "+faststart", str(output_path)]
+    audio_plan = build_edl_audio_graph(edl, 1 + extra_inputs.count("-i"), assets_dir, audio_source_label=audio_source_label or "[0:a]")
     logger.info("Rendering EDL clip: %s", output_path)
     if audio_plan is None:
-        return _run_render_command(plain_command)
+        ok, _ = _run_render_command(plain_command)
+        return ok
     audio_inputs, audio_graph, audio_label = audio_plan
     command = ["ffmpeg", "-y", "-i", str(input_path), *extra_inputs, *audio_inputs, "-filter_complex", f"{graph};{audio_graph}", "-map", video_label, "-map", audio_label, *encoder_args, *build_audio_output_args(True, loudnorm=False), "-shortest", "-movflags", "+faststart", str(output_path)]
-    if _run_render_command(command):
+    ok, stderr = _run_render_command(command)
+    if ok:
         return True
+    if not _failure_implicates_audio(stderr):
+        # The plain retry re-runs the same video graph and encoder; a
+        # failure that does not implicate the audio graph would simply
+        # repeat. Fail the clip now with the original error.
+        logger.error(
+            "EDL render failed for %s with a non-audio error; "
+            "not retrying on the plain audio path",
+            output_path,
+        )
+        return False
     # Audio finishing must never cost the clip itself: fall back to the
     # long-standing plain audio path (e.g. a source with no audio stream).
     logger.warning("EDL audio finishing failed for %s; retrying with plain audio path", output_path)
-    return _run_render_command(plain_command)
+    ok, _ = _run_render_command(plain_command)
+    return ok

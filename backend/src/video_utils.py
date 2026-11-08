@@ -23,6 +23,7 @@ from .media.common import (
 from .media.ffmpeg import (
     audio_stream_map_args,
     ffprobe_duration,
+    ffprobe_has_audio,
     ffprobe_video_size,
     render_source_ranges_ffmpeg,
     round_to_even,
@@ -362,16 +363,46 @@ def create_optimized_clip(
             final_clip_path = temp_root / "final.mp4"
             ass_path = temp_root / "captions.ass"
 
-            if not render_source_ranges_ffmpeg(
+            reframe_format = (
+                output_format if output_format in VALID_OUTPUT_FORMATS else "vertical"
+            )
+
+            # Direct-from-source EDL render: the EDL graph trims and joins
+            # the keep ranges in-graph (mirroring the intermediate's own
+            # crossfade stitch, so the timeline is unchanged), so for a
+            # vertical EDL render the CRF-16 intermediate encode is
+            # skipped entirely and the final encode reads the original
+            # file. The EDL travels with a
+            # copy carrying the ranges as ``source_ranges``; the caller's
+            # EDL is never mutated. Two things the intermediate used to
+            # feed are skipped in this mode (they sample the intermediate's
+            # timeline): the vertical layout plan's caption position and
+            # the burned-caption band probe — captions fall back to their
+            # default placement. Every other input (speaker turns, the ASS
+            # itself) was always derived from the original file. Restricted
+            # to sources with an audio stream: the in-graph audio pre-stage
+            # trims [0:a], which a silent source cannot satisfy.
+            direct_edl = (
+                bool(edl and edl.get("segments"))
+                and reframe_format == "vertical"
+                and ffprobe_has_audio(video_path)
+            )
+            render_edl = edl
+            if direct_edl:
+                render_edl = {
+                    **edl,
+                    "source_ranges": [
+                        [float(start), float(end)]
+                        for start, end in effective_keep_ranges
+                    ],
+                }
+                source_clip_path = video_path
+            elif not render_source_ranges_ffmpeg(
                 video_path,
                 effective_keep_ranges,
                 source_clip_path,
             ):
                 raise RuntimeError("ffmpeg source-range render failed")
-
-            reframe_format = (
-                output_format if output_format in VALID_OUTPUT_FORMATS else "vertical"
-            )
 
             # Output dimensions are known ahead of the render: vertical modes are
             # always 1080x1920, "original" keeps the (even) source size. Knowing
@@ -405,21 +436,24 @@ def create_optimized_clip(
                         )
                     except Exception as exc:
                         logger.warning("Speaker turn extraction failed: %s", exc)
-                try:
-                    video_filter, mode, caption_y = build_vertical_filter_plan(
-                        source_clip_path, src_w, src_h, speaker_turns, speaker_words
-                    )
-                    vertical_plan = (video_filter, mode)
-                except Exception as exc:
-                    logger.warning("Vertical layout planning failed: %s", exc)
-                    caption_y = None
+                if not direct_edl:
+                    # The layout plan samples the intermediate's timeline;
+                    # in direct mode there is no intermediate to sample.
+                    try:
+                        video_filter, mode, caption_y = build_vertical_filter_plan(
+                            source_clip_path, src_w, src_h, speaker_turns, speaker_words
+                        )
+                        vertical_plan = (video_filter, mode)
+                    except Exception as exc:
+                        logger.warning("Vertical layout planning failed: %s", exc)
+                        caption_y = None
             if layout_report is not None and caption_y is not None:
                 layout_report["caption_y"] = caption_y
 
             # Detect source captions in both polarities, then inspect their
             # actual composed positions for fit, reaction, stack and split layouts.
             source_caption_band = None
-            if add_subtitles:
+            if add_subtitles and not direct_edl:
                 try:
                     source_caption_band = detect_burned_caption_band(source_clip_path)
                     if source_caption_band and reframe_format != "original":
@@ -470,7 +504,7 @@ def create_optimized_clip(
                     speaker_words=speaker_words,
                     vertical_plan=vertical_plan,
                     broll_overlays=overlays,
-                    edl=edl,
+                    edl=render_edl,
                 )[0]
 
             framed_ok = render(broll_overlays)

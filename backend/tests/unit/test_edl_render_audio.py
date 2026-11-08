@@ -113,7 +113,7 @@ def test_no_audio_fields_render_command_is_the_legacy_command(monkeypatch, tmp_p
     monkeypatch.setattr(
         edl_render,
         "run_ffmpeg_command",
-        lambda command, timeout=0: captured.append(command) or SimpleNamespace(returncode=0),
+        lambda command, timeout=0: captured.append(command) or SimpleNamespace(returncode=0, stderr=""),
     )
     edl = _plain_edl()
     source, output = tmp_path / "source.mp4", tmp_path / "out.mp4"

@@ -9,6 +9,7 @@ import pytest
 
 from src.config import Config
 from src.media import ffmpeg as ffmpeg_module
+from src.services import task_service as task_service_module
 from src.services.task_service import TaskService, clip_render_concurrency
 
 
@@ -83,6 +84,9 @@ async def test_process_task_renders_clips_concurrently_up_to_bound(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("CLIP_RENDER_CONCURRENCY", "3")
+    # SPEED-PACK-3 caps CPU-only hosts at 2; pin the GPU probe so this test
+    # keeps exercising the env-configured bound itself.
+    monkeypatch.setattr(task_service_module, "check_nvenc_available", lambda: True)
     service = build_task_service()
     service.config.temp_dir = str(tmp_path)
     use_segments(service, 6)
@@ -167,6 +171,9 @@ async def test_process_task_one_crashing_render_does_not_fail_the_batch(
 
 
 def test_clip_render_concurrency_parsing(monkeypatch):
+    # Parsing is exercised with NVENC available: on a CPU-only host the
+    # value is additionally capped (see test_speed_pack_3.py).
+    monkeypatch.setattr(task_service_module, "check_nvenc_available", lambda: True)
     monkeypatch.delenv("CLIP_RENDER_CONCURRENCY", raising=False)
     assert clip_render_concurrency() == 3
     monkeypatch.setenv("CLIP_RENDER_CONCURRENCY", "5")
