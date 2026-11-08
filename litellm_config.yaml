@@ -21,9 +21,14 @@ model_list:
     litellm_params:
       model: groq/openai/gpt-oss-20b
       api_key: os.environ/GROQ_API_KEY
+  - model_name: local-qwen
+    litellm_params:
+      model: openai/qwen3:8b
+      api_base: http://host.docker.internal:11434/v1
+      api_key: ollama
 router_settings:
   fallbacks:
-    - clip-fast: ["or-ultra-free", "nim-deepseek"]
-    - clip-assured: ["groq-20b"]
+    - clip-fast: ["or-ultra-free", "nim-deepseek", "clip-assured", "local-qwen"]
+    - clip-assured: ["groq-20b", "local-qwen"]
   num_retries: 1
   cooldown_time: 60
