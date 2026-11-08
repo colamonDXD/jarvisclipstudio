@@ -36,6 +36,7 @@ services:
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public
       - ./frontend/prisma:/app/prisma
+      - ./frontend/messages:/app/messages
       - ./CHANGELOG.md:/app/CHANGELOG.md:ro
     environment:
       - NODE_ENV=${NODE_ENV:-development}

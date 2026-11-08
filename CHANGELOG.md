@@ -4,6 +4,9 @@ What changed in SupoClip for people using the product. Newest dates are first.
 
 Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
 
+## 2026-11-08
+- **Fixed:** The Music menu on the create page could show a translation error ("home.music.auto") in local Docker development instead of its labels. The development frontend container now mounts the translation files live, like the rest of the source, so the menu reads the current catalog without a full image rebuild. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+
 ## 2026-11-07
 - **New:** Pick the background music for a generation. A new Music menu beside the niche picker lists your whole music library — bundled tracks plus your own uploads — with a play button to preview each one, and a "Custom music" option to upload a track (up to 30 MB) straight into the library. Leave it on Auto and the niche profile's mood chooses, as before. Picking a track for a niche that normally has no music still plays it, ducked under the voice. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 - **Improved:** Local transcription is much faster with the new faster-whisper engine (TRANSCRIPTION_PROVIDER=faster-whisper): typically 2-4x faster than the previous local engine at the same model size, and silence is skipped automatically. The original whisper engine remains available. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
