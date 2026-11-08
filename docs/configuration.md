@@ -157,6 +157,7 @@ Current code and defaults emphasize a `fast` mode. If you expose additional mode
 | Variable | Default | Purpose |
 |---|---|---|
 | `PEXELS_API_KEY` | unset | Enables AI B-roll sourcing from Pexels |
+| `PIXABAY_API_KEY` | unset | Enables stock B-roll cutaways from Pixabay for auto-director profiles that ask for B-roll. Docker only: also pass it through in `compose.override.yml` (backend, worker, ai-worker `environment:` lists) |
 
 Fonts and transitions are configured by mounted files rather than environment variables:
 

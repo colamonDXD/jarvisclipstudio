@@ -157,7 +157,36 @@ def build_edl_filter_graph(edl: dict[str, Any], input_path: Path, subtitle_ass_p
         current = output
 
     extra_inputs: list[str] = []
-    image_index = 1
+
+    # B-roll cutaways: full-frame stock windows composited over the joined
+    # segments, under the overlays and captions. Only entries that resolved
+    # to a real file participate (see pixabay_broll.resolve_edl_broll);
+    # unresolved entries are skipped and the graph is unchanged. The stock
+    # input's own audio is never mapped, so the clip's audio (voice, music,
+    # SFX) runs uninterrupted underneath.
+    for entry in edl.get("broll") or []:
+        if not isinstance(entry, dict):
+            continue
+        broll_path = Path(str(entry.get("local_path") or ""))
+        try:
+            win_start = float(entry.get("start", 0))
+            win_end = float(entry.get("end", 0))
+            src_start = max(0.0, float(entry.get("source_start", 0) or 0))
+        except (TypeError, ValueError):
+            continue
+        if not broll_path.is_file() or win_end <= win_start:
+            continue
+        input_index = 1 + extra_inputs.count("-i")
+        extra_inputs.extend(["-stream_loop", "-1", "-i", str(broll_path)])
+        stock_label = _label(f"broll{next_id}")
+        output = _label(f"brolljoin{next_id}")
+        next_id += 1
+        graph.append(f"[{input_index}:v]trim=start={src_start:.3f}:end={src_start + (win_end - win_start):.3f},setpts=PTS-STARTPTS+{win_start:.3f}/TB,fps={OUTPUT_FPS},scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,format=yuv420p{stock_label}")
+        enable = f"between(t\\,{win_start:.3f}\\,{win_end:.3f})"
+        graph.append(f"{current}{stock_label}overlay=x=0:y=0:enable='{enable}'{output}")
+        current = output
+
+    image_index = 1 + extra_inputs.count("-i")
     for overlay in edl.get("overlays") or []:
         start = max(0.0, float(overlay.get("time", 0)))
         end = start + max(0.0, float(overlay.get("duration", 3)))
@@ -309,6 +338,15 @@ def _run_render_command(command: list[str]) -> bool:
 def render_edl_clip_ffmpeg(input_path: Path, output_path: Path, edl: dict[str, Any], subtitle_ass_path: Optional[Path] = None, fonts_dir: Optional[Path] = None, assets_dir: Optional[Path] = None) -> bool:
     if not edl or not edl.get("segments"):
         return False
+    # Stock B-roll resolves lazily at render time (Pixabay). Without an
+    # API key — or on any fetch failure — this is a no-op and the EDL
+    # renders exactly as before; B-roll must never cost the clip.
+    try:
+        from .pixabay_broll import resolve_edl_broll
+
+        resolve_edl_broll(edl)
+    except Exception as exc:
+        logger.warning("B-roll resolution skipped: %s", exc)
     extra_inputs, graph, encoder_args, video_label = build_edl_filter_graph(edl, input_path, subtitle_ass_path, fonts_dir)
     plain_command = ["ffmpeg", "-y", "-i", str(input_path), *extra_inputs, "-filter_complex", graph, "-map", video_label, "-map", "0:a?", *encoder_args, *build_audio_output_args(True), "-shortest", "-movflags", "+faststart", str(output_path)]
     audio_plan = build_edl_audio_graph(edl, 1 + extra_inputs.count("-i"), assets_dir)

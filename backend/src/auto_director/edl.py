@@ -259,6 +259,95 @@ def _create_broll_queries(profile: dict, transcript_words: list[dict], clip_dura
     return queries[:max(1, int(clip_duration / 60 * density))]
 
 
+# B-roll placement. Stock cutaways land on topic changes (segment
+# boundaries) — never over the opening hook, never on top of a punch-in
+# zoom (the face-focused emphasis moments) or an info card, and never
+# for more than BROLL_MAX_COVERAGE of the clip's duration.
+BROLL_HOOK_GUARD_SEC = 2.0
+BROLL_END_GUARD_SEC = 1.0
+BROLL_CUE_SEC = 3.0
+BROLL_MIN_CUE_SEC = 1.5
+BROLL_MAX_COVERAGE = 0.30
+_PUNCH_IN_PAD_SEC = 0.25
+
+
+def _plan_broll_segments(
+    profile: dict,
+    transcript_words: list[dict],
+    clip_duration: float,
+    segments: list[dict],
+    zoom_keyframes: list[dict],
+    overlay_events: list[dict],
+) -> list[dict]:
+    """
+    Turn the profile's B-roll queries into timed cutaway placements.
+
+    Each entry keeps the query shape from _create_broll_queries and adds
+    a start/end window on the clip timeline. The footage itself is
+    resolved later, at render time (media/pixabay_broll.py) — this
+    module stays offline and deterministic: same inputs, same
+    placements.
+    """
+    queries = _create_broll_queries(profile, transcript_words, clip_duration)
+    if not queries or clip_duration <= 0:
+        return []
+
+    broll = profile.get("broll", {})
+    density = float(broll.get("density_per_min", 0) or 0)
+    target_count = min(
+        len(queries), max(1, int(clip_duration / 60 * density + 0.5))
+    )
+
+    punch_ins = [
+        (
+            float(z.get("time", 0)) - _PUNCH_IN_PAD_SEC,
+            float(z.get("time", 0)) + float(z.get("duration", 0.5)) + _PUNCH_IN_PAD_SEC,
+        )
+        for z in zoom_keyframes
+        if z.get("type") == "punch_in"
+    ]
+    cards = [
+        (
+            float(o.get("time", 0)),
+            float(o.get("time", 0)) + float(o.get("duration", 3)),
+        )
+        for o in overlay_events
+        if o.get("type") == "info_card"
+    ]
+
+    def _blocked(start: float, end: float) -> bool:
+        return any(
+            start < block_end and block_start < end
+            for block_start, block_end in punch_ins + cards
+        )
+
+    placements: list[dict] = []
+    covered = 0.0
+    max_coverage = BROLL_MAX_COVERAGE * clip_duration
+    for segment in segments[1:]:
+        if len(placements) >= target_count:
+            break
+        start = max(float(segment.get("start", 0)), BROLL_HOOK_GUARD_SEC)
+        end = min(start + BROLL_CUE_SEC, clip_duration - BROLL_END_GUARD_SEC)
+        if end - start < BROLL_MIN_CUE_SEC:
+            continue
+        if covered + (end - start) > max_coverage:
+            continue
+        if _blocked(start, end):
+            continue
+        entry = dict(queries[len(placements)])
+        entry.update({
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "source_start": 0.0,
+            "asset_id": None,
+            "provider": "pixabay",
+        })
+        placements.append(entry)
+        covered += end - start
+    return placements
+
+
 def _create_sfx_markers(profile: dict, energy_peaks: list[float]) -> list[dict]:
     """Create SFX markers from user library at energy peaks."""
     audio = profile.get("audio", {})
@@ -489,8 +578,10 @@ def build_edl(
     # Overlay events
     overlay_events = _create_overlay_events(profile, transcript_words, clip_duration)
 
-    # B-roll queries
-    broll_queries = _create_broll_queries(profile, transcript_words, clip_duration)
+    # B-roll placements (timed query slots; footage resolves at render)
+    broll_queries = _plan_broll_segments(
+        profile, transcript_words, clip_duration, segments, zoom_keyframes, overlay_events
+    )
 
     # SFX markers
     sfx_markers = _create_sfx_markers(profile, energy_peaks)
