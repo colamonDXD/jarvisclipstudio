@@ -278,6 +278,7 @@ def create_optimized_clip(
     layout_report: Optional[Dict[str, Any]] = None,
     broll_overlays: Optional[List[Dict[str, Any]]] = None,
     edl: Optional[Dict[str, Any]] = None,
+    profile_name: Optional[str] = None,
 ) -> bool:
     """Create clip with optional subtitles. output_format: 'vertical' (9:16) or 'original' (keep source size).
 
@@ -448,6 +449,7 @@ def create_optimized_clip(
                 position_y_override=caption_y,
                 avoid_band=source_caption_band,
                 caption_layout_report=layout_report,
+                profile_name=profile_name,
             ):
                 burn_ass_path = ass_path
                 fonts_dir = ass_fonts_dir(

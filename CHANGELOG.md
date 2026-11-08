@@ -14,6 +14,7 @@ Add a line here when a pull request changes something a user can see. Use **New*
 
 - **New:** Six new editing niches. True crime, Hindi podcast and music artist clips are detected automatically; football edits, Japan travel cinematic and anime funk edits can be picked manually when creating a task. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 - **New:** Clips can use all 58 built-in crossfade transitions (wipes, slides, circles, zooms and more), and the editor now places sound effects from your own library automatically — whooshes on transitions, hits on energy peaks, a sting on true-crime reveals and dings on stat cards — mixed under the voice by the audio finisher. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+- **New:** Hindi podcast clips now burn their captions in Roman Hinglish — the Latin-letter spelling Hindi creators actually use — instead of Devanagari script, with word-for-word timing unchanged. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 
 ## 2026-11-06
 

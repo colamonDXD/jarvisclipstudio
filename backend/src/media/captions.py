@@ -28,6 +28,7 @@ from .common import (
     _EMOJI_SUPPORT_CACHE,
     logger,
 )
+from .hinglish import ROMANIZE_PROFILE, romanize_caption_words, romanize_text
 from .ffmpeg import (
     rendered_ranges_duration,
     run_ffmpeg_command,
@@ -451,6 +452,7 @@ def build_assemblyai_ass_subtitles(
     caption_placements: Optional[List[Optional[Dict[str, Any]]]] = None,
     avoid_band: Optional[Tuple[float, float]] = None,
     caption_layout_report: Optional[Dict[str, Any]] = None,
+    profile_name: Optional[str] = None,
 ) -> bool:
     """Generate animated word-synced ASS subtitles from cached AssemblyAI words.
 
@@ -468,6 +470,10 @@ def build_assemblyai_ass_subtitles(
     words, and ``wrap_lines`` lets libass wrap lines wider than the frame.
     ``avoid_band`` is a (top, bottom) height fraction holding captions burned
     into the source; the spoken captions move clear of it.
+
+    When ``profile_name`` is the hindi_podcast profile, Devanagari caption
+    words (and a Devanagari hook title) are first converted to Roman
+    Hinglish — see media/hinglish.py. Word timings are never touched.
     """
     transcript_data = load_cached_transcript_data(video_path)
 
@@ -491,6 +497,15 @@ def build_assemblyai_ass_subtitles(
     if not relevant_words and not hook_title:
         logger.warning("No words or hook title available for ASS subtitles")
         return False
+
+    if profile_name == ROMANIZE_PROFILE:
+        # Hindi podcast clips burn captions in Roman Hinglish, not the
+        # Devanagari script Whisper returns. The conversion is word by
+        # word (timings untouched) and no-ops unless the text really is
+        # Devanagari-dominant, so Latin transcripts pass through unchanged.
+        relevant_words = romanize_caption_words(relevant_words)
+        if hook_title:
+            hook_title = romanize_text(hook_title)
 
     effective_font_family, template = ensure_glyph_coverage(
         effective_font_family,

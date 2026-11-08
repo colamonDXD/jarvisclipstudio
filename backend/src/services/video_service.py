@@ -813,6 +813,20 @@ class VideoService:
             broll_overlays = await broll_overlays_for(broll_placements)
             render_report: Dict[str, Any] = {}
 
+            # The caption builder needs the effective profile up front (the
+            # hindi_podcast profile romanizes Devanagari caption words); the
+            # deliverable bundle below resolves the same value for itself.
+            try:
+                from ..auto_director.niche import resolve_effective_profile
+
+                caption_profile_name: Optional[str] = resolve_effective_profile(
+                    niche_override,
+                    project_niche_override,
+                    classifier_niche,
+                )
+            except Exception:
+                caption_profile_name = None
+
             success = await run_in_thread(
                 create_optimized_clip,
                 video_path,
@@ -831,6 +845,7 @@ class VideoService:
                 layout_report=render_report,
                 broll_overlays=broll_overlays,
                 edl=edl,
+                profile_name=caption_profile_name,
             )
 
             if not success:

@@ -33,6 +33,7 @@ dependencies = [
     "requests>=2.32.0",
     "cryptography>=50.0.0",
     "posthog>=7.73.2",
+    "indic-transliteration>=2.3.82",
 ]
 
 [project.optional-dependencies]
