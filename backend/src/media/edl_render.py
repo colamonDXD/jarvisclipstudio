@@ -272,6 +272,16 @@ def build_edl_audio_graph(edl: dict[str, Any], first_input_index: int, assets_di
     music_path = None
     if track_name and track_name.lower() != "none" and volume > 0:
         music_path = _resolve_asset_file(assets / "music", track_name)
+        if music_path is None:
+            # The profile asked for music and none resolved: say so loudly,
+            # naming the track, or a missing/renamed library file is
+            # indistinguishable from a profile that never wanted music.
+            logger.warning(
+                "EDL expects music %r but no audio plan was built — no file "
+                "matching it was found in %s; check assets/music",
+                track_name,
+                assets / "music",
+            )
 
     sfx_events: list[tuple[Path, float, float]] = []
     for event in edl.get("sfx_events") or []:
@@ -293,7 +303,11 @@ def build_edl_audio_graph(edl: dict[str, Any], first_input_index: int, assets_di
     if music_path is None and not sfx_events:
         return None
 
-    ducking = music_path is not None and ducking_db > 0
+    # Profiles store ducking_db as a (negative) reduction — -12 means "lower
+    # the music by 12 dB under the voice". The amount is what drives the
+    # compressor, so a stored -12 and a stored +12 request the same ducking.
+    ducking_amount = abs(ducking_db)
+    ducking = music_path is not None and ducking_amount > 0
     extra_inputs: list[str] = []
     graph: list[str] = []
     if ducking:
@@ -307,9 +321,9 @@ def build_edl_audio_graph(edl: dict[str, Any], first_input_index: int, assets_di
         graph.append(f"[{next_index}:a]atrim=0:{duration:.3f},asetpts=PTS-STARTPTS,{_AUDIO_NORMALIZE},volume={volume:.6f}[a_music]")
         next_index += 1
         if ducking:
-            # ducking_db drives the compressor ratio: more requested ducking,
-            # harder the music is pushed under the voice.
-            ratio = min(20.0, 2.0 + ducking_db)
+            # The ducking amount drives the compressor ratio: more requested
+            # ducking, harder the music is pushed under the voice.
+            ratio = min(20.0, 2.0 + ducking_amount)
             graph.append(f"[a_music][a_voice_sc]sidechaincompress=threshold=0.02:ratio={ratio:.2f}:attack=20:release=300[a_music_ducked]")
             mix_labels.append("[a_music_ducked]")
         else:

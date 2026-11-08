@@ -725,6 +725,80 @@ class VideoService:
         return clips_info
 
     @staticmethod
+    def build_pipeline_edl(
+        segment: Dict[str, Any],
+        transcript_words: List[Dict[str, Any]],
+        niche_override: Optional[str] = None,
+        project_niche_override: Optional[str] = None,
+        classifier_niche: Optional[str] = None,
+        duration: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Build the auto-director EDL for a main-pipeline clip, or None.
+
+        Mirrors the re-render path (``ClipService._build_rerender_edl``): the
+        effective profile is resolved with the same precedence the caption
+        builder and the deliverable bundle use, loaded, and handed to
+        ``build_edl`` with the clip's transcript words. ``duration`` is the
+        rendered (post-cleanup) clip length when the caller knows it, so the
+        EDL tiles the timeline that actually renders. Energy peaks are not
+        persisted for pipeline clips, so ``[]`` is passed — build_edl falls
+        back to the profile's default zoom/SFX placement, exactly as at
+        re-render time.
+
+        Defensive by design: any failure (unknown profile, malformed
+        segment, build_edl raising) logs a warning and returns None, and the
+        caller renders through the long-standing plain path. An EDL problem
+        must never cost the user a clip.
+        """
+        try:
+            from ..auto_director.edl import build_edl, load_profile
+            from ..auto_director.niche import resolve_effective_profile
+
+            profile_name = resolve_effective_profile(
+                niche_override, project_niche_override, classifier_niche
+            )
+            if not profile_name:
+                logger.warning(
+                    "No niche profile resolved; rendering clip without an EDL"
+                )
+                return None
+            profile = load_profile(profile_name)
+
+            start_seconds = parse_timestamp_to_seconds(segment["start_time"])
+            end_seconds = parse_timestamp_to_seconds(segment["end_time"])
+            clip_duration = (
+                duration if duration and duration > 0 else end_seconds - start_seconds
+            )
+            if clip_duration <= 0:
+                logger.warning(
+                    "Clip has no positive duration; rendering without an EDL"
+                )
+                return None
+            clip = {
+                "id": str(segment.get("id") or segment.get("clip_id") or "clip"),
+                "start": start_seconds,
+                "end": end_seconds,
+                "duration": clip_duration,
+            }
+            words: List[Dict[str, Any]] = []
+            for word in transcript_words or []:
+                text = str(word.get("word") or word.get("text") or "").strip()
+                if not text:
+                    continue
+                try:
+                    word_start = float(word.get("start", 0.0) or 0.0)
+                    word_end = float(word.get("end", word_start) or word_start)
+                except (TypeError, ValueError):
+                    word_start, word_end = 0.0, 0.0
+                words.append({"word": text, "start": word_start, "end": word_end})
+            return build_edl(clip, words, profile, [])
+        except Exception:
+            logger.warning(
+                "Could not build EDL for clip; rendering without it", exc_info=True
+            )
+            return None
+
+    @staticmethod
     async def create_single_clip(
         video_path: Path,
         segment: Dict[str, Any],
@@ -826,6 +900,39 @@ class VideoService:
                 )
             except Exception:
                 caption_profile_name = None
+
+            if edl is None:
+                # Main-pipeline callers never supply an EDL: build one from
+                # the effective profile so the render below applies the
+                # profile's transitions, zooms, music and SFX instead of the
+                # plain path. Callers that pass their own EDL (the clip
+                # re-render flow) keep full control of it.
+                try:
+                    transcript_data = await run_in_thread(
+                        load_cached_transcript_data, video_path
+                    )
+                    timed_words = (
+                        get_words_for_keep_ranges(transcript_data, keep_ranges)
+                        if transcript_data
+                        else []
+                    )
+                except Exception:
+                    timed_words = []
+                if not timed_words:
+                    # Same degraded word source the re-render path uses: the
+                    # clip's own text, split into untimed words.
+                    timed_words = [
+                        {"word": word, "start": 0.0, "end": 0.0}
+                        for word in clip_text.split()
+                    ]
+                edl = VideoService.build_pipeline_edl(
+                    segment,
+                    timed_words,
+                    niche_override,
+                    project_niche_override,
+                    classifier_niche,
+                    duration=rendered_ranges_duration(keep_ranges),
+                )
 
             success = await run_in_thread(
                 create_optimized_clip,

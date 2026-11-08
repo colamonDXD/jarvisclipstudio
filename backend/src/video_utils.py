@@ -321,10 +321,13 @@ def create_optimized_clip(
 
         # Fast path: no subtitles + original = ffmpeg stream copy (no re-encoding).
         # Oversized or high-frame-rate sources fall through so the render caps them.
+        # An EDL always falls through: a stream copy cannot apply its
+        # transitions, zooms, music or SFX.
         if (
             not add_subtitles
             and not hook_title
             and not broll_overlays
+            and not edl
             and keep_original
             and len(effective_keep_ranges) == 1
             and extend_to_sentence

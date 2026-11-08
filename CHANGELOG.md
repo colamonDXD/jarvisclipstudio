@@ -18,6 +18,7 @@ Add a line here when a pull request changes something a user can see. Use **New*
 
 - **New:** Re-render a single clip in a different niche style straight from the results grid. Pick a niche under any clip and it is rebuilt with that profile's pacing, transitions, captions and music — the footage and transcript are reused, so no new analysis is needed. Clips now also show the niche they were actually rendered with. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 - **New:** Auto-director clips whose niche profile asks for B-roll — travel, Japan cinematic, vlog, podcast, tutorial and true crime — now cut away to real stock footage from Pixabay at topic changes, over the clip's own audio. Set PIXABAY_API_KEY to enable it; without a key, clips render exactly as before. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+- **Fixed:** Regular generations now actually use their niche profile's editing — transitions, zooms, background music and sound effects were previously only applied when re-rendering a single clip, so regular clips silently rendered without them. Music ducking also now engages with profiles that store it as a negative value, and a music file that cannot be found is reported in the logs by name instead of failing silently. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 ## 2026-11-06
 
 - **Under the hood:** New features can be switched on for the web and iPhone apps separately, without an update. ([#340](https://github.com/FujiwaraChoki/supoclip/pull/340))
