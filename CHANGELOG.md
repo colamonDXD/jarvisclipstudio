@@ -13,6 +13,7 @@ Add a line here when a pull request changes something a user can see. Use **New*
 - **Improved:** Niche editing profiles retuned to viral short-form pacing (faster cuts, hook titles that land inside the first seconds, karaoke captions for tutorials and finance, a new Classic Box caption style), and clip selection now prefers openings where the hook line, title and a visual change land together. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 
 - **New:** Six new editing niches. True crime, Hindi podcast and music artist clips are detected automatically; football edits, Japan travel cinematic and anime funk edits can be picked manually when creating a task. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+- **New:** Clips can use all 58 built-in crossfade transitions (wipes, slides, circles, zooms and more), and the editor now places sound effects from your own library automatically — whooshes on transitions, hits on energy peaks, a sting on true-crime reveals and dings on stat cards — mixed under the voice by the audio finisher. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 
 ## 2026-11-06
 

@@ -275,6 +275,158 @@ def _create_sfx_markers(profile: dict, energy_peaks: list[float]) -> list[dict]:
     return sfx
 
 
+# Canonical SFX event names for the renderer's audio finisher. Each name
+# resolves by file stem in the user's asset library (assets/sfx/<name>.<ext>)
+# at render time, and files that are missing are skipped silently — so
+# emitting a name the user has not downloaded yet is safe by design.
+SFX_EVENT_NAMES = ("whoosh", "pop", "riser", "ding", "impact", "sting")
+
+# Density caps: SFX punctuate an edit, they never wallpaper it.
+_SFX_PEAK_MIN_GAP_SEC = 3.0      # at most one peak hit per 3 seconds
+_SFX_PEAK_MAX_EVENTS = 8         # hard cap on peak hits per clip
+_SFX_WHOOSH_MIN_GAP_SEC = 4.0    # at most one transition whoosh per 4 seconds
+_SFX_DING_MIN_GAP_SEC = 4.0
+_SFX_DING_MAX_EVENTS = 3
+_SFX_STACK_GAP_SEC = 0.75        # two events closer than this count as stacked
+_SFX_RISER_LEAD_SEC = 1.2        # riser starts this far ahead of the first peak
+_CUT_TRANSITION_NAMES = {"cut", "hard_cut", "none"}
+
+
+def _join_plan(segments: list[dict]) -> list[dict]:
+    """
+    Per-join timing for the rendered (output) timeline.
+
+    Mirrors the renderer's join math: a crossfade join overlaps the
+    accumulated output by the fade duration, so rendered boundaries sit
+    earlier than the raw segment starts. A join counts as a crossfade when
+    it carries a positive duration and a non-cut transition name — for every
+    transition value the profiles can produce, that is exactly the set the
+    renderer's TRANSITION_MAP resolves to an xfade.
+    """
+    plan = []
+    if not segments:
+        return plan
+    first = segments[0]
+    rendered = float(first.get("end", 0)) - float(first.get("start", 0))
+    for segment in segments[1:]:
+        seg_duration = float(segment.get("end", 0)) - float(segment.get("start", 0))
+        requested = max(0.0, float(segment.get("transition_duration", 0) or 0))
+        name = str(segment.get("transition_in", "cut")).lower()
+        fade = min(requested, rendered, seg_duration) if requested > 0 and name not in _CUT_TRANSITION_NAMES else 0.0
+        plan.append({
+            "source_boundary": float(segment.get("start", 0)),
+            "fade": fade,
+            "rendered_boundary": rendered - fade / 2 if fade else rendered,
+        })
+        rendered += seg_duration - fade
+    return plan
+
+
+def _to_rendered_time(source_time: float, join_plan: list[dict]) -> float:
+    """Map a clip-timeline time to the rendered timeline (crossfades pull
+    everything after a join earlier by that join's fade duration)."""
+    shift = sum(join["fade"] for join in join_plan if source_time >= join["source_boundary"])
+    return source_time - shift
+
+
+def _create_sfx_events(
+    profile: dict,
+    segments: list[dict],
+    overlay_events: list[dict],
+    energy_peaks: list[float],
+    clip_duration: float
+) -> list[dict]:
+    """
+    Emit renderer-ready SFX events ({name, at_sec, gain_db}) for a clip.
+
+    Signals: energy peaks (the punchline/emphasis markers that also drive
+    punch-in zooms), crossfade transition points, and info-card overlays.
+    Gated by the profile's sfx_from_user_library flag; density-capped per
+    the constants above. Deterministic: same inputs -> same events.
+    """
+    audio = profile.get("audio", {})
+    if not audio.get("sfx_from_user_library") or clip_duration <= 0:
+        return []
+
+    niche = profile.get("niche", "")
+    joins = _join_plan(segments)
+    events: list[dict] = []
+    occupied: list[float] = []
+
+    def _is_free(at_sec: float) -> bool:
+        return all(abs(at_sec - taken) >= _SFX_STACK_GAP_SEC for taken in occupied)
+
+    def _add(name: str, at_sec: float, gain_db: float) -> None:
+        at_sec = round(min(max(at_sec, 0.0), max(0.0, clip_duration - 0.05)), 3)
+        events.append({"name": name, "at_sec": at_sec, "gain_db": gain_db})
+        occupied.append(at_sec)
+
+    # Whoosh on crossfade joins only — hard cuts stay silent.
+    last_whoosh = float("-inf")
+    for join in joins:
+        if join["fade"] <= 0:
+            continue
+        at_sec = join["rendered_boundary"]
+        if at_sec - last_whoosh < _SFX_WHOOSH_MIN_GAP_SEC or not _is_free(at_sec):
+            continue
+        _add("whoosh", at_sec, -6.0)
+        last_whoosh = at_sec
+
+    # Energy peaks. True crime stays near-dry by design: a single low sting
+    # on the final reveal peak, nothing else.
+    peaks = sorted(p for p in energy_peaks if 0 <= p <= clip_duration)
+    if niche == "true_crime":
+        if peaks:
+            at_sec = _to_rendered_time(peaks[-1], joins)
+            if _is_free(at_sec):
+                _add("sting", at_sec, -3.0)
+    elif peaks:
+        chosen: list[float] = []
+        last_peak = float("-inf")
+        for peak in peaks:
+            if peak - last_peak >= _SFX_PEAK_MIN_GAP_SEC:
+                chosen.append(peak)
+                last_peak = peak
+            if len(chosen) >= _SFX_PEAK_MAX_EVENTS:
+                break
+        # A riser builds into the first peak when there is room for it.
+        if chosen and chosen[0] >= _SFX_RISER_LEAD_SEC + 0.3:
+            at_sec = _to_rendered_time(chosen[0], joins) - _SFX_RISER_LEAD_SEC
+            if at_sec >= 0 and _is_free(at_sec):
+                _add("riser", at_sec, -6.0)
+        for index, peak in enumerate(chosen):
+            at_sec = _to_rendered_time(peak, joins)
+            if not _is_free(at_sec):
+                continue
+            if index == 0:
+                _add("impact", at_sec, 0.0)
+            else:
+                _add("pop", at_sec, -3.0)
+
+    # A soft ding punctuates info cards (verbatim numbers/quotes).
+    last_ding = float("-inf")
+    ding_count = 0
+    cards = sorted(
+        (o for o in overlay_events if o.get("type") == "info_card"),
+        key=lambda o: float(o.get("time", 0)),
+    )
+    for card in cards:
+        if ding_count >= _SFX_DING_MAX_EVENTS:
+            break
+        card_time = float(card.get("time", 0))
+        if card_time - last_ding < _SFX_DING_MIN_GAP_SEC:
+            continue
+        at_sec = _to_rendered_time(card_time, joins)
+        if not _is_free(at_sec):
+            continue
+        _add("ding", at_sec, -6.0)
+        last_ding = card_time
+        ding_count += 1
+
+    events.sort(key=lambda e: e["at_sec"])
+    return events
+
+
 def build_edl(
     clip: dict[str, Any],
     transcript_words: list[dict[str, Any]],
@@ -291,7 +443,7 @@ def build_edl(
         energy_peaks: List of timestamps (seconds) for energy peaks
 
     Returns:
-        EDL dict with segments, transitions, zooms, captions, overlays, broll, sfx, audio, color, hook
+        EDL dict with segments, transitions, zooms, captions, overlays, broll, sfx, sfx_events, audio, color, hook
     """
     clip_duration = clip.get("duration", clip.get("end", 0) - clip.get("start", 0))
 
@@ -343,6 +495,9 @@ def build_edl(
     # SFX markers
     sfx_markers = _create_sfx_markers(profile, energy_peaks)
 
+    # Renderer-ready SFX events (consumed by the audio finisher)
+    sfx_events = _create_sfx_events(profile, segments, overlay_events, energy_peaks, clip_duration)
+
     return {
         "clip_id": clip.get("id", "unknown"),
         "duration": clip_duration,
@@ -356,6 +511,7 @@ def build_edl(
         "overlays": overlay_events,
         "broll": broll_queries,
         "sfx": sfx_markers,
+        "sfx_events": sfx_events,
         "audio": {
             "music_mood": audio.get("music_mood", "none"),
             "music_volume": audio.get("music_volume_0_to_1", 0.0),

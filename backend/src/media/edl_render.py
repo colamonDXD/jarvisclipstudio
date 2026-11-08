@@ -7,7 +7,37 @@ from typing import Any, Optional
 from .common import LOUDNORM_FILTER, OUTPUT_FPS, logger
 from .ffmpeg import build_audio_output_args, build_final_video_encode_args, run_ffmpeg_command, subtitles_filter_fragment
 
-TRANSITION_MAP = {"hard_cut": None, "cut": None, "none": None, "cross_dissolve": "fade", "fade": "fade", "slide": "slideleft", "wipe": "wipeleft"}
+# The full FFmpeg xfade catalog: 58 named transitions (verified against the
+# xfade filter documentation). Each name maps to itself, so any of them can
+# be used directly as an EDL/profile transition value. The legacy profile
+# names keep their long-standing targets below. A transition name missing
+# from TRANSITION_MAP (including xfade's expression-only "custom") resolves
+# to None and degrades safely to a hard cut in the join loop.
+XFADE_TRANSITIONS = (
+    "fade", "wipeleft", "wiperight", "wipeup", "wipedown",
+    "slideleft", "slideright", "slideup", "slidedown",
+    "circlecrop", "rectcrop", "distance", "fadeblack", "fadewhite",
+    "radial", "smoothleft", "smoothright", "smoothup", "smoothdown",
+    "circleopen", "circleclose", "vertopen", "vertclose",
+    "horzopen", "horzclose", "dissolve", "pixelize",
+    "diagtl", "diagtr", "diagbl", "diagbr",
+    "hlslice", "hrslice", "vuslice", "vdslice", "hblur", "fadegrays",
+    "wipetl", "wipetr", "wipebl", "wipebr", "squeezeh", "squeezev",
+    "zoomin", "fadefast", "fadeslow",
+    "hlwind", "hrwind", "vuwind", "vdwind",
+    "coverleft", "coverright", "coverup", "coverdown",
+    "revealleft", "revealright", "revealup", "revealdown",
+)
+
+TRANSITION_MAP = {
+    "hard_cut": None,
+    "cut": None,
+    "none": None,
+    "cross_dissolve": "fade",
+    "slide": "slideleft",
+    "wipe": "wipeleft",
+    **{name: name for name in XFADE_TRANSITIONS},
+}
 
 # User asset library (repo-root assets/music and assets/sfx). Files are
 # resolved by the exact name the EDL/profile asks for, or by file stem with
