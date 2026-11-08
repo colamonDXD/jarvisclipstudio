@@ -10,6 +10,7 @@
     "applySettings": "Einstellungen konnten nicht übernommen werden",
     "deleteFont": "Schrift konnte nicht gelöscht werden",
     "exportClip": "Clip konnte nicht exportiert werden",
+    "rerenderClip": "Dieser Clip konnte nicht neu gerendert werden",
     "share": "Freigabelink konnte nicht erstellt werden",
     "disableShare": "Freigabelink konnte nicht deaktiviert werden",
     "downloadAll": "Die Clips konnten nicht heruntergeladen werden. Bitte versuche es erneut."
@@ -17,7 +18,8 @@
   "toasts": {
     "settingsApplied": "Generierungseinstellungen übernommen",
     "cancelled": "Generierung abgebrochen",
-    "retryQueued": "Generierung zur Wiederholung eingereiht"
+    "retryQueued": "Generierung zur Wiederholung eingereiht",
+    "clipRestyled": "Clip im neuen Stil neu gerendert"
   },
   "hooks": {
     "question": "Frage-Hook",

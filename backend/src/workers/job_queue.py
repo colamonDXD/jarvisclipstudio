@@ -2,13 +2,40 @@
 Job queue setup using arq (async Redis queue).
 """
 
+import json
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional
 from arq import create_pool
 from arq.connections import RedisSettings, ArqRedis
 from ..config import get_config
 
 logger = logging.getLogger(__name__)
+
+# Clip re-render jobs publish their outcome under this prefix so the API can
+# report progress/failure without waiting on arq's result retention.
+RERENDER_OUTCOME_PREFIX = "clip_rerender:"
+RERENDER_OUTCOME_TTL_SECONDS = 3600
+
+
+async def set_rerender_outcome(redis, job_id: str, payload: Dict[str, Any]) -> None:
+    """Record the latest state of a clip re-render job."""
+    await redis.set(
+        f"{RERENDER_OUTCOME_PREFIX}{job_id}",
+        json.dumps(payload, default=str),
+        ex=RERENDER_OUTCOME_TTL_SECONDS,
+    )
+
+
+async def get_rerender_outcome(redis, job_id: str) -> Optional[Dict[str, Any]]:
+    """Read a clip re-render job's recorded state, if it has one."""
+    raw = await redis.get(f"{RERENDER_OUTCOME_PREFIX}{job_id}")
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 # Queue names
 DEFAULT_QUEUE_NAME = "supoclip_tasks"

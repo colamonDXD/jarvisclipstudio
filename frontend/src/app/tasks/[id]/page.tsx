@@ -9,6 +9,7 @@ import { useTaskProgress } from "@/hooks/use-task-progress";
 import { StatusBadge, ACTIVE_TASK_STATUSES } from "@/components/app/status-badge";
 import { getClipUrl, requestAction, EXPORT_PRESETS } from "@/lib/clip-actions";
 import { clipExportFilePath, pollClipExport, triggerFileDownload } from "@/lib/clip-export";
+import { pollClipRerender } from "@/lib/clip-rerender";
 import { downloadAllClips } from "@/lib/clip-archive";
 import { trackClipExport } from "@/lib/clip-export-tracking";
 import { useParams, useRouter } from "next/navigation";
@@ -99,6 +100,7 @@ interface Clip {
   hook_type: string | null;
   hook_title: string | null;
   niche_override?: NicheOverride | null;
+  niche_profile?: NicheOverride | null;
 }
 
 interface TaskDetails {
@@ -584,6 +586,32 @@ export default function TaskPage() {
     void trackClipExport({ userId: session.user.id, surface: "task", format: exportPreset });
   };
 
+  const handleRerenderClip = async (clip: Clip, niche: NicheOverride) => {
+    if (!task) return;
+    const taskId = task.id;
+    const outcome = await pollClipRerender({
+      start: () => fetch(`${taskApiUrl}/${taskId}/clips/${clip.id}/re-render`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ niche_override: niche }),
+        cache: "no-store",
+      }),
+      status: (jobId) => fetch(`${taskApiUrl}/${taskId}/clips/${clip.id}/re-render/${encodeURIComponent(jobId)}`, {
+        cache: "no-store",
+      }),
+      readError: (response) => buildSupportError(response, t("errors.rerenderClip")),
+      fallbackMessage: t("errors.rerenderClip"),
+      timeoutMessage: t("errors.rerenderClip"),
+    });
+    if (outcome.clip) {
+      const refreshed = outcome.clip as unknown as Clip;
+      setClips((current) => current.map((entry) => (entry.id === refreshed.id ? { ...entry, ...refreshed } : entry)));
+    } else {
+      await fetchTaskStatus(0, 0, true);
+    }
+    toast.success(t("toasts.clipRestyled"));
+  };
+
   const handleDownloadClip = (clip: Clip) => {
     if (exportPreset === "original") {
       const link = document.createElement("a");
@@ -695,6 +723,7 @@ export default function TaskPage() {
       onDelete={readOnly ? undefined : () => setDeletingClipId(clip.id)}
       editable={task?.status === "completed" && !readOnly}
       profile={task?.niche_override}
+      onRerender={readOnly ? undefined : (niche) => void runAction(clip.id, () => handleRerenderClip(clip, niche))}
     />
   );
 

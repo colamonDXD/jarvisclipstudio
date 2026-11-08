@@ -37,13 +37,15 @@ export interface WallClip {
   hook_type: string | null;
   hook_title: string | null;
   niche_override?: NicheOverride | null;
+  /** The niche this clip was actually rendered with, when the API reports it. */
+  niche_profile?: string | null;
 }
 
 function clipTitle(clip: WallClip, fallback: string) {
   return clip.hook_title || fallback;
 }
 
-export function ClipTile({ clip, taskId, busy, best, editable, profile, onOpen, onDownload, onDelete }: {
+export function ClipTile({ clip, taskId, busy, best, editable, profile, onOpen, onDownload, onDelete, onRerender }: {
   clip: WallClip;
   taskId: string;
   busy: boolean;
@@ -53,6 +55,8 @@ export function ClipTile({ clip, taskId, busy, best, editable, profile, onOpen, 
   onOpen: () => void;
   onDownload: () => void;
   onDelete?: () => void;
+  /** Queue a re-render of this clip with the chosen niche profile. */
+  onRerender?: (niche: NicheOverride) => void;
 }) {
   const t = useTranslations("task");
   const title = clipTitle(clip, t("clipNumber", { order: clip.clip_order }));
@@ -88,11 +92,12 @@ export function ClipTile({ clip, taskId, busy, best, editable, profile, onOpen, 
       <div className="mt-2.5 px-0.5">
         <h3 className="line-clamp-2 text-sm font-semibold leading-snug">{title}</h3>
         <p className="mt-0.5 text-xs tabular-nums text-muted-foreground">{clip.start_time} – {clip.end_time}</p>
-        <p className="mt-1 text-xs text-muted-foreground">Profile: {nicheLabel(clip.niche_override ?? profile)}</p>
+        <p className="mt-1 text-xs text-muted-foreground">Profile: {nicheLabel(clip.niche_profile ?? clip.niche_override ?? profile)}</p>
         {editable && (
-          <Select disabled value="">
+          <Select disabled={busy || !onRerender} value="" onValueChange={(value) => onRerender?.(value as NicheOverride)}>
             <SelectTrigger className="mt-2 h-7 w-full text-xs" aria-label={`Re-render ${title} as a niche`}>
-              <SelectValue placeholder="Re-render as…" />
+              {busy && <Loader2 className="size-3.5 animate-spin" />}
+              <SelectValue placeholder={busy ? "Re-rendering…" : "Re-render as…"} />
             </SelectTrigger>
             <SelectContent>
               {NICHE_OPTIONS.map((niche) => <SelectItem key={niche.value} value={niche.value}>{niche.label}</SelectItem>)}

@@ -10,6 +10,7 @@
     "applySettings": "Failed to apply settings",
     "deleteFont": "Failed to delete font",
     "exportClip": "Failed to export clip",
+    "rerenderClip": "Could not re-render this clip",
     "share": "Failed to create share link",
     "disableShare": "Failed to disable share link",
     "downloadAll": "Could not download the clips. Please try again."
@@ -17,7 +18,8 @@
   "toasts": {
     "settingsApplied": "Generation settings applied",
     "cancelled": "Generation cancelled",
-    "retryQueued": "Generation retry queued"
+    "retryQueued": "Generation retry queued",
+    "clipRestyled": "Clip re-rendered in the new style"
   },
   "hooks": {
     "question": "Question Hook",

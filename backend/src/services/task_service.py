@@ -40,7 +40,11 @@ from ..youtube_source import load_time_map, localize_segment, restore_clip_timel
 from ..clip_cleanup import normalize_clip_cleanup_settings
 from ..clip_duration import clip_duration, validate_clip_length
 from ..ai import TRANSCRIPT_ANALYSIS_CACHE_VERSION
-from ..auto_director.niche import validate_niche_override
+from ..auto_director.niche import (
+    NICHE_VALUES,
+    resolve_effective_profile,
+    validate_niche_override,
+)
 from ..clip_source_map import load_clip_caption_settings
 from ..media_storage import MediaStorage, media_work
 from ..utils.async_helpers import run_in_thread
@@ -983,6 +987,12 @@ class TaskService(ClipEditingMixin):
                     MediaStorage().caption_settings,
                     clip["file_path"],
                 ) if clip.get("file_path") else None,
+                "niche_profile": await run_in_thread(
+                    self._recorded_clip_profile, clip.get("file_path")
+                )
+                or resolve_effective_profile(
+                    clip.get("niche_override"), task.get("niche_override"), None
+                ),
             }
             for clip in clips
         ]
@@ -990,6 +1000,21 @@ class TaskService(ClipEditingMixin):
         task.update(await self._load_task_source_settings(task_id))
 
         return task
+
+    @staticmethod
+    def _recorded_clip_profile(file_path: Optional[str]) -> Optional[str]:
+        """Niche a clip was actually rendered with, from its bundle record."""
+        if not file_path:
+            return None
+        try:
+            from ..deliverable_bundle import read_recorded_profile
+
+            profile = read_recorded_profile(
+                MediaStorage().local_path(file_path, metadata_only=True)
+            )
+        except Exception:
+            return None
+        return profile if profile in NICHE_VALUES else None
 
     async def get_user_tasks(
         self, user_id: str, limit: int = 50

@@ -10,6 +10,7 @@
     "applySettings": "No se pudo aplicar la configuración",
     "deleteFont": "No se pudo eliminar la fuente",
     "exportClip": "No se pudo exportar el clip",
+    "rerenderClip": "No se pudo re-renderizar este clip",
     "share": "No se pudo crear el enlace para compartir",
     "disableShare": "No se pudo desactivar el enlace para compartir",
     "downloadAll": "No se pudieron descargar los clips. Inténtalo de nuevo."
@@ -17,7 +18,8 @@
   "toasts": {
     "settingsApplied": "Configuración de la generación aplicada",
     "cancelled": "Generación cancelada",
-    "retryQueued": "Generación en cola para reintentar"
+    "retryQueued": "Generación en cola para reintentar",
+    "clipRestyled": "Clip re-renderizado con el nuevo estilo"
   },
   "hooks": {
     "question": "Gancho de pregunta",

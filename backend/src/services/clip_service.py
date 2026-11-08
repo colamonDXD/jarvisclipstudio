@@ -39,6 +39,9 @@ from ..clip_source_map import (
 )
 
 from ..media_storage import MediaStorage
+from ..auto_director.edl import build_edl, load_profile
+from ..auto_director.niche import validate_niche_override
+from ..caption_templates import get_template_names
 from ..youtube_source import (
     load_time_map,
     local_ranges_for,
@@ -286,6 +289,235 @@ class ClipEditingMixin:
             clip_ids.append(clip_id)
 
         await self.task_repo.update_task_clips(self.db, task_id, clip_ids)
+
+
+    @staticmethod
+    def _build_rerender_edl(
+        clip: Dict[str, Any],
+        start_seconds: float,
+        end_seconds: float,
+        target_niche: str,
+        transition: Optional[str],
+    ) -> Dict[str, Any]:
+        """Build a fresh EDL for a re-style from the clip's stored transcript.
+
+        The stored clip text is the transcript for this exact range, so the
+        EDL's verbatim info cards and B-roll queries are rebuilt from it word
+        by word — no transcription or re-selection is involved. Energy peaks
+        are unknown at edit time, so profile zooms lean on their defaults.
+        """
+        profile = load_profile(target_niche)
+        words = [
+            {"word": word, "start": 0.0, "end": 0.0}
+            for word in (clip.get("text") or "").split()
+        ]
+        edl = build_edl(
+            {
+                "id": clip.get("id", "clip"),
+                "start": start_seconds,
+                "end": end_seconds,
+                "duration": end_seconds - start_seconds,
+            },
+            words,
+            profile,
+            [],
+        )
+        if transition is not None:
+            for segment in edl.get("segments", []):
+                if segment.get("index", 0) > 0:
+                    segment["transition_in"] = transition
+            if isinstance(edl.get("transitions"), dict):
+                edl["transitions"]["default"] = transition
+        return edl
+
+    @serialized_task_edit
+    async def rerender_clip(
+        self,
+        task_id: str,
+        clip_id: str,
+        niche_override: str,
+        caption_template: Optional[str] = None,
+        transition: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Re-render one clip with a different niche profile.
+
+        This is a re-style, not a re-pick: the clip's stored source ranges and
+        transcript text are reused exactly, a new EDL is built from the target
+        profile, and the render goes through the same ``create_single_clip``
+        path (and deliverable bundle writer) as the original render.
+        """
+        target_niche = validate_niche_override(niche_override)
+        if target_niche is None:
+            raise ValueError("niche_override is required to re-render a clip")
+        if caption_template is not None and caption_template not in get_template_names():
+            raise ValueError(
+                f"Invalid caption_template '{caption_template}'. "
+                f"Valid values: {sorted(get_template_names())}."
+            )
+        if transition is not None:
+            from ..media.edl_render import TRANSITION_MAP
+
+            if transition not in TRANSITION_MAP:
+                raise ValueError(
+                    f"Invalid transition '{transition}'. "
+                    f"Valid values: {sorted(TRANSITION_MAP)}."
+                )
+
+        clip = await self.clip_repo.get_clip_by_id(self.db, clip_id)
+        if not clip or clip["task_id"] != task_id:
+            raise ValueError("Clip not found")
+
+        task = await self.task_repo.get_task_by_id(self.db, task_id)
+        if not task:
+            raise ValueError("Task not found")
+        source_url = task.get("source_url")
+        source_type = task.get("source_type")
+        if not source_url or not source_type:
+            raise ValueError("Task source URL is missing; cannot re-render clips")
+
+        settings = await self._load_task_source_settings(task_id)
+        output_format = settings.get("output_format", "vertical")
+        add_subtitles = settings.get("add_subtitles", True)
+        download_quality, output_short_side = await self._media_limits(task.get("user_id"))
+
+        source_ranges = await run_in_thread(self._get_clip_source_ranges, clip)
+        bounds = source_range_bounds(source_ranges)
+        if not bounds:
+            raise ValueError("Clip source timing is unavailable")
+        start_seconds, end_seconds = bounds
+
+        # Acquire the source the same way caption edits do: processing cache
+        # first, then a ranged download, so only this clip's footage is fetched.
+        video_path: Optional[Path] = None
+        downloaded_source: Optional[Path] = None
+        processing_mode = (
+            task.get("processing_mode") or self.config.default_processing_mode
+        )
+        cache_entry = await self.cache_repo.get_cache(
+            self.db,
+            self._build_cache_key(source_url, source_type, processing_mode, download_quality),
+        )
+        cached_video_path = cache_entry.get("video_path") if cache_entry else None
+        if cached_video_path:
+            candidate = await run_in_thread(MediaStorage().local_path, cached_video_path)
+            if candidate.exists():
+                video_path = candidate
+        if video_path is None:
+            if source_type == "youtube":
+                downloaded = await self.video_service.download_video(
+                    source_url,
+                    quality=download_quality,
+                    task_id=task_id,
+                    ranges=source_ranges,
+                )
+                video_path = Path(downloaded) if downloaded else None
+                downloaded_source = video_path
+            elif source_type in {"twitch", "kick"}:
+                video_path = await run_in_thread(
+                    download_stream_sections, source_url,
+                    [{"start_time": start, "end_time": end} for start, end in source_ranges],
+                    task.get("source_duration_seconds"), task_id,
+                )
+                downloaded_source = video_path
+            else:
+                video_path = await resolve_upload_for_edit(self.video_service, source_url)
+        if video_path is None or not video_path.exists():
+            raise ValueError(
+                "The source video is no longer available. Upload it again to re-render this clip."
+            )
+
+        try:
+            video_path = await self.video_service.prepare_source(video_path)
+            time_map = await run_in_thread(load_time_map, video_path)
+            segment = {
+                "start_time": self._seconds_to_mmss(start_seconds),
+                "end_time": self._seconds_to_mmss(end_seconds),
+                "keep_ranges": source_ranges,
+                "text": clip.get("text") or "",
+                "relevance_score": clip.get("relevance_score", 0.5),
+                "reasoning": clip.get("reasoning")
+                or "Re-rendered with a new niche profile",
+                "virality_score": clip.get("virality_score", 0),
+                "hook_score": clip.get("hook_score", 0),
+                "engagement_score": clip.get("engagement_score", 0),
+                "value_score": clip.get("value_score", 0),
+                "shareability_score": clip.get("shareability_score", 0),
+                "hook_type": clip.get("hook_type"),
+                "hook_title": clip.get("hook_title"),
+                "niche_override": target_niche,
+            }
+            render_segment = (
+                localize_segment(segment, time_map) if time_map else segment
+            )
+            edl = await run_in_thread(
+                self._build_rerender_edl,
+                clip,
+                start_seconds,
+                end_seconds,
+                target_niche,
+                transition,
+            )
+            effective_caption_template = (
+                caption_template or task.get("caption_template") or "default"
+            )
+            if caption_template is not None:
+                edl["captions"]["preset_id"] = caption_template
+            clip_info = await self.video_service.create_single_clip(
+                video_path,
+                render_segment,
+                int(clip.get("clip_order", 1)) - 1,
+                Path(self.config.temp_dir) / "clips",
+                task.get("font_family") or None,
+                task.get("font_size") or None,
+                task.get("font_color") or None,
+                effective_caption_template,
+                output_format,
+                add_subtitles,
+                normalize_clip_cleanup_settings(
+                    settings.get("cut_long_pauses"),
+                    settings.get("pause_threshold_ms"),
+                    settings.get("remove_filler_words"),
+                    settings.get("filtered_words"),
+                ),
+                max_short_side=output_short_side,
+                max_clip_seconds=max(
+                    clip_duration(normalize_clip_length(settings.get("clip_length"))).maximum,
+                    MAX_RENDERED_CLIP_SECONDS,
+                ),
+                include_broll=False,
+                edl=edl,
+                niche_override=target_niche,
+                project_niche_override=task.get("niche_override"),
+                classifier_niche=None,
+            )
+            if clip_info is None:
+                raise ValueError(
+                    "Could not re-render the clip. Your existing clip is unchanged."
+                )
+            if time_map:
+                clip_info = await run_in_thread(
+                    restore_clip_timeline, clip_info, time_map, segment
+                )
+        finally:
+            if downloaded_source is not None:
+                self._cleanup_source_video(downloaded_source, source_type, source_url)
+
+        await self.clip_repo.update_clip(
+            self.db,
+            clip_id,
+            clip_info["filename"],
+            clip_info["path"],
+            clip_info["start_time"],
+            clip_info["end_time"],
+            clip_info["duration"],
+            clip.get("text") or "",
+        )
+        await self.clip_repo.update_clip_niche_override(
+            self.db, clip_id, target_niche
+        )
+        refreshed = await self.clip_repo.get_clip_by_id(self.db, clip_id) or {}
+        refreshed["niche_profile"] = target_niche
+        return refreshed
 
 
     @serialized_task_edit

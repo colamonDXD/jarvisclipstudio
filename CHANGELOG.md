@@ -16,6 +16,7 @@ Add a line here when a pull request changes something a user can see. Use **New*
 - **New:** Clips can use all 58 built-in crossfade transitions (wipes, slides, circles, zooms and more), and the editor now places sound effects from your own library automatically — whooshes on transitions, hits on energy peaks, a sting on true-crime reveals and dings on stat cards — mixed under the voice by the audio finisher. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 - **New:** Hindi podcast clips now burn their captions in Roman Hinglish — the Latin-letter spelling Hindi creators actually use — instead of Devanagari script, with word-for-word timing unchanged. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 
+- **New:** Re-render a single clip in a different niche style straight from the results grid. Pick a niche under any clip and it is rebuilt with that profile's pacing, transitions, captions and music — the footage and transcript are reused, so no new analysis is needed. Clips now also show the niche they were actually rendered with. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
 ## 2026-11-06
 
 - **Under the hood:** New features can be switched on for the web and iPhone apps separately, without an update. ([#340](https://github.com/FujiwaraChoki/supoclip/pull/340))

@@ -35,7 +35,13 @@ from ...media.upload_ingest import foreign_upload
 from ...repositories.upload_repository import get_stored_upload
 from ...services.billing_service import BillingService, BillingLimitExceeded
 from ...auth_headers import resolve_authenticated_user_id
-from ...workers.job_queue import JobQueue
+from ...workers.job_queue import (
+    JobQueue,
+    get_rerender_outcome,
+    set_rerender_outcome,
+)
+from ...caption_templates import get_template_names
+from ...media.edl_render import TRANSITION_MAP
 from ...workers.progress import ProgressTracker
 from ...config import get_config
 from ...youtube_utils import async_get_youtube_video_info, canonical_youtube_url
@@ -1283,6 +1289,143 @@ async def regenerate_clip(
         logger.error(f"Error regenerating clip: {e}")
         raise HTTPException(
             status_code=500, detail=f"Error regenerating clip: {str(e)}"
+        )
+
+
+@router.post("/{task_id}/clips/{clip_id}/re-render", status_code=202)
+async def rerender_clip(
+    task_id: str, clip_id: str, request: Request, db: AsyncSession = Depends(get_db)
+):
+    """Queue a re-render of one clip with a different niche profile.
+
+    The clip's footage and transcript are reused; only its auto-director
+    styling (pacing, transitions, captions, overlays, music) is rebuilt.
+    Poll the companion status route for the refreshed clip.
+    """
+    try:
+        payload = await _read_json_object(request)
+        try:
+            niche_override = validate_niche_override(payload.get("niche_override"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        if niche_override is None:
+            raise HTTPException(
+                status_code=422, detail="niche_override is required to re-render a clip"
+            )
+        caption_template = payload.get("caption_template")
+        if caption_template is not None and (
+            not isinstance(caption_template, str)
+            or caption_template not in get_template_names()
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Invalid caption_template. Valid values: "
+                    f"{sorted(get_template_names())}."
+                ),
+            )
+        transition = payload.get("transition")
+        if transition is not None and (
+            not isinstance(transition, str) or transition not in TRANSITION_MAP
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Invalid transition. Valid values: {sorted(TRANSITION_MAP)}."
+                ),
+            )
+
+        task_service = TaskService(db)
+        await _require_task_owner(request, task_service, db, task_id)
+        clip = await task_service.clip_repo.get_clip_by_id(db, clip_id)
+        if not clip or clip["task_id"] != task_id:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        job_id = f"clip-rerender:{clip_id}:{secrets.token_hex(6)}"
+        queue_adapter = getattr(request.app.state, "queue_adapter", JobQueue)
+        await queue_adapter.enqueue_job(
+            "rerender_clip_task",
+            task_id,
+            clip_id,
+            niche_override,
+            caption_template,
+            transition,
+            _job_id=job_id,
+        )
+        try:
+            pool = await JobQueue.get_pool()
+            await set_rerender_outcome(
+                pool,
+                job_id,
+                {
+                    "status": "queued",
+                    "clip_id": clip_id,
+                    "niche_override": niche_override,
+                },
+            )
+        except Exception:
+            logger.warning(
+                "Could not record queued re-render state for %s", job_id, exc_info=True
+            )
+        return {
+            "clip_id": clip_id,
+            "job_id": job_id,
+            "status": "queued",
+            "niche_override": niche_override,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error queueing clip re-render: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Error queueing clip re-render: {str(e)}"
+        )
+
+
+@router.get("/{task_id}/clips/{clip_id}/re-render/{job_id}")
+async def get_clip_rerender_status(
+    task_id: str,
+    clip_id: str,
+    job_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Report a queued re-render's state; carries the refreshed clip when done."""
+    try:
+        task_service = TaskService(db)
+        await _require_task_owner(request, task_service, db, task_id)
+        clip = await task_service.clip_repo.get_clip_by_id(db, clip_id)
+        if not clip or clip["task_id"] != task_id:
+            raise HTTPException(status_code=404, detail="Clip not found")
+        if not job_id.startswith(f"clip-rerender:{clip_id}:"):
+            raise HTTPException(status_code=404, detail="Re-render job not found")
+
+        outcome = None
+        try:
+            pool = await JobQueue.get_pool()
+            outcome = await get_rerender_outcome(pool, job_id)
+        except Exception:
+            logger.warning(
+                "Could not read re-render state for %s", job_id, exc_info=True
+            )
+        if outcome:
+            return {"job_id": job_id, "clip_id": clip_id, **outcome}
+
+        status = await JobQueue.get_job_status(job_id)
+        arq_status = getattr(status, "value", status)
+        mapped = {
+            "deferred": "queued",
+            "queued": "queued",
+            "in_progress": "processing",
+            "complete": "completed",
+        }.get(str(arq_status), "unknown")
+        return {"job_id": job_id, "clip_id": clip_id, "status": mapped}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reading clip re-render status: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Error reading clip re-render status: {str(e)}"
         )
 
 

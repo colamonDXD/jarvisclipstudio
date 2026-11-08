@@ -10,6 +10,7 @@
     "applySettings": "Gagal menerapkan pengaturan",
     "deleteFont": "Gagal menghapus font",
     "exportClip": "Gagal mengekspor clip",
+    "rerenderClip": "Tidak dapat merender ulang klip ini",
     "share": "Gagal membuat tautan berbagi",
     "disableShare": "Gagal menonaktifkan tautan berbagi",
     "downloadAll": "Tidak dapat mengunduh klip. Silakan coba lagi."
@@ -17,7 +18,8 @@
   "toasts": {
     "settingsApplied": "Pengaturan generasi diterapkan",
     "cancelled": "Generasi dibatalkan",
-    "retryQueued": "Pembuatan masuk antrean untuk dicoba lagi"
+    "retryQueued": "Pembuatan masuk antrean untuk dicoba lagi",
+    "clipRestyled": "Klip dirender ulang dengan gaya baru"
   },
   "hooks": {
     "question": "Hook pertanyaan",

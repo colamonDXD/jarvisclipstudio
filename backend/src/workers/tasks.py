@@ -132,6 +132,78 @@ async def process_video_task(
             raise
 
 
+RERENDER_CLIP_JOB_TIMEOUT_SECONDS = 3600
+
+
+async def rerender_clip_task(
+    ctx: Dict[str, Any],
+    task_id: str,
+    clip_id: str,
+    niche_override: str,
+    caption_template: Optional[str] = None,
+    transition: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Re-render one clip with a different niche profile (a re-style).
+
+    Failures are recorded in the job outcome instead of retried blindly: the
+    clip keeps its previous render, and the API reports the recorded state.
+    """
+    from ..database import AsyncSessionLocal
+    from ..runtime_settings import load_runtime_settings_cache
+    from ..services.task_service import TaskService
+    from ..workers.job_queue import set_rerender_outcome
+
+    job_id = ctx.get("job_id")
+    redis = ctx["redis"]
+    set_trace_id(f"rerender-{clip_id}")
+    logger.info(
+        "Worker re-rendering clip %s of task %s as %s",
+        clip_id,
+        task_id,
+        niche_override,
+    )
+
+    async def record(outcome: Dict[str, Any]) -> None:
+        if job_id:
+            try:
+                await set_rerender_outcome(redis, job_id, outcome)
+            except Exception:
+                logger.exception("Could not record re-render outcome for %s", job_id)
+
+    await record(
+        {"status": "processing", "clip_id": clip_id, "niche_override": niche_override}
+    )
+    try:
+        async with AsyncSessionLocal() as db:
+            await load_runtime_settings_cache(db)
+            service = TaskService(db)
+            clip = await service.rerender_clip(
+                task_id,
+                clip_id,
+                niche_override,
+                caption_template=caption_template,
+                transition=transition,
+            )
+        outcome = {
+            "status": "completed",
+            "clip_id": clip_id,
+            "niche_override": niche_override,
+            "clip": clip,
+        }
+    except Exception as exc:
+        logger.error(
+            "Re-render of clip %s failed: %s", clip_id, exc, exc_info=True
+        )
+        outcome = {
+            "status": "failed",
+            "clip_id": clip_id,
+            "niche_override": niche_override,
+            "error": str(exc),
+        }
+    await record(outcome)
+    return outcome
+
+
 async def _social_service(db):
     from ..runtime_settings import load_runtime_settings_cache
     from ..services.social_service import SocialService
@@ -215,6 +287,13 @@ class WorkerSettings:
     # Functions to run
     functions = [
         process_video_task,
+        # One try: the outcome (including failures) is recorded by the job
+        # itself, and a retry would start a second encode for the same clip.
+        func(
+            rerender_clip_task,
+            timeout=RERENDER_CLIP_JOB_TIMEOUT_SECONDS,
+            max_tries=1,
+        ),
         prepare_editor,
         export_editor,
         combine_editor,

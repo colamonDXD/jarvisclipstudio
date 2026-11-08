@@ -77,6 +77,22 @@ def _image_sources(edl: Mapping[str, Any] | None) -> list[dict[str, Any]]:
     return sources
 
 
+def read_recorded_profile(rendered_clip: Path) -> str | None:
+    """Return the niche profile recorded beside a rendered clip, if any.
+
+    ``write_deliverable_bundle`` stores the effective profile in
+    ``profile.txt`` inside the bundle folder; readers use it to report the
+    niche a clip was actually rendered with.
+    """
+    try:
+        text = (Path(rendered_clip).with_suffix("") / "profile.txt").read_text(
+            encoding="utf-8"
+        ).strip()
+    except OSError:
+        return None
+    return text or None
+
+
 def write_deliverable_bundle(
     rendered_clip: Path,
     edl: Mapping[str, Any] | None,

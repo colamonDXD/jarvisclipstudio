@@ -10,6 +10,7 @@
     "applySettings": "无法应用设置",
     "deleteFont": "无法删除字体",
     "exportClip": "无法导出片段",
+    "rerenderClip": "无法重新渲染此片段",
     "share": "无法创建分享链接",
     "disableShare": "无法停用分享链接",
     "downloadAll": "无法下载片段，请重试。"
@@ -17,7 +18,8 @@
   "toasts": {
     "settingsApplied": "已应用生成设置",
     "cancelled": "已取消生成",
-    "retryQueued": "已将生成任务加入重试队列"
+    "retryQueued": "已将生成任务加入重试队列",
+    "clipRestyled": "片段已按新样式重新渲染"
   },
   "hooks": {
     "question": "提问钩子",

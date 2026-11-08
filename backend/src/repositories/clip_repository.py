@@ -361,6 +361,24 @@ class ClipRepository:
         await commit_unless_editing(db)
 
     @staticmethod
+    async def update_clip_niche_override(
+        db: AsyncSession, clip_id: str, niche_override: Optional[str]
+    ) -> None:
+        """Record the niche profile a clip was last rendered with."""
+        await db.execute(
+            sa_text(
+                """
+                UPDATE generated_clips
+                SET niche_override = :niche_override,
+                    updated_at = NOW()
+                WHERE id = :clip_id
+                """
+            ),
+            {"clip_id": clip_id, "niche_override": niche_override},
+        )
+        await commit_unless_editing(db)
+
+    @staticmethod
     async def make_room_for_clip(db: AsyncSession, task_id: str, clip_order: int) -> None:
         """Shift following clips without colliding with the unique order key."""
         result = await db.execute(
