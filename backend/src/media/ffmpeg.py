@@ -311,6 +311,11 @@ def check_nvenc_available() -> bool:
     Some FFmpeg builds advertise h264_nvenc even when the host has no usable
     GPU, so listing the encoder is not enough: a one-frame probe encode
     decides. The result is cached; the probe runs once per process.
+
+    The probe frame must clear NVENC's minimum supported dimensions
+    (176x144 on current drivers): a smaller frame fails with "Frame
+    Dimension less than the minimum supported value" even on a healthy
+    GPU, which silently disabled GPU encoding for every render.
     """
     try:
         result = run_ffmpeg_command(["ffmpeg", "-hide_banner", "-encoders"], timeout=30)
@@ -321,7 +326,7 @@ def check_nvenc_available() -> bool:
     probe = run_ffmpeg_command(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-            "-i", "color=size=64x64:rate=1", "-frames:v", "1",
+            "-i", "color=size=256x256:rate=1", "-frames:v", "1",
             "-c:v", "h264_nvenc", "-f", "null", "-",
         ],
         timeout=30,

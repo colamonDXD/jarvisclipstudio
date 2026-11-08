@@ -253,7 +253,198 @@ def test_missing_engine_raises_clear_error(monkeypatch):
         transcription._get_faster_whisper_model("tiny")
 
 
-# --- (c) real tiny-model transcription ---------------------------------------
+# --- (c) batch-size resolution + CUDA OOM handling (transcription-speed) ---
+
+
+def test_whisper_batch_size_config_parsing(monkeypatch):
+    monkeypatch.delenv("WHISPER_BATCH_SIZE", raising=False)
+    assert Config().whisper_batch_size == 0
+    monkeypatch.setenv("WHISPER_BATCH_SIZE", "24")
+    assert Config().whisper_batch_size == 24
+    monkeypatch.setenv("WHISPER_BATCH_SIZE", "not-a-number")
+    assert Config().whisper_batch_size == 0
+    monkeypatch.setenv("WHISPER_BATCH_SIZE", "999")
+    assert Config().whisper_batch_size == 64
+    monkeypatch.setenv("WHISPER_BATCH_SIZE", "-5")
+    assert Config().whisper_batch_size == 0
+
+
+def _patch_batch_config(monkeypatch, value):
+    monkeypatch.setattr(
+        transcription,
+        "get_config",
+        lambda: SimpleNamespace(whisper_batch_size=value),
+    )
+
+
+def test_batch_size_defaults_keep_legacy_16(monkeypatch):
+    _patch_batch_config(monkeypatch, 0)
+    resolve = transcription._resolve_faster_whisper_batch_size
+    # Unset env: the historic batch of 16 everywhere except large-class
+    # models on CUDA, where 8 protects 6 GB GPUs.
+    assert resolve("medium", "cuda") == 16
+    assert resolve("medium", "cpu") == 16
+    assert resolve("tiny", "cuda") == 16
+    assert resolve("large-v3", "cuda") == 8
+    assert resolve("large-v3-turbo", "cuda") == 8
+    assert resolve("large-v3-turbo", "cpu") == 16
+    assert resolve("distil-large-v3", "cuda") == 8
+    assert resolve("distil-whisper/distil-large-v3.5-ct2", "cuda") == 8
+
+
+def test_batch_size_env_override_wins_and_clamps(monkeypatch):
+    resolve = transcription._resolve_faster_whisper_batch_size
+    _patch_batch_config(monkeypatch, 4)
+    assert resolve("medium", "cuda") == 4
+    assert resolve("large-v3-turbo", "cuda") == 4
+    _patch_batch_config(monkeypatch, 500)
+    assert resolve("medium", "cuda") == 64
+
+
+def test_is_cuda_oom_error_matching():
+    assert transcription._is_cuda_oom_error(
+        RuntimeError("CUDA failed with error out of memory")
+    )
+    assert transcription._is_cuda_oom_error(
+        RuntimeError("CUDA_ERROR_OUT_OF_MEMORY: out of memory")
+    )
+    assert not transcription._is_cuda_oom_error(RuntimeError("decoder exploded"))
+    assert not transcription._is_cuda_oom_error(ValueError("bad audio"))
+
+
+class _FlakyOOMBatched:
+    """First instance OOMs; later instances transcribe normally."""
+
+    instances = []
+
+    def __init__(self, model=None):
+        self.model = model
+        self.calls = []
+        _FlakyOOMBatched.instances.append(self)
+
+    def transcribe(self, audio, **kwargs):
+        self.calls.append((audio, kwargs))
+        if len(_FlakyOOMBatched.instances) == 1:
+            raise RuntimeError("CUDA failed with error out of memory")
+        return iter([_fake_segment()]), _fake_info()
+
+
+class _CPUAwareOOMBatched:
+    """OOMs on the GPU model; succeeds once handed the CPU fallback model."""
+
+    instances = []
+    cpu_model = None
+
+    def __init__(self, model=None):
+        self.model = model
+        self.calls = []
+        _CPUAwareOOMBatched.instances.append(self)
+
+    def transcribe(self, audio, **kwargs):
+        self.calls.append((audio, kwargs))
+        if self.model is not _CPUAwareOOMBatched.cpu_model:
+            raise RuntimeError("CUDA failed with error out of memory")
+        return iter([_fake_segment()]), _fake_info()
+
+
+class _CountingFailingBatched:
+    instances = []
+
+    def __init__(self, model=None):
+        self.model = model
+        _CountingFailingBatched.instances.append(self)
+
+    def transcribe(self, audio, **kwargs):
+        raise RuntimeError("batched pipeline unavailable")
+
+
+def _patch_engine_with_loader(monkeypatch, batched_cls, gpu_model, cpu_model=None):
+    loader_calls = []
+
+    def fake_loader(name, device=None, compute_type=None):
+        loader_calls.append((name, device, compute_type))
+        if device == "cpu":
+            return cpu_model
+        return gpu_model
+
+    fake_module = SimpleNamespace(
+        WhisperModel=object, BatchedInferencePipeline=batched_cls
+    )
+    monkeypatch.setattr(transcription, "_faster_whisper", fake_module)
+    monkeypatch.setattr(transcription, "_FASTER_WHISPER_AVAILABLE", True)
+    monkeypatch.setattr(transcription, "_get_faster_whisper_model", fake_loader)
+    monkeypatch.setattr(
+        transcription, "_prepare_audio_for_transcription", lambda p: p
+    )
+    monkeypatch.setattr(
+        transcription,
+        "_faster_whisper_device_and_compute_type",
+        lambda: ("cuda", "float16"),
+    )
+    _patch_batch_config(monkeypatch, 0)
+    return loader_calls
+
+
+def test_transcribe_retries_with_halved_batch_after_cuda_oom(monkeypatch):
+    _FlakyOOMBatched.instances = []
+    gpu_model = _FakeModel()
+    _patch_engine_with_loader(monkeypatch, _FlakyOOMBatched, gpu_model)
+
+    result = transcription.transcribe_with_faster_whisper(
+        Path("clip.mp4"), model_name="medium"
+    )
+
+    assert result["segments"][0]["text"] == " Hello world."
+    # Two batched attempts: batch 16, then the OOM retry at half of it.
+    assert len(_FlakyOOMBatched.instances) == 2
+    assert _FlakyOOMBatched.instances[0].calls[0][1]["batch_size"] == 16
+    assert _FlakyOOMBatched.instances[1].calls[0][1]["batch_size"] == 8
+    # The sequential path was never needed.
+    assert gpu_model.calls == []
+
+
+def test_transcribe_falls_back_to_cpu_model_after_repeated_cuda_oom(monkeypatch):
+    _CPUAwareOOMBatched.instances = []
+    gpu_model = _FakeModel()
+    cpu_model = _FakeModel()
+    _CPUAwareOOMBatched.cpu_model = cpu_model
+    loader_calls = _patch_engine_with_loader(
+        monkeypatch, _CPUAwareOOMBatched, gpu_model, cpu_model
+    )
+
+    result = transcription.transcribe_with_faster_whisper(
+        Path("clip.mp4"), model_name="large-v3-turbo"
+    )
+
+    assert result["segments"][0]["text"] == " Hello world."
+    # batch 8 (large-class CUDA default) -> OOM -> halved to 4 -> OOM ->
+    # third attempt runs on the CPU int8 model and succeeds.
+    assert len(_CPUAwareOOMBatched.instances) == 3
+    assert _CPUAwareOOMBatched.instances[0].calls[0][1]["batch_size"] == 8
+    assert _CPUAwareOOMBatched.instances[1].calls[0][1]["batch_size"] == 4
+    assert _CPUAwareOOMBatched.instances[2].model is cpu_model
+    assert ("large-v3-turbo", "cpu", "int8") in loader_calls
+    assert gpu_model.calls == []
+    assert cpu_model.calls == []
+
+
+def test_transcribe_non_oom_failure_keeps_single_batched_attempt(monkeypatch):
+    _CountingFailingBatched.instances = []
+    gpu_model = _FakeModel()
+    _patch_engine_with_loader(monkeypatch, _CountingFailingBatched, gpu_model)
+
+    result = transcription.transcribe_with_faster_whisper(
+        Path("clip.mp4"), model_name="medium"
+    )
+
+    assert result["segments"][0]["text"] == " Hello world."
+    # Exactly one batched attempt, then the sequential fallback — the
+    # pre-existing behaviour for non-OOM failures is unchanged.
+    assert len(_CountingFailingBatched.instances) == 1
+    assert len(gpu_model.calls) == 1
+
+
+# --- (d) real tiny-model transcription ---------------------------------------
 
 
 def _write_silence_wav(path: Path, seconds: float = 2.0) -> Path:

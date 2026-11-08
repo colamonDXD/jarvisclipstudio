@@ -209,6 +209,56 @@ def transcribe_with_whisper(
     return model.transcribe(str(audio_path), word_timestamps=True, language=whisper_language)
 
 
+# Models that need noticeably more activation memory per batched window at
+# float16: the distilled/large class. On a 6 GB laptop GPU, batch 16 with
+# these can OOM where medium at batch 16 fits, so their CUDA default is 8.
+# See docs/transcription-speed.md for the research behind these numbers.
+_FASTER_WHISPER_LARGE_MODELS = frozenset(
+    {
+        "large",
+        "large-v1",
+        "large-v2",
+        "large-v3",
+        "large-v3-turbo",
+        "turbo",
+        "distil-large-v2",
+        "distil-large-v3",
+        "distil-large-v3.5",
+    }
+)
+
+
+def _resolve_faster_whisper_batch_size(model_name: str, device: str) -> int:
+    """Resolve the batched-inference batch size for one transcription.
+
+    ``WHISPER_BATCH_SIZE`` (exposed as ``Config.whisper_batch_size``) wins
+    when set to a positive value. Otherwise large-class models on CUDA
+    default to 8 and everything else to 16 — the value the pipeline has
+    always used, so an unset env leaves default behaviour unchanged.
+    """
+    configured = getattr(get_config(), "whisper_batch_size", 0) or 0
+    if configured > 0:
+        return max(1, min(64, int(configured)))
+    normalized = (model_name or "").strip().lower()
+    is_large = normalized in _FASTER_WHISPER_LARGE_MODELS or normalized.endswith(
+        ("distil-large-v3.5-ct2", "distil-large-v3-ct2")
+    )
+    if device == "cuda" and is_large:
+        return 8
+    return 16
+
+
+def _is_cuda_oom_error(error: BaseException) -> bool:
+    """Best-effort detection of a CUDA out-of-memory failure.
+
+    CTranslate2 raises RuntimeError with the CUDA error text embedded
+    (for example "CUDA failed with error out of memory"); matching the
+    message keeps this decoupled from any specific exception class.
+    """
+    message = str(error).lower()
+    return "out of memory" in message or "cuda_error_out_of_memory" in message
+
+
 def _faster_whisper_device_and_compute_type() -> tuple:
     """Pick the fastest CTranslate2 execution settings for this machine.
 
@@ -223,24 +273,41 @@ def _faster_whisper_device_and_compute_type() -> tuple:
     return "cpu", "int8"
 
 
-def _get_faster_whisper_model(model_name: str = "base"):
-    """Load and cache a faster-whisper model by name."""
+def _get_faster_whisper_model(
+    model_name: str = "base",
+    device: Optional[str] = None,
+    compute_type: Optional[str] = None,
+):
+    """Load and cache a faster-whisper model by name.
+
+    Models loaded with an explicit device/compute override (the CPU
+    fallback used after a CUDA OOM) are cached under a distinct key so the
+    regular CUDA instance is neither clobbered nor returned by mistake.
+    """
     if not _FASTER_WHISPER_AVAILABLE:
         raise RuntimeError(
             "faster-whisper is not installed. Install it with: uv add faster-whisper"
         )
-    if model_name not in _FASTER_WHISPER_MODEL_CACHE:
-        device, compute_type = _faster_whisper_device_and_compute_type()
+    if device is None and compute_type is None:
+        cache_key = model_name
+    else:
+        auto_device, auto_compute = _faster_whisper_device_and_compute_type()
+        device = device or auto_device
+        compute_type = compute_type or auto_compute
+        cache_key = f"{model_name}@{device}/{compute_type}"
+    if cache_key not in _FASTER_WHISPER_MODEL_CACHE:
+        if device is None or compute_type is None:
+            device, compute_type = _faster_whisper_device_and_compute_type()
         logger.info(
             "Loading faster-whisper model: %s (device: %s, compute: %s)",
             model_name,
             device,
             compute_type,
         )
-        _FASTER_WHISPER_MODEL_CACHE[model_name] = _faster_whisper.WhisperModel(
+        _FASTER_WHISPER_MODEL_CACHE[cache_key] = _faster_whisper.WhisperModel(
             model_name, device=device, compute_type=compute_type
         )
-    return _FASTER_WHISPER_MODEL_CACHE[model_name]
+    return _FASTER_WHISPER_MODEL_CACHE[cache_key]
 
 
 def _faster_whisper_result_to_whisper_dict(segments, info) -> Dict[str, Any]:
@@ -311,22 +378,70 @@ def transcribe_with_faster_whisper(
     info = None
     batched_pipeline_cls = getattr(_faster_whisper, "BatchedInferencePipeline", None)
     if batched_pipeline_cls is not None:
-        try:
-            batched = batched_pipeline_cls(model=model)
-            raw_segments, info = batched.transcribe(
-                str(audio_path), batch_size=16, **transcribe_kwargs
-            )
-            # The segments are a lazy generator: materialize inside the try
-            # so decode failures also fall back to the sequential path.
-            segments = list(raw_segments)
-        except Exception:
-            logger.warning(
-                "Batched faster-whisper transcription failed; "
-                "falling back to sequential transcription",
-                exc_info=True,
-            )
-            segments = None
-            info = None
+        device, _compute_type = _faster_whisper_device_and_compute_type()
+        batch_size = _resolve_faster_whisper_batch_size(model_name, device)
+        active_model = model
+        # A CUDA OOM mid-transcription is usually the batch, not the model:
+        # retry once with the batch halved, then once on CPU int8, before
+        # giving up on the batched path. Non-OOM failures keep the historic
+        # behaviour of a single attempt before the sequential fallback.
+        for attempt in range(3):
+            try:
+                batched = batched_pipeline_cls(model=active_model)
+                raw_segments, info = batched.transcribe(
+                    str(audio_path), batch_size=batch_size, **transcribe_kwargs
+                )
+                # The segments are a lazy generator: materialize inside the
+                # try so decode failures also fall back a level.
+                segments = list(raw_segments)
+                break
+            except Exception as error:
+                segments = None
+                info = None
+                if device != "cuda" or not _is_cuda_oom_error(error):
+                    logger.warning(
+                        "Batched faster-whisper transcription failed; "
+                        "falling back to sequential transcription",
+                        exc_info=True,
+                    )
+                    break
+                if attempt == 0 and batch_size > 1:
+                    batch_size = max(1, batch_size // 2)
+                    logger.warning(
+                        "Batched faster-whisper transcription ran out of GPU "
+                        "memory; retrying with batch_size=%d",
+                        batch_size,
+                    )
+                    continue
+                if attempt <= 1:
+                    logger.warning(
+                        "Batched faster-whisper transcription still out of GPU "
+                        "memory at batch_size=%d; falling back to CPU int8",
+                        batch_size,
+                    )
+                    try:
+                        active_model = _get_faster_whisper_model(
+                            model_name, device="cpu", compute_type="int8"
+                        )
+                    except Exception:
+                        logger.warning(
+                            "CPU fallback model could not be loaded; "
+                            "falling back to sequential transcription",
+                            exc_info=True,
+                        )
+                        break
+                    continue
+                logger.warning(
+                    "Batched faster-whisper transcription failed on the CPU "
+                    "fallback; falling back to sequential transcription",
+                    exc_info=True,
+                )
+                break
+        # If every batched attempt failed after an OOM fallback, `model` is
+        # still the CUDA instance; re-point it at the CPU fallback (when one
+        # was loaded) so the sequential retry does not OOM the same way.
+        if segments is None and active_model is not model:
+            model = active_model
 
     if segments is None:
         raw_segments, info = model.transcribe(str(audio_path), **transcribe_kwargs)

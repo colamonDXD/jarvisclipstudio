@@ -45,8 +45,10 @@ RUN uv venv .venv && \
 # Copy source code
 COPY src/ ./src/
 
-# Copy fonts and transitions directories
-COPY fonts/ ./fonts/
+# Copy fonts and transitions directories (only font files: libass tries to
+# load every file in the fonts dir as a font and chokes on README.md /
+# SOURCES.md — on some builds that fails the whole subtitles filter)
+COPY fonts/*.ttf fonts/*.otf ./fonts/
 COPY transitions/ ./transitions/
 
 # Create necessary directories for video processing

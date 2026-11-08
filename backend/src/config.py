@@ -24,6 +24,13 @@ class Config:
         self.ollama_api_key = self._get_runtime_setting("OLLAMA_API_KEY")
 
         self.whisper_model = os.getenv("WHISPER_MODEL") or os.getenv("WHISPER_MODEL_SIZE", "base")
+        # Batched faster-whisper inference batch size. 0 (the default) keeps
+        # the per-model defaults in media.transcription (16, or 8 for the
+        # large-class models on CUDA); any positive value is clamped to
+        # [1, 64] and used as-is.
+        self.whisper_batch_size = max(
+            0, min(64, self._get_int_env("WHISPER_BATCH_SIZE", 0))
+        )
         self.transcription_provider = self._normalize_transcription_provider(
             os.getenv("TRANSCRIPTION_PROVIDER", "assemblyai")
         )
