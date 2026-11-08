@@ -5,6 +5,7 @@ Worker tasks - background jobs processed by arq workers.
 import logging
 from typing import Dict, Any, Optional
 import json
+import os
 from arq import Retry, cron
 from arq.worker import func
 from .media_cleanup import cleanup_media, sweep_orphaned_media
@@ -320,8 +321,14 @@ class WorkerSettings:
     max_tries = 3  # Retry failed jobs up to 3 times
     job_timeout = 10800  # 3 hour timeout for video processing
 
-    # Worker pool settings
-    max_jobs = 4  # Process up to 4 jobs simultaneously
+    # Worker pool settings. Each processing job can fan out into several
+    # concurrent ffmpeg renders, so the default is one job at a time to keep
+    # a long queue from multiplying memory use on small GPU hosts. Raise
+    # WORKER_MAX_JOBS when the host has RAM to spare.
+    try:
+        max_jobs = max(1, int(os.environ.get("WORKER_MAX_JOBS", "1")))
+    except ValueError:
+        max_jobs = 1  # Process one job at a time by default
     cron_jobs = [
         cron(check_media_storage, second=20, run_at_startup=True, timeout=120),
         cron(replicate_pending_media, second=40, run_at_startup=True, timeout=1800),
