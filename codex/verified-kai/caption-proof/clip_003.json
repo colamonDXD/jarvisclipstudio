@@ -1,0 +1,509 @@
+{
+  "ok": true,
+  "duration": 62.6,
+  "words": 65,
+  "caption_coverage": {
+    "ok": false,
+    "uncovered": [
+      [
+        2.5,
+        2.7
+      ],
+      [
+        4.95,
+        11.45
+      ],
+      [
+        18.1,
+        18.35
+      ],
+      [
+        29.4,
+        31.0
+      ],
+      [
+        31.7,
+        37.55
+      ],
+      [
+        43.6,
+        43.9
+      ],
+      [
+        51.85,
+        53.95
+      ],
+      [
+        60.75,
+        62.5
+      ]
+    ],
+    "uncovered_seconds": 18.55,
+    "silent_cues": []
+  },
+  "beat_density": null,
+  "error": null,
+  "transcript_provider": "groq-chunks",
+  "decoder_word_counts": {
+    "groq": 65,
+    "offline-gpu": 50,
+    "groq-chunks": 65
+  },
+  "burned_words": [
+    {
+      "text": "My",
+      "start": 0.15,
+      "end": 0.64,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "bad",
+      "start": 0.64,
+      "end": 0.86,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "game",
+      "start": 0.86,
+      "end": 1.06,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Yo,",
+      "start": 2.78,
+      "end": 3.14,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "yo,",
+      "start": 3.14,
+      "end": 3.22,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "yo,",
+      "start": 3.22,
+      "end": 3.58,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "yo,",
+      "start": 3.58,
+      "end": 3.9,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "yo,",
+      "start": 3.9,
+      "end": 4.019,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "yo,",
+      "start": 4.019,
+      "end": 4.16,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "yo,",
+      "start": 4.16,
+      "end": 4.3,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "yo,",
+      "start": 4.3,
+      "end": 4.38,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "yo,",
+      "start": 4.38,
+      "end": 4.46,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "yo,",
+      "start": 4.46,
+      "end": 4.54,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "yo,",
+      "start": 4.54,
+      "end": 4.72,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "yo",
+      "start": 4.72,
+      "end": 4.8,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "I",
+      "start": 11.52,
+      "end": 11.62,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "got",
+      "start": 11.62,
+      "end": 11.78,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "you,",
+      "start": 11.78,
+      "end": 12.02,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "bro",
+      "start": 12.02,
+      "end": 12.1,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Oh",
+      "start": 12.1,
+      "end": 14.02,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "my",
+      "start": 14.04,
+      "end": 14.3,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "gosh",
+      "start": 14.3,
+      "end": 14.56,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "oh",
+      "start": 14.56,
+      "end": 17.54,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "my",
+      "start": 17.54,
+      "end": 17.7,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "gosh",
+      "start": 17.7,
+      "end": 18.0,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "oh",
+      "start": 18.8,
+      "end": 23.66,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "my",
+      "start": 23.66,
+      "end": 24.38,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "bad",
+      "start": 24.38,
+      "end": 24.58,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "game",
+      "start": 24.58,
+      "end": 24.78,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "oh",
+      "start": 24.78,
+      "end": 29.3,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Slur",
+      "start": 31.1,
+      "end": 31.32,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "gun",
+      "start": 31.32,
+      "end": 31.56,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Cocaine",
+      "start": 37.62,
+      "end": 38.16,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "***,",
+      "start": 38.16,
+      "end": 41.55,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "hey,",
+      "start": 42.05,
+      "end": 42.26,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "hey,",
+      "start": 42.26,
+      "end": 42.34,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "we",
+      "start": 42.34,
+      "end": 42.42,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "got",
+      "start": 42.42,
+      "end": 42.6,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "someone",
+      "start": 42.6,
+      "end": 42.94,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "out",
+      "start": 42.94,
+      "end": 43.24,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "here",
+      "start": 43.24,
+      "end": 43.46,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Hey,",
+      "start": 43.96,
+      "end": 44.2,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "what?",
+      "start": 44.2,
+      "end": 44.4,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Hey,",
+      "start": 44.4,
+      "end": 45.2,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "we",
+      "start": 45.2,
+      "end": 45.3,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "got",
+      "start": 45.3,
+      "end": 45.46,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "a",
+      "start": 45.46,
+      "end": 45.58,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "scavenger",
+      "start": 45.58,
+      "end": 46.0,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "You're",
+      "start": 47.9,
+      "end": 48.08,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "here",
+      "start": 48.08,
+      "end": 48.28,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "So",
+      "start": 48.28,
+      "end": 48.66,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "drop",
+      "start": 48.66,
+      "end": 49.019,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "his",
+      "start": 49.019,
+      "end": 49.099,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "***",
+      "start": 49.3,
+      "end": 49.5,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "and",
+      "start": 49.5,
+      "end": 49.58,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "get",
+      "start": 49.8,
+      "end": 49.88,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "our",
+      "start": 49.88,
+      "end": 50.08,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "***,",
+      "start": 50.08,
+      "end": 50.6,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "come",
+      "start": 50.6,
+      "end": 50.72,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "on",
+      "start": 50.72,
+      "end": 51.04,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Come",
+      "start": 54.04,
+      "end": 54.32,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "here,",
+      "start": 54.32,
+      "end": 54.62,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "brother",
+      "start": 54.62,
+      "end": 54.86,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Come",
+      "start": 54.86,
+      "end": 57.25,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "AHHHHH",
+      "start": 57.25,
+      "end": 60.62,
+      "confidence": 1.0,
+      "speaker": null
+    }
+  ]
+}

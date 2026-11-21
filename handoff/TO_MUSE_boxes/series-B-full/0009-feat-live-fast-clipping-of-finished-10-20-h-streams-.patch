@@ -1,0 +1,882 @@
+From 7e3ca3a641d5c77f452eb4b6ab60fbeefcdbc17f Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 16:23:55 +0530
+Subject: [PATCH 09/27] feat(live): fast clipping of finished 10-20 h streams
+ without downloading the video
+
+A finished stream pasted on the Live page now runs live/vod.py: audio
+only (11 h in ~2.5 min), a parallel voice scan for reactions boosted by
+YouTube's "most replayed" heatmap, Groq transcripts of the best ~3x
+candidates only, the free LLM gateway picks the most viral moments with
+hook start/end/title (signal fallback), then only those 22-45 s pieces
+are downloaded in 1080p and rendered (face on top, streamer-only
+captions). Same session/clip rows and page as live clipping; new
+live_sessions.progress_message shows the step. Finished streams were
+refused before: test updated (owner change), upcoming streams still 422.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/api/routes/live.py                |  14 +-
+ backend/src/live/groq_transcribe.py           |  32 +-
+ backend/src/live/vod.py                       | 450 ++++++++++++++++++
+ .../20261119_0001_live_session_progress.sql   |   4 +
+ backend/src/repositories/live_repository.py   |   7 +-
+ backend/src/workers/live_worker.py            |  10 +-
+ backend/tests/unit/test_live_api.py           |  14 +-
+ backend/tests/unit/test_live_vod.py           | 108 +++++
+ frontend/src/app/live/page.tsx                |  38 +-
+ 9 files changed, 656 insertions(+), 21 deletions(-)
+ create mode 100644 backend/src/live/vod.py
+ create mode 100644 backend/src/migrations/sql/20261119_0001_live_session_progress.sql
+ create mode 100644 backend/tests/unit/test_live_vod.py
+
+diff --git a/backend/src/api/routes/live.py b/backend/src/api/routes/live.py
+index ad3ea07..5e44cf4 100644
+--- a/backend/src/api/routes/live.py
++++ b/backend/src/api/routes/live.py
+@@ -120,11 +120,15 @@ async def start_session(request: Request, db: AsyncSession = Depends(get_db)):
+     if await repository.count_active(db, user_id):
+         raise HTTPException(status_code=409, detail="You already have a live session running. Stop it first.")
+     status = await run_in_thread(probe_live_status, url)
+-    if status != "is_live":
+-        detail = {"is_upcoming": "This stream hasn't started yet. Start live clipping once it's live.",
+-                  "was_live": "This stream has ended. Use it as a normal video instead.",
+-                  "not_live": "This video isn't a live stream. Use it as a normal video instead."}.get(
+-            status, "We couldn't open this stream. Check the link and that the stream is live.")
++    if status in ("was_live", "not_live", "post_live"):
++        # A finished stream or a long video: the fast path (audio only, the
++        # best moments, then only those pieces downloaded) - live/vod.py.
++        settings["mode"] = "vod"
++        if "max_clips" not in data:
++            settings["max_clips"] = 10
++    elif status != "is_live":
++        detail = {"is_upcoming": "This stream hasn't started yet. Start clipping once it's live.",
++                  }.get(status, "We couldn't open this video. Check the link.")
+         raise HTTPException(status_code=422, detail={"code": f"LIVE_{status.upper()}", "message": detail})
+     session = await repository.create_session(db, user_id, url, settings)
+     return {"session": session}
+diff --git a/backend/src/live/groq_transcribe.py b/backend/src/live/groq_transcribe.py
+index 281f9a2..24c63b0 100644
+--- a/backend/src/live/groq_transcribe.py
++++ b/backend/src/live/groq_transcribe.py
+@@ -18,7 +18,7 @@ import os
+ import subprocess
+ import tempfile
+ from pathlib import Path
+-from typing import Any, Dict, List
++from typing import Any, Dict, List, Optional
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -52,6 +52,36 @@ def to_whisper_result(payload: Dict[str, Any]) -> Dict[str, Any]:
+     return {"text": str(payload.get("text", "")).strip(), "language": payload.get("language"), "segments": segments}
+ 
+ 
++def groq_transcribe_file(audio: Path, timeout: float = 60.0) -> Optional[Dict[str, Any]]:
++    """Whisper-shaped result for an audio file, or None (no key, limit, network)."""
++    if not groq_enabled():
++        return None
++    import httpx
++
++    try:
++        with Path(audio).open("rb") as fh:
++            response = httpx.post(
++                GROQ_URL,
++                headers={"Authorization": f"Bearer {os.environ['GROQ_API_KEY'].strip()}"},
++                data={"model": os.getenv("LIVE_GROQ_MODEL", "whisper-large-v3-turbo"),
++                      "response_format": "verbose_json",
++                      "timestamp_granularities[]": ["word", "segment"]},
++                files={"file": (Path(audio).name, fh, "audio/mpeg")},
++                timeout=timeout,
++            )
++    except Exception as exc:
++        logger.warning("Groq transcription failed (%s)", type(exc).__name__)
++        return None
++    if response.status_code != 200:
++        logger.warning("Groq transcription HTTP %s (%s)", response.status_code, response.text[:160])
++        return None
++    try:
++        return to_whisper_result(response.json())
++    except Exception as exc:
++        logger.warning("Groq transcription: unreadable answer (%s)", exc)
++        return None
++
++
+ def transcribe_with_groq(video: Path, timeout: float = 60.0) -> bool:
+     """Transcribe ``video`` with Groq and write its transcript cache. True on success."""
+     if not groq_enabled():
+diff --git a/backend/src/live/vod.py b/backend/src/live/vod.py
+new file mode 100644
+index 0000000..5cbb3be
+--- /dev/null
++++ b/backend/src/live/vod.py
+@@ -0,0 +1,450 @@
++"""Fast clipping of long finished streams (10-20 h VODs) without downloading the video.
++
++Luffy, 2026-11-19: "there is a 10 hours video... I need a fast clipping tool...
++make something that can clip faster and clips better clips that can go viral".
++
++The whole video of a 10 h stream is ~25 GB and hours of CPU. This path:
++
++1. ``probe``: duration, title and YouTube's "Most replayed" heatmap (yt-dlp
++   ``heatmap``: 100 points over the video, present once a video has enough
++   views) - what viewers actually rewatched.
++2. ``download_audio``: the audio only (~0.5 GB for 11 h).
++3. ``scan_audio``: the streamer's voice evidence in parallel chunks (the same
++   per-second features as live clipping) -> reaction flags (screams, laughs,
++   hype), each boosted by the heatmap at its time.
++4. ``transcribe`` the best ~3x candidates (60 s each) with Groq's hosted
++   Whisper (free key) or the local model.
++5. ``llm_pick``: the free LLM gateway reads what was said and picks the most
++   viral moments with a hook start, an end (22-45 s) and a title; without a
++   model the strongest signals win.
++6. ``download_section``: only those pieces, 1080p, cut exactly.
++7. Each piece is rendered by ``finisher.render_live_clip`` (face on top,
++   streamer-only captions, the GPU when the container has one).
++
++``VodSession`` has the same interface as ``LiveSession`` so the live worker,
++API, database rows and the Live page are reused unchanged.
++"""
++from __future__ import annotations
++
++import json
++import logging
++import os
++import re
++import subprocess
++import tempfile
++import threading
++import time
++from concurrent.futures import ProcessPoolExecutor
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any, Callable, Dict, List, Optional, Sequence
++
++from . import yt_dlp_binary
++from .moments import creator_on_camera, speech_window
++
++logger = logging.getLogger(__name__)
++
++CHUNK_SEC = 1800          # audio scan chunk (30 min)
++CANDIDATE_WINDOW = (-20.0, 40.0)  # transcript around a flag
++MIN_LEN, MAX_LEN = 22.0, 45.0
++MIN_GAP = 90.0            # seconds between two picked moments
++
++
++def max_vod_hours() -> float:
++    try:
++        return float(os.getenv("LIVE_VOD_MAX_HOURS", "24"))
++    except ValueError:
++        return 24.0
++
++
++# --------------------------------------------------------------------------
++# 1-2. Probe and audio
++# --------------------------------------------------------------------------
++
++def _ytdlp(*args: str, timeout: Optional[float] = None) -> subprocess.CompletedProcess:
++    cmd = [yt_dlp_binary(), "--no-warnings", "-q", *args]
++    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
++
++
++def probe(url: str) -> Dict[str, Any]:
++    out = _ytdlp("--skip-download", "-J", url, timeout=120)
++    if out.returncode != 0 or not out.stdout.strip():
++        raise RuntimeError((out.stderr or "yt-dlp could not read the video").strip()[-300:])
++    info = json.loads(out.stdout)
++    return {"duration": float(info.get("duration") or 0), "title": info.get("title"),
++            "live_status": info.get("live_status"), "heatmap": info.get("heatmap") or []}
++
++
++def download_audio(url: str, folder: Path) -> Path:
++    folder.mkdir(parents=True, exist_ok=True)
++    out = _ytdlp("-f", "bestaudio[abr<=160]/bestaudio/ba", "-N", "8", "-o", str(folder / "audio.%(ext)s"), url)
++    files = sorted(p for p in folder.glob("audio.*") if not p.name.endswith((".part", ".ytdl")))
++    if out.returncode != 0 or not files:
++        raise RuntimeError((out.stderr or "audio download failed").strip()[-300:])
++    return files[0]
++
++
++# --------------------------------------------------------------------------
++# 3. Audio scan (parallel) and candidate ranking
++# --------------------------------------------------------------------------
++
++def _scan_chunk(args) -> Dict[str, List[float]]:
++    audio, start, length = args
++    from ..auto_director.reaction_moments import extract_voice_evidence
++
++    with tempfile.TemporaryDirectory(prefix="vod_chunk_") as tmp:
++        chunk = Path(tmp) / "chunk.wav"
++        subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{start:.1f}", "-t", f"{length:.1f}", "-i", str(audio),
++                        "-vn", "-ac", "1", "-ar", "16000", str(chunk)], capture_output=True)
++        if not chunk.is_file():
++            return {}
++        ev = extract_voice_evidence(str(chunk), length)
++    n = min(len(ev.get(k, [])) for k in ("vocal", "f0", "laugh", "voiced_frac")) if ev else 0
++    return {k: [float(x) for x in ev[k][:n]] for k in ("vocal", "f0", "laugh", "voiced_frac")} if n else {}
++
++
++def scan_audio(audio: Path, duration: float, workers: int = 4,
++               progress: Optional[Callable[[str], None]] = None) -> Dict[str, List[float]]:
++    """Per-second voice features for the whole audio, scanned in parallel chunks."""
++    jobs = [(str(audio), s, min(CHUNK_SEC, duration - s)) for s in range(0, int(duration), CHUNK_SEC)]
++    series: Dict[str, List[float]] = {k: [] for k in ("vocal", "f0", "laugh", "voiced_frac")}
++    done = 0
++    with ProcessPoolExecutor(max_workers=max(1, workers)) as pool:
++        for (_, start, length), part in zip(jobs, pool.map(_scan_chunk, jobs)):
++            got = len(part.get("vocal", []))
++            for k in series:
++                values = part.get(k, [])
++                series[k].extend(values + [0.0] * (int(length) - len(values)) if values else [0.0] * int(length))
++            done += 1
++            if progress:
++                progress(f"Listening for reactions: {done}/{len(jobs)} parts ({got} s read)")
++    return series
++
++
++def heat_at(heatmap: Sequence[Dict[str, float]], t: float) -> float:
++    for point in heatmap:
++        if float(point.get("start_time", 0)) <= t < float(point.get("end_time", 0)):
++            return float(point.get("value", 0.0))
++    return 0.0
++
++
++def find_candidates(series: Dict[str, List[float]], heatmap: Sequence[Dict[str, float]], limit: int) -> List[Dict[str, Any]]:
++    from .voice_scan import VoiceTrack
++
++    track = VoiceTrack(baseline_sec=240.0)
++    n = min(len(series[k]) for k in ("vocal", "f0", "laugh"))
++    for sec in range(n):
++        track.times.append(float(sec))
++        for k in ("vocal", "f0", "laugh"):
++            track.feats[k].append(series[k][sec])
++    flags = track.onsets()
++    voiced = series.get("voiced_frac") or []
++    scored = []
++    for flag in flags:
++        onset = float(flag["onset"])
++        talk = sum(1 for v in voiced[int(onset) - 5:int(onset) + 25] if v >= 0.25) / 30.0 if voiced else 0.5
++        heat = heat_at(heatmap, onset)
++        # Voice strength, more when the streamer keeps talking around it and
++        # when viewers rewatched that part (heatmap 0..1).
++        score = float(flag["peak"]) * (0.6 + 0.8 * talk) * (1.0 + 1.5 * heat)
++        scored.append({**flag, "onset": onset, "talk": round(talk, 2), "heat": round(heat, 3), "score": round(score, 2)})
++    scored.sort(key=lambda f: -f["score"])
++    picked: List[Dict[str, Any]] = []
++    for flag in scored:
++        if all(abs(flag["onset"] - p["onset"]) >= MIN_GAP for p in picked):
++            picked.append(flag)
++        if len(picked) >= limit:
++            break
++    return picked
++
++
++# --------------------------------------------------------------------------
++# 4. Transcripts of the candidates only
++# --------------------------------------------------------------------------
++
++def transcribe_window(audio: Path, start: float, end: float) -> List[Dict[str, Any]]:
++    """Words [{text, start, end}] (seconds, absolute) for [start, end] of the audio."""
++    from .groq_transcribe import groq_enabled, groq_transcribe_file
++
++    with tempfile.TemporaryDirectory(prefix="vod_tr_") as tmp:
++        clip = Path(tmp) / "window.mp3"
++        subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{start:.2f}", "-t", f"{end - start:.2f}", "-i", str(audio),
++                        "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k", str(clip)], capture_output=True)
++        if not clip.is_file():
++            return []
++        result = groq_transcribe_file(clip) if groq_enabled() else None
++        if result is None:
++            result = _local_transcribe(clip)
++    words = []
++    for seg in (result or {}).get("segments") or []:
++        for w in seg.get("words") or []:
++            words.append({"text": str(w.get("word", "")).strip(), "start": start + float(w.get("start", 0)),
++                          "end": start + float(w.get("end", 0))})
++    return words
++
++
++def _local_transcribe(clip: Path) -> Optional[Dict[str, Any]]:
++    try:
++        from faster_whisper import WhisperModel
++
++        global _LOCAL_MODEL
++        if _LOCAL_MODEL is None:
++            _LOCAL_MODEL = WhisperModel(os.getenv("LIVE_WHISPER_MODEL", "small"), device="auto", compute_type="int8")
++        segments, info = _LOCAL_MODEL.transcribe(str(clip), word_timestamps=True)
++        segs = []
++        for s in segments:
++            segs.append({"start": s.start, "end": s.end, "text": s.text,
++                         "words": [{"word": w.word, "start": w.start, "end": w.end} for w in (s.words or [])]})
++        return {"segments": segs, "language": getattr(info, "language", None)}
++    except Exception as exc:
++        logger.warning("Local transcription failed: %s", exc)
++        return None
++
++
++_LOCAL_MODEL = None
++
++
++# --------------------------------------------------------------------------
++# 5. The LLM picks what goes viral
++# --------------------------------------------------------------------------
++
++PICK_PROMPT = """You pick short-form clips (TikTok/Shorts/Reels) from a long livestream.
++Each candidate below is a moment where the streamer reacted strongly (voice signals), with
++"heat" = how much viewers rewatched that part (0-1) and the transcript of the 60 seconds
++around it (absolute seconds in brackets).
++
++Pick the {count} candidates most likely to go viral as standalone clips. Prefer: a strong
++hook in the first 2-3 seconds, a clear funny/shocking/emotional payoff, the streamer talking
++(not silent gameplay), context a stranger understands. Skip boring talk, ads, reading chat
++names, and moments that need earlier context.
++
++For each pick give start and end in absolute seconds: start right before the hook (never
++on silence), end just after the payoff, {min_len:.0f}-{max_len:.0f} seconds long. Give a short
++punchy title (3-8 words, no emojis) and one line why.
++
++Answer with ONLY a JSON array:
++[{{"id": <candidate id>, "start": <sec>, "end": <sec>, "title": "...", "why": "...", "virality": <0-100>}}]
++
++Candidates:
++{candidates}"""
++
++
++def _transcript_lines(words: List[Dict[str, Any]]) -> str:
++    lines, current, line_start = [], [], None
++    for w in words:
++        if line_start is None:
++            line_start = w["start"]
++        current.append(w["text"])
++        if w["text"].endswith((".", "!", "?")) or len(current) >= 14:
++            lines.append(f"[{line_start:.0f}] {' '.join(current)}")
++            current, line_start = [], None
++    if current:
++        lines.append(f"[{line_start:.0f}] {' '.join(current)}")
++    return "\n".join(lines) or "(no speech)"
++
++
++def llm_pick(candidates: List[Dict[str, Any]], count: int) -> Optional[List[Dict[str, Any]]]:
++    base = (os.getenv("OPENAI_BASE_URL") or "").rstrip("/")
++    key = os.getenv("OPENAI_API_KEY") or ""
++    model = (os.getenv("LIVE_VOD_LLM") or os.getenv("LLM") or "").split(":", 1)[-1]
++    if not base or not model:
++        return None
++    import httpx
++
++    blocks = []
++    for c in candidates:
++        blocks.append(f"### id {c['id']} - reaction at {c['onset']:.0f}s ({time.strftime('%H:%M:%S', time.gmtime(c['onset']))}), "
++                      f"signals {','.join(c.get('signals') or [])}, strength {c.get('peak', 0):.1f}, heat {c.get('heat', 0):.2f}\n"
++                      f"{_transcript_lines(c.get('words') or [])}")
++    prompt = PICK_PROMPT.format(count=count, min_len=MIN_LEN, max_len=MAX_LEN, candidates="\n\n".join(blocks))
++    try:
++        response = httpx.post(f"{base}/chat/completions", timeout=180,
++                              headers={"Authorization": f"Bearer {key}"} if key else {},
++                              json={"model": model, "temperature": 0.2,
++                                    "messages": [{"role": "user", "content": prompt}]})
++        text = response.json()["choices"][0]["message"]["content"]
++        match = re.search(r"\[.*\]", text, re.S)
++        picks = json.loads(match.group(0)) if match else []
++    except Exception as exc:
++        logger.warning("Clip picking model unavailable (%s); using the strongest signals", exc)
++        return None
++    by_id = {c["id"]: c for c in candidates}
++    out = []
++    for p in picks:
++        c = by_id.get(p.get("id"))
++        if c is None:
++            continue
++        try:
++            start, end = float(p["start"]), float(p["end"])
++        except (KeyError, TypeError, ValueError):
++            continue
++        lo, hi = c["onset"] + CANDIDATE_WINDOW[0] - 10, c["onset"] + CANDIDATE_WINDOW[1] + 15
++        start = max(lo, min(start, c["onset"]))
++        end = min(hi, max(end, start + MIN_LEN))
++        end = min(end, start + MAX_LEN)
++        out.append({**c, "start": round(start, 2), "end": round(end, 2), "title": str(p.get("title") or "")[:80] or None,
++                    "why": str(p.get("why") or "")[:200], "virality": p.get("virality")})
++    return out[:count] or None
++
++
++def signal_pick(candidates: List[Dict[str, Any]], voiced: Sequence[float], count: int) -> List[Dict[str, Any]]:
++    out = []
++    for c in candidates[:count]:
++        start, stop, _ = speech_window(voiced, c["onset"], float(c.get("end", c["onset"])),
++                                       lead_max=6.0, min_len=MIN_LEN, max_len=30.0)
++        out.append({**c, "start": start, "end": stop, "title": None, "why": "strongest voice reaction", "virality": None})
++    return out
++
++
++# --------------------------------------------------------------------------
++# 6. Download only the picked pieces
++# --------------------------------------------------------------------------
++
++def download_section(url: str, start: float, end: float, out: Path, max_height: int = 1080) -> Optional[Path]:
++    out.parent.mkdir(parents=True, exist_ok=True)
++    fmt = f"bv*[height<={max_height}]+ba/b[height<={max_height}]/b"
++    result = _ytdlp("-f", fmt, "--download-sections", f"*{start:.2f}-{end:.2f}", "--force-keyframes-at-cuts",
++                    "--merge-output-format", "mp4", "-o", str(out.with_suffix(".%(ext)s")), url)
++    produced = [p for p in out.parent.glob(out.stem + ".*") if p.suffix in (".mp4", ".mkv", ".webm")]
++    if result.returncode != 0 or not produced:
++        logger.warning("Section download failed: %s", (result.stderr or "")[-300:])
++        return None
++    return produced[0]
++
++
++# --------------------------------------------------------------------------
++# The session (same interface as LiveSession)
++# --------------------------------------------------------------------------
++
++class _Status:
++    def __init__(self):
++        self.running = True
++        self.last_error: Optional[str] = None
++        self.restarts = 0
++
++
++@dataclass
++class VodPlan:
++    clips: int = 10
++    candidates_per_clip: int = 3
++
++
++class VodSession:
++    def __init__(self, settings, session_dir: Path, on_event: Callable[[Dict[str, Any]], None]):
++        self.settings = settings
++        self.dir = Path(session_dir)
++        self.on_event = on_event
++        self.recorder = _Status()  # the worker reads .running / .last_error / .restarts
++        self.moments = 0
++        self._stop = threading.Event()
++        self._thread: Optional[threading.Thread] = None
++
++    # interface -----------------------------------------------------------
++    def start(self) -> "VodSession":
++        self.dir.mkdir(parents=True, exist_ok=True)
++        self._thread = threading.Thread(target=self._run_safe, name="vod-session", daemon=True)
++        self._thread.start()
++        return self
++
++    def stop_recording(self) -> None:
++        self._stop.set()
++
++    def stop(self, timeout: float = 15.0) -> None:
++        self._stop.set()
++        if self._thread:
++            self._thread.join(timeout)
++
++    @property
++    def ended(self) -> bool:
++        return not self.recorder.running
++
++    def _emit(self, event: Dict[str, Any]) -> None:
++        try:
++            self.on_event(event)
++        except Exception:
++            logger.exception("VOD session event handler failed")
++
++    def _progress(self, text: str, seconds: float = 0.0) -> None:
++        self._emit({"type": "status", "recording": True, "restarts": 0, "last_error": None,
++                    "buffered_seconds": seconds, "moments": self.moments, "progress": text})
++
++    # pipeline ------------------------------------------------------------
++    def _run_safe(self) -> None:
++        try:
++            self._run()
++        except Exception as exc:
++            logger.exception("VOD session failed")
++            self.recorder.last_error = f"{type(exc).__name__}: {exc}"[:300]
++        finally:
++            self.recorder.running = False
++
++    def _run(self) -> None:
++        s = self.settings
++        want = max(1, min(int(getattr(s, "max_clips", 10) or 10), 30))
++        t0 = time.time()
++        self._progress("Reading the video's details")
++        info = probe(s.url)
++        duration = info["duration"]
++        if duration <= 0 or duration > max_vod_hours() * 3600:
++            raise RuntimeError(f"video length {duration / 3600:.1f} h is outside 0-{max_vod_hours():.0f} h")
++        self._progress(f"Downloading the audio only ({duration / 3600:.1f} h)")
++        audio = download_audio(s.url, self.dir / "audio")
++        if self._stop.is_set():
++            return
++        series = scan_audio(audio, duration, workers=int(os.getenv("LIVE_VOD_SCAN_WORKERS", "4")),
++                            progress=lambda text: self._progress(text, duration))
++        candidates = find_candidates(series, info["heatmap"], want * VodPlan.candidates_per_clip)
++        if not candidates:
++            raise RuntimeError("no reactions found in the audio")
++        for i, c in enumerate(candidates):
++            if self._stop.is_set():
++                return
++            self._progress(f"Reading what was said: {i + 1}/{len(candidates)} moments", duration)
++            c["id"] = i + 1
++            c["words"] = transcribe_window(audio, max(0.0, c["onset"] + CANDIDATE_WINDOW[0]),
++                                           min(duration, c["onset"] + CANDIDATE_WINDOW[1]))
++        self._progress("Picking the clips most likely to go viral", duration)
++        picks = llm_pick(candidates, want) or signal_pick(candidates, series.get("voiced_frac") or [], want)
++        logger.info("VOD %s: %d candidates -> %d picks in %.0fs", s.url, len(candidates), len(picks), time.time() - t0)
++        from .finisher import render_live_clip
++
++        for pick in sorted(picks, key=lambda p: -(p.get("virality") or p.get("score") or 0)):
++            if self._stop.is_set():
++                return
++            self.moments += 1
++            n = self.moments
++            self._progress(f"Making clip {n}/{len(picks)}", duration)
++            section = download_section(s.url, pick["start"], pick["end"], self.dir / f"window_{n:03d}.mp4")
++            stamp = time.strftime("%H:%M:%S", time.gmtime(pick["start"]))
++            label = (pick.get("title") or "Reaction") + (f" - {pick['why']}" if pick.get("why") else "")
++            # Times are positions in the video, not wall-clock: they travel in
++            # the reason text ("[03:12:05] title - why"), the wall fields stay empty.
++            moment = {"type": "moment", "n": n, "signals": list(pick.get("signals") or []),
++                      "strength": round(float(pick.get("peak", 0)), 2), "talk_share": pick.get("talk"),
++                      "reason": f"[{stamp}] {label}"[:300]}
++            if section is None:
++                self._emit({**moment, "status": "rejected", "reason": f"[{stamp}] could not download this part"})
++                continue
++            if s.layout_template:
++                ok, why = creator_on_camera(section, pick["onset"] - pick["start"], min_ratio=0.0)
++                if not ok and "no facecam" not in why:
++                    self._emit({**moment, "status": "rejected", "reason": f"[{stamp}] {why}"})
++                    continue
++            self._emit({**moment, "status": "queued", "preview_path": str(section)})
++            self._emit({"type": "clip", "n": n, "status": "rendering"})
++            t = time.time()
++            out = self.dir / f"clip_{n:03d}.mp4"
++            try:
++                result = render_live_clip(section, out, niche=s.niche, layout_template=s.layout_template,
++                                          credit=s.credit, hook_title=s.hook_title if s.hook_title else None,
++                                          streamer_words_only=s.streamer_words_only)
++            except Exception as exc:
++                result = {"ok": False, "error": str(exc)[:300]}
++            self._emit({"type": "clip", "n": n, "status": "ready" if result.get("ok") else "failed",
++                        "clip_path": str(out) if result.get("ok") else None, "duration": result.get("duration"),
++                        "error": result.get("error"), "render_s": round(time.time() - t, 1)})
++        try:
++            audio.unlink()  # the audio was only needed to find the moments
++        except OSError:
++            pass
++        self._progress(f"Done: {self.moments} clips in {(time.time() - t0) / 60:.0f} min", duration)
+diff --git a/backend/src/migrations/sql/20261119_0001_live_session_progress.sql b/backend/src/migrations/sql/20261119_0001_live_session_progress.sql
+new file mode 100644
+index 0000000..9c96f4b
+--- /dev/null
++++ b/backend/src/migrations/sql/20261119_0001_live_session_progress.sql
+@@ -0,0 +1,4 @@
++-- Live clipping of finished streams (VODs): a session can be a long video,
++-- not only a live stream. progress_message is the step the worker is on
++-- ("Listening for reactions: 3/22 parts"), shown on the Live page.
++ALTER TABLE live_sessions ADD COLUMN IF NOT EXISTS progress_message TEXT
+diff --git a/backend/src/repositories/live_repository.py b/backend/src/repositories/live_repository.py
+index ccb89d6..cc41c2f 100644
+--- a/backend/src/repositories/live_repository.py
++++ b/backend/src/repositories/live_repository.py
+@@ -44,6 +44,8 @@ def session_from_row(row) -> Dict[str, Any]:
+         "settings": _json(row.settings, {}), "stop_requested": bool(row.stop_requested),
+         "recording": bool(row.recording), "buffered_seconds": float(row.buffered_seconds or 0),
+         "restarts": int(row.restarts or 0), "last_error": row.last_error,
++        "progress_message": getattr(row, "progress_message", None),
++        "mode": (_json(row.settings, {}) or {}).get("mode") or "live",
+         "started_at": _iso(row.started_at), "stopped_at": _iso(row.stopped_at),
+         "heartbeat_at": _iso(row.heartbeat_at), "created_at": _iso(row.created_at),
+     }
+@@ -152,11 +154,12 @@ class LiveRepository:
+         row = (await db.execute(text(
+             "UPDATE live_sessions SET heartbeat_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, "
+             "status = CASE WHEN status = 'starting' AND :recording THEN 'recording' ELSE status END, "
+-            "recording = :recording, buffered_seconds = :buffered, restarts = :restarts, last_error = :err "
++            "recording = :recording, buffered_seconds = :buffered, restarts = :restarts, last_error = :err, "
++            "progress_message = COALESCE(:progress, progress_message) "
+             "WHERE id = :id RETURNING stop_requested"),
+             {"id": session_id, "recording": bool(status.get("recording")),
+              "buffered": float(status.get("buffered_seconds") or 0), "restarts": int(status.get("restarts") or 0),
+-             "err": status.get("last_error")})).first()
++             "err": status.get("last_error"), "progress": status.get("progress")})).first()
+         await db.commit()
+         return bool(row.stop_requested) if row else True
+ 
+diff --git a/backend/src/workers/live_worker.py b/backend/src/workers/live_worker.py
+index 6f15fe8..1a19597 100644
+--- a/backend/src/workers/live_worker.py
++++ b/backend/src/workers/live_worker.py
+@@ -59,7 +59,7 @@ def settings_from_row(row: Dict[str, Any]) -> LiveSettings:
+         url=row["url"], niche=s.get("niche") or "gaming",
+         layout_template=s.get("layout_template"), credit=s.get("credit"), hook_title=s.get("hook_title"),
+         streamer_words_only=bool(s.get("streamer_words_only", True)),
+-        max_clips=int(s.get("max_clips") or 30),
++        max_clips=int(s.get("max_clips") or (10 if s.get("mode") == "vod" else 30)),
+     )
+ 
+ 
+@@ -131,7 +131,13 @@ async def tick(repo: LiveRepository, worker_id: str, running: Dict[str, Running]
+             return
+         events: "queue.Queue" = queue.Queue()
+         try:
+-            session = LiveSession(settings_from_row(row), live_root() / row["id"], events.put).start()
++            settings = settings_from_row(row)
++            if (row.get("settings") or {}).get("mode") == "vod":
++                from ..live.vod import VodSession
++
++                session = VodSession(settings, live_root() / row["id"], events.put).start()
++            else:
++                session = LiveSession(settings, live_root() / row["id"], events.put).start()
+         except Exception as exc:
+             logger.exception("Live session %s failed to start", row["id"])
+             async with AsyncSessionLocal() as db:
+diff --git a/backend/tests/unit/test_live_api.py b/backend/tests/unit/test_live_api.py
+index cc8af2d..2053921 100644
+--- a/backend/tests/unit/test_live_api.py
++++ b/backend/tests/unit/test_live_api.py
+@@ -81,11 +81,21 @@ async def test_bad_bodies_are_422(client, auth_headers, live_on, clean_live, bod
+     assert fragment in response.text
+ 
+ 
+-async def test_a_stream_that_is_not_live_is_refused_with_a_reason(client, auth_headers, live_on, clean_live, monkeypatch):
++async def test_a_finished_stream_starts_the_fast_vod_path(client, auth_headers, live_on, clean_live, monkeypatch):
++    # Owner change 2026-11-19: finished streams (10-20 h VODs) are clipped by
++    # the fast path (live/vod.py) instead of being refused.
+     monkeypatch.setattr(routes, "probe_live_status", lambda url: "was_live")
+     response = await client.post("/live/sessions", headers=auth_headers, json={"url": "https://www.youtube.com/watch?v=old"})
++    assert response.status_code == 201, response.text
++    session = response.json()["session"]
++    assert session["mode"] == "vod" and session["settings"]["max_clips"] == 10
++
++
++async def test_an_upcoming_stream_is_refused_with_a_reason(client, auth_headers, live_on, clean_live, monkeypatch):
++    monkeypatch.setattr(routes, "probe_live_status", lambda url: "is_upcoming")
++    response = await client.post("/live/sessions", headers=auth_headers, json={"url": "https://www.youtube.com/watch?v=soon"})
+     assert response.status_code == 422
+-    assert response.json()["detail"]["code"] == "LIVE_WAS_LIVE"
++    assert response.json()["detail"]["code"] == "LIVE_IS_UPCOMING"
+ 
+ 
+ async def test_layout_null_is_allowed_for_streams_without_a_facecam(client, auth_headers, live_on, clean_live):
+diff --git a/backend/tests/unit/test_live_vod.py b/backend/tests/unit/test_live_vod.py
+new file mode 100644
+index 0000000..c286b1c
+--- /dev/null
++++ b/backend/tests/unit/test_live_vod.py
+@@ -0,0 +1,108 @@
++"""Fast clipping of finished streams: ranking, model picks, the session pipeline."""
++from __future__ import annotations
++
++import json
++from pathlib import Path
++from types import SimpleNamespace
++
++import httpx
++
++from src.live import vod as V
++
++
++def _series(seconds, spikes):
++    base = {"vocal": [-40.0] * seconds, "f0": [150.0] * seconds, "laugh": [0.0] * seconds, "voiced_frac": [0.6] * seconds}
++    for t in spikes:
++        for k, v in (("vocal", -10.0), ("f0", 420.0), ("laugh", 0.9)):
++            for d in range(3):
++                base[k][t + d] = v
++    # small natural variation so the baseline has a spread
++    for i in range(seconds):
++        base["vocal"][i] += (i % 7) * 0.3
++        base["f0"][i] += (i % 5) * 2.0
++    return base
++
++
++def test_heat_at_reads_the_bucket():
++    heat = [{"start_time": 0, "end_time": 100, "value": 0.1}, {"start_time": 100, "end_time": 200, "value": 0.9}]
++    assert V.heat_at(heat, 150) == 0.9 and V.heat_at(heat, 50) == 0.1 and V.heat_at(heat, 500) == 0.0
++
++
++def test_candidates_are_spaced_and_rewatched_parts_rank_higher():
++    series = _series(1200, [400, 800, 830])
++    heat = [{"start_time": 700, "end_time": 900, "value": 1.0}]
++    picks = V.find_candidates(series, heat, limit=5)
++    onsets = [p["onset"] for p in picks]
++    assert picks and abs(onsets[0] - 800) <= 3  # the rewatched spike first
++    assert all(abs(a - b) >= V.MIN_GAP for i, a in enumerate(onsets) for b in onsets[i + 1:])
++
++
++def test_model_picks_are_clamped_to_the_window_and_length(monkeypatch):
++    monkeypatch.setenv("OPENAI_BASE_URL", "http://gw/v1")
++    monkeypatch.setenv("LLM", "openai:clip-fast")
++    answer = [{"id": 1, "start": 790, "end": 900, "title": "He lost it", "why": "scream", "virality": 88},
++              {"id": 9, "start": 1, "end": 30}]
++
++    class R:
++        def json(self):
++            return {"choices": [{"message": {"content": "Here:\n" + json.dumps(answer)}}]}
++
++    seen = {}
++    monkeypatch.setattr(httpx, "post", lambda url, **kw: seen.setdefault("url", url) and R())
++    cands = [{"id": 1, "onset": 800.0, "peak": 5.0, "signals": ["scream"], "heat": 0.4,
++              "words": [{"text": "NO", "start": 799.0, "end": 799.5}, {"text": "WAY!", "start": 799.6, "end": 800.0}]}]
++    picks = V.llm_pick(cands, 3)
++    assert seen["url"] == "http://gw/v1/chat/completions"
++    assert len(picks) == 1  # unknown id 9 dropped
++    p = picks[0]
++    assert p["start"] == 790 and p["end"] - p["start"] == V.MAX_LEN and p["title"] == "He lost it"
++
++
++def test_without_a_model_the_strongest_signals_are_used(monkeypatch):
++    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
++    assert V.llm_pick([{"id": 1, "onset": 10.0}], 1) is None
++    picks = V.signal_pick([{"id": 1, "onset": 100.0, "end": 101.0}], [0.8] * 300, 1)
++    assert 22.0 <= picks[0]["end"] - picks[0]["start"] <= 30.0 and picks[0]["start"] <= 100.0
++
++
++def test_session_runs_audio_first_and_downloads_only_the_picks(monkeypatch, tmp_path):
++    calls = {"sections": []}
++    monkeypatch.setattr(V, "probe", lambda url: {"duration": 3600.0, "title": "t", "live_status": "was_live", "heatmap": []})
++
++    def fake_audio(url, folder):
++        folder.mkdir(parents=True, exist_ok=True)
++        f = folder / "audio.m4a"
++        f.write_bytes(b"x")
++        calls["audio"] = True
++        return f
++
++    monkeypatch.setattr(V, "download_audio", fake_audio)
++    monkeypatch.setattr(V, "scan_audio", lambda a, d, workers=4, progress=None: _series(3600, [600, 1800]))
++    monkeypatch.setattr(V, "transcribe_window", lambda a, s, e: [{"text": "bro", "start": s + 1, "end": s + 2}])
++    monkeypatch.setattr(V, "llm_pick", lambda c, n: None)
++
++    def fake_section(url, s, e, out, max_height=1080):
++        calls["sections"].append((round(s), round(e)))
++        out.write_bytes(b"v")
++        return out
++
++    monkeypatch.setattr(V, "download_section", fake_section)
++    import src.live.finisher as F
++
++    def fake_render(window, out, **kw):
++        Path(out).write_bytes(b"c")
++        return {"ok": True, "duration": 25.0}
++
++    monkeypatch.setattr(F, "render_live_clip", fake_render)
++    events = []
++    settings = SimpleNamespace(url="https://youtu.be/x", niche="gaming", layout_template=None, credit=None,
++                               hook_title=None, streamer_words_only=True, max_clips=2)
++    session = V.VodSession(settings, tmp_path / "s", events.append)
++    session._run()
++    assert calls.get("audio") and len(calls["sections"]) == 2
++    ready = [e for e in events if e.get("type") == "clip" and e.get("status") == "ready"]
++    assert len(ready) == 2
++    moments = [e for e in events if e.get("type") == "moment"]
++    assert all(m["reason"].startswith("[") for m in moments)  # video position, not wall clock
++    assert "onset_wall" not in moments[0]
++    assert any("Done: 2 clips" in (e.get("progress") or "") for e in events)
+diff --git a/frontend/src/app/live/page.tsx b/frontend/src/app/live/page.tsx
+index 3eb3dc2..edbf2db 100644
+--- a/frontend/src/app/live/page.tsx
++++ b/frontend/src/app/live/page.tsx
+@@ -18,6 +18,8 @@ type LiveSession = {
+   buffered_seconds: number;
+   restarts: number;
+   last_error: string | null;
++  progress_message?: string | null;
++  mode?: "live" | "vod";
+   started_at: string | null;
+   created_at: string | null;
+ };
+@@ -65,6 +67,14 @@ function minutes(seconds: number): string {
+ }
+ 
+ function StatusLine({ session }: { session: LiveSession }) {
++  if (session.mode === "vod" && (session.status === "recording" || session.status === "starting")) {
++    return (
++      <span className="inline-flex items-center gap-2 text-sm">
++        <Loader2 className="h-3.5 w-3.5 animate-spin" />
++        {session.progress_message || "Starting…"}
++      </span>
++    );
++  }
+   if (session.status === "recording") {
+     return (
+       <span className="inline-flex items-center gap-2 text-sm">
+@@ -84,7 +94,7 @@ function StatusLine({ session }: { session: LiveSession }) {
+     starting: "Connecting to the stream…",
+     recording: "",
+     stopped: "Stopped",
+-    ended: "Stream ended",
++    ended: session.mode === "vod" ? (session.progress_message || "Finished") : "Stream ended",
+     error: "Error",
+   };
+   return (
+@@ -146,6 +156,7 @@ export default function LivePage() {
+   const [layout, setLayout] = useState("facecam_red");
+   const [credit, setCredit] = useState("");
+   const [title, setTitle] = useState("");
++  const [clipCount, setClipCount] = useState("10");
+   const [busy, setBusy] = useState(false);
+   const selected = useRef<string | null>(null);
+ 
+@@ -202,6 +213,7 @@ export default function LivePage() {
+           layout_template: layout || null,
+           credit: credit.trim() || null,
+           hook_title: title.trim() || null,
++          max_clips: Math.max(1, Math.min(30, parseInt(clipCount, 10) || 10)),
+         }),
+       });
+       const body = await response.json().catch(() => ({}));
+@@ -213,7 +225,9 @@ export default function LivePage() {
+       selected.current = session.id;
+       setCurrent({ session, clips: [] });
+       setUrl("");
+-      toast.success("Live clipping started. Clips appear here as the stream runs.");
++      toast.success(session.settings && (session as LiveSession).mode === "vod"
++        ? "Started. Only the audio is downloaded first; clips appear here one by one."
++        : "Live clipping started. Clips appear here as the stream runs.");
+       void loadSessions();
+     } finally {
+       setBusy(false);
+@@ -272,14 +286,15 @@ export default function LivePage() {
+         <h1 className="text-2xl font-semibold">Live clipping</h1>
+       </div>
+       <p className="mt-1 text-sm text-muted-foreground">
+-        Paste a stream that is live right now. Clips of the streamer&apos;s reactions appear here while the stream runs:
+-        each one opens on the moment, with captions of the streamer&apos;s words only. Only clip streams you own or are
+-        allowed to clip.
++        Paste a stream that is live right now, or a finished stream up to 24 hours long. For a finished stream only the
++        audio is downloaded first; the best moments are found from the streamer&apos;s reactions, what viewers rewatched
++        and what was said, and only those pieces are downloaded in 1080p. Each clip opens on the moment, with captions of
++        the streamer&apos;s words only. Only clip streams you own or are allowed to clip.
+       </p>
+ 
+       <form onSubmit={start} className="mt-6 grid gap-4 rounded-xl border bg-background p-4 sm:grid-cols-2">
+         <div className="sm:col-span-2">
+-          <Label htmlFor="live-url">Live stream link (YouTube or Twitch)</Label>
++          <Label htmlFor="live-url">Stream link: live now or finished (YouTube or Twitch)</Label>
+           <Input id="live-url" value={url} onChange={(e) => setUrl(e.target.value)}
+             placeholder="https://www.youtube.com/watch?v=…  or  https://www.twitch.tv/…" className="mt-1.5" />
+         </div>
+@@ -295,15 +310,20 @@ export default function LivePage() {
+           <Input id="live-credit" value={credit} maxLength={40} onChange={(e) => setCredit(e.target.value)}
+             placeholder="@streamer" className="mt-1.5" />
+         </div>
+-        <div className="sm:col-span-2">
+-          <Label htmlFor="live-title">Title on every clip (optional)</Label>
++        <div>
++          <Label htmlFor="live-count">Clips (finished streams)</Label>
++          <Input id="live-count" type="number" min={1} max={30} value={clipCount}
++            onChange={(e) => setClipCount(e.target.value)} className="mt-1.5" />
++        </div>
++        <div>
++          <Label htmlFor="live-title">Title on every clip (optional, leave empty for none)</Label>
+           <Input id="live-title" value={title} maxLength={80} onChange={(e) => setTitle(e.target.value)}
+             placeholder="GTA 6 LIVE" className="mt-1.5" />
+         </div>
+         <div className="sm:col-span-2">
+           <Button type="submit" disabled={busy || !url.trim() || anotherRunning}>
+             {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Radio className="mr-1.5 h-4 w-4" />}
+-            Start live clipping
++            Start clipping
+           </Button>
+           {anotherRunning && <span className="ml-3 text-sm text-muted-foreground">Stop the running session to start another.</span>}
+         </div>
+-- 
+2.56.0.windows.2
+

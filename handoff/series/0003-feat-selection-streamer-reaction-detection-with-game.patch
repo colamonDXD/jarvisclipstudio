@@ -1,0 +1,1088 @@
+From a3b50213fb9acd147f2d1aa6e7274f0276afa38a Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 12:15:13 +0530
+Subject: [PATCH 03/13] feat(selection): streamer-reaction detection with
+ game-event correlation
+
+Voice (vocal/pitch/laugh, harmonic-gated so explosions do not count) and
+facecam activity agree into reaction episodes; each is matched to the game
+event that preceded it. Facecam region is masked out of game evidence.
+Reaction hints also feed the transcript ranker (REACTION_SIGNALS=0 opts out).
+Synthetic matrix only plus real-speech false-positive control; no real
+streamer VOD validation yet.
+---
+ CHANGELOG.md                                  |   1 +
+ backend/src/auto_director/gameplay_moments.py |  17 +-
+ backend/src/auto_director/reaction_moments.py | 516 ++++++++++++++++++
+ backend/src/auto_director/visual_moments.py   |  12 +
+ backend/src/services/video_service.py         |  20 +
+ backend/tests/unit/test_reaction_moments.py   |  95 ++++
+ tools/gameplay-eval/make_streamer_vod.py      | 272 +++++++++
+ tools/gameplay-eval/score_streamer.py         |  47 ++
+ 8 files changed, 979 insertions(+), 1 deletion(-)
+ create mode 100644 backend/src/auto_director/reaction_moments.py
+ create mode 100644 backend/tests/unit/test_reaction_moments.py
+ create mode 100644 tools/gameplay-eval/make_streamer_vod.py
+ create mode 100644 tools/gameplay-eval/score_streamer.py
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 14c74ec..e8cb02f 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,7 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-17
++- **New:** Streamer videos now get their best moments from the streamer's reaction, not just the loudest or most explosive stretch. The picker listens for a raised, shouting or laughing voice (ignoring explosions and engine noise), watches the facecam, and matches each reaction to the on-screen event that caused it. A reaction to something that just happened ranks highest, a funny moment with no visible trigger comes next, and a game event the streamer ignored is no longer picked. Each clip keeps the trigger and the full reaction, and explains why. Set `REACTION_SIGNALS=0` to switch the reaction hints off.
+ - **Improved:** Gameplay and other no-speech videos now get their best moments from what happens on screen, not just from the loudest sound. The picker watches for several visible changes at once — flashes, banners, on-screen events, sustained movement, screen shake — keeps the build-up before the action and ends after the payoff, and explains each pick. A loud sound with nothing visible happening (like a distant explosion) no longer outranks a real moment. Set `FRAME_EVIDENCE_SELECTION=0` to switch back to the older sound-and-scene-cut picker.
+ 
+ ## 2026-11-16
+diff --git a/backend/src/auto_director/gameplay_moments.py b/backend/src/auto_director/gameplay_moments.py
+index 1f0943f..a7ca7ff 100644
+--- a/backend/src/auto_director/gameplay_moments.py
++++ b/backend/src/auto_director/gameplay_moments.py
+@@ -124,9 +124,16 @@ def _edge_density(gray: np.ndarray) -> float:
+     return float(gx + gy) / 255.0
+ 
+ 
+-def extract_frame_evidence(video_path: Path | str) -> dict[str, np.ndarray]:
++def extract_frame_evidence(
++    video_path: Path | str,
++    mask_roi: Optional[tuple[float, float, float, float]] = None,
++) -> dict[str, np.ndarray]:
+     """Per-second raw feature series for a video.
+ 
++    ``mask_roi`` is a normalised (x, y, w, h) rectangle — a streamer's
++    facecam — that is flattened before measuring, so the streamer moving or
++    laughing is not mistaken for something happening in the game.
++
+     Returns ``{feature: array[seconds]}`` plus ``"duration"`` (seconds).
+     Streaming: memory stays flat for hour-long sources.
+     """
+@@ -162,7 +169,15 @@ def extract_frame_evidence(video_path: Path | str) -> dict[str, np.ndarray]:
+             bucket[f] = []
+         shifts_x.clear()
+ 
++    mask = None
++    if mask_roi is not None:
++        mx, my, mw, mh = mask_roi
++        mask = (int(my * FRAME_H), int((my + mh) * FRAME_H) + 1,
++                int(mx * FRAME_W), int((mx + mw) * FRAME_W) + 1)
+     for frame in _stream_frames(video_path):
++        if mask is not None:
++            frame = frame.copy()
++            frame[mask[0]:mask[1], mask[2]:mask[3]] = 128
+         gray = frame.astype(np.float32).mean(axis=2)
+         mean_rgb = frame.reshape(-1, 3).mean(axis=0)
+         history.append(gray)
+diff --git a/backend/src/auto_director/reaction_moments.py b/backend/src/auto_director/reaction_moments.py
+new file mode 100644
+index 0000000..d9ff773
+--- /dev/null
++++ b/backend/src/auto_director/reaction_moments.py
+@@ -0,0 +1,516 @@
++"""Streamer-reaction moment detection: what the streamer DOES about the game.
++
++For a streamer VOD the clip is rarely the loudest or most explosive stretch.
++It is the moment a streamer laughs until they cannot talk, screams at a jump
++scare, or delivers a line nobody expected — usually about something that just
++happened in the game, sometimes about nothing at all (chat, a bit, a slip).
++
++Signals (all game-agnostic, all measured, none guessed from a game's name):
++
++voice — measured on the MIXED audio but gated on harmonic, speech-band
++        energy, so explosions, gunfire and engine noise do not count:
++    * ``vocal``    — voiced loudness against the streamer's own baseline
++    * ``pitch``    — pitch rising above the streamer's baseline (shouting)
++    * ``laugh``    — regular, bursty voiced pulses (3–7 Hz) with real depth
++face  — activity inside the facecam rectangle (found with the in-tree YuNet
++        detector): head throw-backs, lunges, covering the face
++game  — the on-screen events of ``gameplay_moments`` (never required)
++
++A reaction is an episode where voice/face signals agree. It is then matched
++to the nearest earlier game event: ``reaction_to_event`` (the product's core
++case), ``commentary_reaction`` (funny, with no visible trigger),
++``silent_facecam`` (only the face moved — weak), or ``silent_action`` (game
++event, no streamer reaction — deliberately ranked low). Loud game audio can
++not fake any of this because every voice signal is z-scored against the
++streamer's own recent baseline and requires voicing.
++"""
++
++from __future__ import annotations
++
++import logging
++import subprocess
++from pathlib import Path
++from typing import Any, Optional
++
++import numpy as np
++
++from .gameplay_moments import (
++    FEATURES as GAME_FEATURES,
++    Episode,
++    _mmss,
++    _robust_z,
++    extract_frame_evidence,
++    find_episodes as find_game_episodes,
++    fuse_evidence as fuse_game_evidence,
++)
++
++logger = logging.getLogger(__name__)
++
++SR = 16000
++_WIN, _HOP = 640, 160            # 40 ms window, 10 ms hop
++_F0_LO, _F0_HI = 80, 600          # Hz
++_VOICE_BINS = (19, 217)           # ~300–3400 Hz at 1024-point FFT
++VOICE = ("vocal", "pitch", "laugh")
++_SCALE_FLOOR = {"vocal": 2.0, "pitch": 18.0, "laugh": 0.12, "face": 0.8}
++_ACTIVE_Z = 3.0
++_REACT_GAP_SEC = 2
++_MIN_REACT_SEC = 1
++_EVENT_LEAD_SEC = 7.0   # a reaction this soon after a game event is "to" it
++_EVENT_SLACK_SEC = 1.5  # ...or this much before (anticipation / lag)
++_WEIGHT = {"vocal": 1.0, "pitch": 1.0, "laugh": 1.6, "face": 0.8}
++
++
++# --------------------------------------------------------------------------
++# Voice evidence
++# --------------------------------------------------------------------------
++
++def _decode_blocks(video_path: Path | str, block_sec: int = 120):
++    cmd = ["ffmpeg", "-v", "error", "-i", str(video_path), "-vn", "-ac", "1",
++           "-ar", str(SR), "-f", "s16le", "-"]
++    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
++    size = SR * block_sec * 2
++    try:
++        assert proc.stdout is not None
++        while True:
++            buf = proc.stdout.read(size)
++            if len(buf) < _WIN * 2:
++                break
++            yield np.frombuffer(buf, dtype=np.int16).astype(np.float32) / 32768.0
++    finally:
++        if proc.stdout:
++            proc.stdout.close()
++        proc.kill()
++        proc.wait()
++
++
++_WINDOW_ACF = np.fft.irfft(np.abs(np.fft.rfft(np.hanning(_WIN), n=2048)) ** 2, n=2048)
++_WINDOW_ACF = _WINDOW_ACF / _WINDOW_ACF[0]
++
++
++def _frame_features(x: np.ndarray) -> dict[str, np.ndarray]:
++    """Per 10 ms frame: voiced flag, voice-band dB, f0."""
++    from numpy.lib.stride_tricks import sliding_window_view
++
++    frames = sliding_window_view(x, _WIN)[::_HOP] * np.hanning(_WIN).astype(np.float32)
++    spec = np.fft.rfft(frames, n=2048, axis=1)
++    power = (spec.real ** 2 + spec.imag ** 2)
++    total = power.sum(axis=1) + 1e-12
++    bins = 2048 / 1024  # bins-per-1024-grid factor
++    lo, hi = int(_VOICE_BINS[0] * bins), int(_VOICE_BINS[1] * bins)
++    voice_power = power[:, lo:hi].sum(axis=1)
++    voice_ratio = voice_power / total
++    acf = np.fft.irfft(power, n=2048, axis=1)
++    acf0 = acf[:, :1] + 1e-12
++    lag_lo, lag_hi = int(SR / _F0_HI), int(SR / _F0_LO)
++    # The Hann window shrinks the autocorrelation at long lags (low pitch);
++    # dividing by the window's own autocorrelation removes that bias.
++    seg = acf[:, lag_lo:lag_hi] / acf0 / _WINDOW_ACF[lag_lo:lag_hi]
++    peak = seg.max(axis=1)
++    lag = seg.argmax(axis=1) + lag_lo
++    f0 = SR / lag
++    voice_db = 10 * np.log10(voice_power + 1e-12)
++    voiced = (peak > 0.45) & (voice_ratio > 0.25) & (voice_db > -55)
++    return {"voiced": voiced, "voice_db": voice_db, "f0": f0, "peak": peak,
++            "total_db": 10 * np.log10(total)}
++
++
++def _laugh_score(env: np.ndarray) -> np.ndarray:
++    """Per-second laughter score from the voiced-energy envelope (100 fps):
++    depth of modulation × regularity of the 3–7 Hz pulse train, over a 2 s
++    window centred on each second."""
++    n_sec = len(env) // 100
++    out = np.zeros(n_sec)
++    for s in range(n_sec):
++        a, b = max(0, s * 100 - 50), min(len(env), s * 100 + 150)
++        w = env[a:b]
++        if len(w) < 120 or w.max() <= 1e-6:
++            continue
++        w = w / (w.max() + 1e-9)
++        depth = float(np.clip((w.max() - np.percentile(w, 15)), 0, 1))
++        c = w - w.mean()
++        denom = float((c ** 2).sum()) + 1e-9
++        reg = 0.0
++        for lag in range(14, 34):  # 70–330 ms → 3–7 Hz
++            r = float((c[:-lag] * c[lag:]).sum()) / denom
++            reg = max(reg, r)
++        out[s] = depth * max(0.0, reg)
++    return out
++
++
++def extract_voice_evidence(video_path: Path | str) -> dict[str, np.ndarray]:
++    """Per-second voice features of the mixed audio. Empty dict when the
++    source has no audio."""
++    vloud: list[float] = []
++    f0s: list[float] = []
++    vfrac: list[float] = []
++    total_db: list[float] = []
++    env_all: list[np.ndarray] = []
++    for block in _decode_blocks(video_path):
++        if len(block) < _WIN * 2:
++            continue
++        ff = _frame_features(block)
++        n = (len(ff["voiced"]) // 100) * 100
++        voiced = ff["voiced"][:n].reshape(-1, 100)
++        vdb = ff["voice_db"][:n].reshape(-1, 100)
++        f0 = ff["f0"][:n].reshape(-1, 100)
++        tdb = ff["total_db"][:n].reshape(-1, 100)
++        amp = np.where(ff["voiced"][:n], 10 ** (ff["voice_db"][:n] / 20.0), 0.0)
++        env_all.append(amp)
++        for i in range(voiced.shape[0]):
++            v = voiced[i]
++            vfrac.append(float(v.mean()))
++            vloud.append(float(np.percentile(vdb[i][v], 90)) if v.sum() >= 5 else np.nan)
++            f0s.append(float(np.median(f0[i][v])) if v.sum() >= 5 else np.nan)
++            total_db.append(float(np.percentile(tdb[i], 90)))
++    if not vloud:
++        return {}
++    vloud_a = np.array(vloud)
++    floor = np.nanmin(vloud_a) if np.isfinite(vloud_a).any() else -60.0
++    vloud_a = np.where(np.isnan(vloud_a), floor, vloud_a)
++    f0_a = np.array(f0s)
++    last = 150.0
++    for i in range(len(f0_a)):
++        if np.isnan(f0_a[i]):
++            f0_a[i] = last
++        else:
++            last = f0_a[i]
++    env = np.concatenate(env_all)
++    laugh = _laugh_score(env)
++    n = min(len(vloud_a), len(laugh))
++    return {"vocal": vloud_a[:n], "f0": f0_a[:n], "voiced_frac": np.array(vfrac)[:n],
++            "laugh": laugh[:n], "total_db": np.array(total_db)[:n]}
++
++
++# --------------------------------------------------------------------------
++# Facecam
++# --------------------------------------------------------------------------
++
++def find_facecam(video_path: Path | str, duration: float, samples: int = 14) -> Optional[tuple[float, float, float, float]]:
++    """Normalised (x, y, w, h) of the most consistent face rectangle, found
++    with YuNet on evenly spaced frames, or None. A face that appears in under
++    35% of samples, or that moves around the frame, is not a facecam."""
++    try:
++        import cv2
++        from ..media.face_detection import YuNetFaceDetector
++        det = YuNetFaceDetector()
++    except Exception:
++        logger.info("Face detector unavailable; facecam evidence skipped", exc_info=True)
++        return None
++    boxes: list[tuple[float, float, float, float]] = []
++    probed = 0
++    probe = subprocess.run(
++        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
++         "stream=width,height", "-of", "csv=p=0", str(video_path)],
++        capture_output=True, text=True)
++    try:
++        vw, vh = (int(v) for v in probe.stdout.strip().split(",")[:2])
++    except ValueError:
++        return None
++    for i in range(samples):
++        t = duration * (i + 0.5) / samples
++        proc = subprocess.run(
++            ["ffmpeg", "-v", "error", "-ss", f"{t:.2f}", "-i", str(video_path),
++             "-frames:v", "1", "-vf", "scale=960:-2,format=bgr24", "-f", "rawvideo", "-"],
++            capture_output=True)
++        if proc.returncode != 0 or not proc.stdout:
++            continue
++        w = 960
++        h = int(round(vh * 960 / vw / 2) * 2)
++        if len(proc.stdout) != w * h * 3:
++            continue
++        frame = np.frombuffer(proc.stdout, dtype=np.uint8).reshape(h, w, 3)
++        probed += 1
++        faces = det.detect(frame)
++        if faces:
++            x, y, fw, fh, _score = max(faces, key=lambda f: f[4])
++            boxes.append((x / w, y / h, fw / w, fh / h))
++    if probed == 0 or len(boxes) < max(3, int(0.35 * probed)):
++        return None
++    arr = np.array(boxes)
++    cx, cy = arr[:, 0] + arr[:, 2] / 2, arr[:, 1] + arr[:, 3] / 2
++    if np.std(cx) > 0.08 or np.std(cy) > 0.08:
++        return None
++    x0, y0 = float(np.median(arr[:, 0])), float(np.median(arr[:, 1]))
++    fw, fh = float(np.median(arr[:, 2])), float(np.median(arr[:, 3]))
++    # Pad: heads move; the reaction is the whole upper body.
++    px, py = fw * 0.9, fh * 0.9
++    x0, y0 = max(0.0, x0 - px), max(0.0, y0 - py)
++    return x0, y0, min(1.0 - x0, fw + 2 * px), min(1.0 - y0, fh + 2 * py)
++
++
++def extract_facecam_activity(video_path: Path | str, roi: tuple[float, float, float, float]) -> np.ndarray:
++    """Per-second motion inside the facecam rectangle (mean abs diff, 8 fps)."""
++    x, y, w, h = roi
++    crop = f"crop=iw*{w:.4f}:ih*{h:.4f}:iw*{x:.4f}:ih*{y:.4f}"
++    cmd = ["ffmpeg", "-v", "error", "-i", str(video_path), "-an", "-vf",
++           f"fps=8,{crop},scale=64:48:flags=area,format=gray", "-f", "rawvideo", "-"]
++    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
++    size = 64 * 48
++    diffs: list[float] = []
++    prev = None
++    try:
++        assert proc.stdout is not None
++        while True:
++            buf = proc.stdout.read(size)
++            if len(buf) < size:
++                break
++            cur = np.frombuffer(buf, dtype=np.uint8).astype(np.float32)
++            if prev is not None:
++                diffs.append(float(np.abs(cur - prev).mean()))
++            prev = cur
++    finally:
++        if proc.stdout:
++            proc.stdout.close()
++        proc.kill()
++        proc.wait()
++    n = len(diffs) // 8
++    return np.array([np.mean(diffs[i * 8:(i + 1) * 8]) for i in range(n)]) if n else np.zeros(0)
++
++
++# --------------------------------------------------------------------------
++# Fusion + correlation
++# --------------------------------------------------------------------------
++
++def reaction_series(voice: dict[str, np.ndarray], face: Optional[np.ndarray]) -> tuple[np.ndarray, dict[str, np.ndarray], bool]:
++    """(per-second reaction strength, per-signal z, voice_present)."""
++    n = len(voice["vocal"]) if voice else (len(face) if face is not None else 0)
++    zs: dict[str, np.ndarray] = {}
++    voice_present = bool(voice) and float(np.mean(voice["voiced_frac"])) > 0.02
++    if voice_present:
++        zs["vocal"] = _robust_z(voice["vocal"], _SCALE_FLOOR["vocal"])
++        zs["pitch"] = _robust_z(voice["f0"], _SCALE_FLOOR["pitch"])
++        # Pitch only counts while the streamer is actually voicing loudly.
++        zs["pitch"] = np.where(voice["voiced_frac"] > 0.25, zs["pitch"], 0.0)
++        zs["laugh"] = _robust_z(voice["laugh"], _SCALE_FLOOR["laugh"])
++    if face is not None and len(face):
++        m = min(n, len(face)) if n else len(face)
++        zs["face"] = _robust_z(face[:m], _SCALE_FLOOR["face"])
++    if not zs:
++        return np.zeros(0), {}, voice_present
++    n = min(len(v) for v in zs.values())
++    zs = {k: v[:n] for k, v in zs.items()}
++    strength = np.zeros(n)
++    for i in range(n):
++        active = [k for k in zs if zs[k][i] >= _ACTIVE_Z]
++        top = max(zs[k][i] for k in zs)
++        voice_active = [k for k in active if k in VOICE]
++        # Agreement: two signals, or a strong laugh on its own. A face-only
++        # or pitch-only second never counts alone.
++        if len(active) >= 2 or (("laugh" in active) and zs["laugh"][i] >= 5.0):
++            if voice_active or len(active) >= 2:
++                strength[i] = sum(_WEIGHT[k] * (zs[k][i] - _ACTIVE_Z + 1.0) for k in active)
++    return strength, zs, voice_present
++
++
++def _episodes(strength: np.ndarray, zs: dict[str, np.ndarray]) -> list[dict[str, Any]]:
++    secs = [i for i in range(len(strength)) if strength[i] > 0]
++    groups: list[list[int]] = []
++    for i in secs:
++        if groups and i - groups[-1][-1] <= _REACT_GAP_SEC:
++            groups[-1].append(i)
++        else:
++            groups.append([i])
++    out = []
++    for g in groups:
++        if g[-1] - g[0] + 1 < _MIN_REACT_SEC:
++            continue
++        a, b = g[0], g[-1] + 1
++        feats = {k: float(np.max(zs[k][a:b])) for k in zs}
++        agree = sorted((k for k in zs if feats[k] >= _ACTIVE_Z), key=lambda k: -feats[k])
++        # Laughter must be corroborated by a loud voice: a regular pulse
++        # pattern alone also appears in ordinary speech.
++        kind = "laughter" if (feats.get("laugh", 0) >= 5 and feats.get("vocal", 0) >= 2) else (
++            "shout" if feats.get("vocal", 0) >= 3 and feats.get("pitch", 0) >= 3 else (
++                "silent_facecam" if not any(k in VOICE and feats.get(k, 0) >= _ACTIVE_Z for k in zs)
++                else "vocal_burst"))
++        out.append({"start": float(a), "end": float(b), "strength": float(strength[a:b].sum()),
++                    "peak": float(a + int(np.argmax(strength[a:b]))), "features": feats,
++                    "agree": agree, "kind": kind})
++    return out
++
++
++def correlate(reactions: list[dict[str, Any]], game_eps: list[Episode], streamer_present: bool) -> list[dict[str, Any]]:
++    """Attach the triggering game event to each reaction; keep unreacted game
++    events as low-ranked ``silent_action`` candidates."""
++    used: set[int] = set()
++    items: list[dict[str, Any]] = []
++    for r in reactions:
++        match: Optional[tuple[int, Episode]] = None
++        for idx, g in enumerate(game_eps):
++            # Event begins before/at the reaction and the reaction starts
++            # within _EVENT_LEAD_SEC of the event's end (or slightly before).
++            if g.start - _EVENT_SLACK_SEC <= r["start"] <= g.end + _EVENT_LEAD_SEC:
++                if match is None or g.end > match[1].end:
++                    match = (idx, g)
++        if match is not None:
++            used.add(match[0])
++            kind = "reaction_to_event" if r["kind"] != "silent_facecam" else "silent_facecam"
++            mult = 1.35 if kind == "reaction_to_event" else 0.6
++            items.append({**r, "type": kind, "event": match[1], "mult": mult})
++        else:
++            if r["kind"] == "silent_facecam":
++                items.append({**r, "type": "silent_facecam", "event": None, "mult": 0.5})
++            else:
++                items.append({**r, "type": "commentary_reaction", "event": None, "mult": 1.0})
++    if streamer_present:
++        for idx, g in enumerate(game_eps):
++            if idx not in used:
++                items.append({"start": g.start, "end": g.end, "strength": g.strength * 0.25,
++                              "peak": g.peak, "features": {}, "agree": [], "kind": "silent_action",
++                              "type": "silent_action", "event": g, "mult": 0.45})
++    return items
++
++
++def _score(it: dict[str, Any]) -> float:
++    base = 38.0 + 7.0 * float(np.sqrt(max(it["strength"], 0.0)))
++    if it["type"] == "silent_action":
++        return float(min(40.0, base * it["mult"]))
++    kind_bonus = {"laughter": 8.0, "shout": 6.0, "vocal_burst": 3.0, "silent_facecam": 0.0}.get(it["kind"], 0.0)
++    return float(min(98.0, (base + kind_bonus) * it["mult"]))
++
++
++_REASON = {
++    "reaction_to_event": "the streamer reacts ({kind}) right after something happens on screen",
++    "commentary_reaction": "the streamer has a strong vocal reaction ({kind}) with no visible game trigger — commentary or a bit",
++    "silent_facecam": "the facecam shows a big physical reaction but the streamer stays quiet",
++    "silent_action": "something happens on screen but the streamer does not react",
++}
++
++
++def shape_window(it: dict[str, Any], duration: float, clip_seconds: float) -> tuple[float, float, float, float]:
++    """(start, end, lead, tail). Keep the trigger AND the full reaction."""
++    r_start, r_end = it["start"], it["end"]
++    ev: Optional[Episode] = it.get("event")
++    if it["type"] == "reaction_to_event" and ev is not None:
++        start = min(ev.start, r_start) - 3.5
++    elif it["type"] == "silent_action" and ev is not None:
++        start = ev.start - 4.0
++    else:
++        start = r_start - 6.0  # the setup: what made them say it
++    tail = 3.5 if it["kind"] == "laughter" else 3.0
++    end = r_end + tail
++    max_len = max(clip_seconds * 1.6, 20.0)
++    if end - start > max_len:
++        start = max(start, end - max_len)
++    min_len = min(12.0, duration)
++    if end - start < min_len:
++        start -= (min_len - (end - start)) * 0.6
++        end += (min_len - (end - start)) * 0.4 if end - start < min_len else 0
++    start, end = max(0.0, start), min(duration, end)
++    return start, end, max(0.0, r_start - start), max(0.0, end - r_end)
++
++
++def select_streamer_moments(
++    video_path: Path | str,
++    duration: float,
++    *,
++    target_count: int,
++    clip_seconds: float,
++    voice: Optional[dict[str, np.ndarray]] = None,
++    face: Optional[np.ndarray] = None,
++    facecam_roi: Optional[tuple[float, float, float, float]] = None,
++    game_evidence: Optional[dict[str, np.ndarray]] = None,
++    reason_context: str = "streamer reaction analysis",
++) -> list[dict[str, Any]]:
++    """Moments where a streamer's reaction makes the clip, with reasons.
++
++    Returns [] when there is no streamer evidence (no voice, no facecam) so the
++    caller can fall back to the gameplay-only selector.
++    """
++    duration = float(duration or 0)
++    if duration <= 0 or target_count <= 0:
++        return []
++    try:
++        if voice is None:
++            voice = extract_voice_evidence(video_path)
++        roi = facecam_roi
++        if face is None:
++            roi = roi or find_facecam(video_path, duration)
++            face = extract_facecam_activity(video_path, roi) if roi else None
++        strength, zs, voice_present = reaction_series(voice, face)
++        streamer_present = voice_present or (face is not None and len(face) > 0)
++        if not streamer_present or len(strength) < 5:
++            return []
++        if game_evidence is None:
++            game_evidence = extract_frame_evidence(video_path, mask_roi=roi)
++        g_event, g_zs = fuse_game_evidence(game_evidence)
++        game_eps = find_game_episodes(g_event, g_zs, None)
++        items = correlate(_episodes(strength, zs), game_eps, streamer_present)
++    except Exception:
++        logger.warning("Streamer-reaction detection failed for %s", video_path, exc_info=True)
++        return []
++
++    clip_seconds = max(1.0, min(float(clip_seconds or 30), duration))
++    moments: list[dict[str, Any]] = []
++    accepted: list[tuple[float, float]] = []
++    # Game events the streamer ignored are only a last resort: when the
++    # streamer reacted to anything, an unreacted explosion is not a clip.
++    if any(i["type"] in ("reaction_to_event", "commentary_reaction") for i in items):
++        items = [i for i in items if i["type"] != "silent_action"]
++    for it in sorted(items, key=lambda i: -_score(i)):
++        score = _score(it)
++        if it["type"] == "silent_facecam" and score < 45:
++            continue
++        start, end, lead, tail = shape_window(it, duration, clip_seconds)
++        if any(min(end, b) - max(start, a) > 0.25 * (end - start) for a, b in accepted):
++            continue
++        accepted.append((start, end))
++        trig = ""
++        if it.get("event") is not None:
++            trig = f" Trigger: {it['event'].reason.split(' between')[0]}."
++        agree = it.get("agree") or []
++        reason = _REASON[it["type"]].format(kind=it["kind"].replace("_", " "))
++        moments.append({
++            "start_time": _mmss(start), "end_time": _mmss(end), "text": "",
++            "relevance_score": round(min(0.95, score / 100.0), 2),
++            "reasoning": (
++                f"Streamer reaction ({reason_context}): {reason} at {_mmss(it['start'])}"
++                f"{' (signals: ' + ', '.join(agree) + ')' if agree else ''}.{trig} "
++                f"Window {_mmss(start)}–{_mmss(end)} keeps {lead:.0f}s before the reaction and {tail:.0f}s after."),
++            "virality_score": int(round(score)),
++            "hook_score": int(round(score * 0.9)),
++            "engagement_score": int(round(score * 0.8)),
++            "value_score": 0,
++            "shareability_score": int(round(score * 0.7)),
++            "hook_type": it["type"],
++            "hook_title": None,
++            "evidence": {
++                "detector": "streamer_reaction_v1",
++                "moment_type": it["type"], "reaction_kind": it["kind"],
++                "signals": {k: round(v, 1) for k, v in it.get("features", {}).items()},
++                "reaction_start_sec": round(it["start"], 1), "reaction_end_sec": round(it["end"], 1),
++                "game_event": (None if it.get("event") is None else {
++                    "start_sec": round(it["event"].start, 1), "end_sec": round(it["event"].end, 1),
++                    "type": it["event"].event_type}),
++                "lead_in_sec": round(lead, 1), "tail_sec": round(tail, 1),
++            },
++        })
++        if len(moments) >= target_count:
++            break
++    moments.sort(key=lambda m: m["start_time"])
++    return moments
++
++
++def build_reaction_hints(
++    video_path: Path | str, duration: float, limit: int = 10
++) -> str:
++    """Text hints for the transcript ranker: where the streamer reacted, and
++    to what. Same shape as ``build_clip_signal_summary`` lines. Empty string
++    when there is no streamer evidence or anything fails."""
++    moments = select_streamer_moments(
++        video_path, duration, target_count=limit, clip_seconds=30)
++    moments = [m for m in moments if m["hook_type"] != "silent_action"]
++    if not moments:
++        return ""
++    lines = ["Measured streamer-reaction signals (voice, facecam and on-screen events; "
++             "prefer these over plain loudness):"]
++    for m in sorted(moments, key=lambda m: -m["virality_score"]):
++        ev = m["evidence"]
++        trig = ""
++        if ev["game_event"]:
++            trig = f"; triggered by an on-screen event at {_mmss(ev['game_event']['start_sec'])}"
++        lines.append(
++            f"- [{m['start_time']} - {m['end_time']}] score={m['virality_score'] / 10:.1f}: "
++            f"{ev['moment_type'].replace('_', ' ')} ({ev['reaction_kind'].replace('_', ' ')}) at "
++            f"{_mmss(ev['reaction_start_sec'])}{trig}")
++    return chr(10).join(lines)
+diff --git a/backend/src/auto_director/visual_moments.py b/backend/src/auto_director/visual_moments.py
+index a8f20fb..35d6df4 100644
+--- a/backend/src/auto_director/visual_moments.py
++++ b/backend/src/auto_director/visual_moments.py
+@@ -232,6 +232,18 @@ def select_visual_moments(
+     clip_seconds = max(1.0, min(float(clip_seconds or 30), duration))
+     if frame_evidence:
+         from .gameplay_moments import select_gameplay_moments
++        from .reaction_moments import select_streamer_moments
++
++        streamer = select_streamer_moments(
++            video_path,
++            duration,
++            target_count=target_count,
++            clip_seconds=clip_seconds,
++            reason_context=reason_context,
++        )
++        streamer = [m for m in streamer if m.get("hook_type") != "silent_action"]
++        if streamer:
++            return streamer
+ 
+         fused = select_gameplay_moments(
+             video_path,
+diff --git a/backend/src/services/video_service.py b/backend/src/services/video_service.py
+index 9d03362..73a0397 100644
+--- a/backend/src/services/video_service.py
++++ b/backend/src/services/video_service.py
+@@ -2775,6 +2775,26 @@ class VideoService:
+                 except Exception as exc:
+                     logger.warning("Clip signal extraction failed: %s", exc)
+                     clip_signals = None
++                # Measured streamer reactions (voice, facecam, game events)
++                # join the ranker's hints; never-fail, opt out with
++                # REACTION_SIGNALS=0.
++                if file_duration and os.getenv("REACTION_SIGNALS", "1").lower() not in ("0", "false", "off"):
++                    try:
++                        from ..auto_director.reaction_moments import (
++                            build_reaction_hints,
++                        )
++
++                        reaction_hints = await run_in_thread(
++                            build_reaction_hints, video_path, float(file_duration)
++                        )
++                        if reaction_hints:
++                            clip_signals = (
++                                clip_signals + "\n" + reaction_hints
++                                if clip_signals
++                                else reaction_hints
++                            )
++                    except Exception as exc:
++                        logger.warning("Reaction signal extraction failed: %s", exc)
+                 # Scene-cut times already computed elsewhere for
+                 # reframing now also hint the selector (never-fail:
+                 # detection returns [] and any error here just means
+diff --git a/backend/tests/unit/test_reaction_moments.py b/backend/tests/unit/test_reaction_moments.py
+new file mode 100644
+index 0000000..639822c
+--- /dev/null
++++ b/backend/tests/unit/test_reaction_moments.py
+@@ -0,0 +1,95 @@
++"""Streamer-reaction fusion: voice/face agreement, event correlation, no loud-audio fakes."""
++import numpy as np
++
++from src.auto_director import gameplay_moments as gm
++from src.auto_director import reaction_moments as rm
++
++
++def _voice(seconds=120):
++    rng = np.random.default_rng(3)
++    return {
++        "vocal": 30 + rng.normal(0, 0.5, seconds),
++        "f0": 125 + rng.normal(0, 3, seconds),
++        "voiced_frac": np.full(seconds, 0.35),
++        "laugh": np.abs(rng.normal(0.1, 0.02, seconds)),
++        "total_db": np.full(seconds, 40.0),
++    }
++
++
++def _face(seconds=120):
++    return 1.0 + np.abs(np.random.default_rng(4).normal(0, 0.05, seconds))
++
++
++def _game(seconds=120, events=()):
++    rng = np.random.default_rng(5)
++    base = {"motion": 0.4, "local": 0.5, "tint": 1.5, "shake": 0.05,
++            "text": 0.0, "novelty": 1.0, "pursuit": 0.5}
++    ev = {f: base[f] + rng.normal(0, 0.02 * max(base[f], 0.2), seconds) for f in gm.FEATURES}
++    for a, b in events:
++        for s in range(a, b):
++            ev["tint"][s] += 12
++            ev["local"][s] += 6
++    ev["duration"] = np.array([float(seconds)])
++    return ev
++
++
++def _pick(voice, face, game):
++    return rm.select_streamer_moments("x.mp4", 120.0, target_count=5, clip_seconds=30,
++                                      voice=voice, face=face, game_evidence=game)
++
++
++def test_calm_streamer_over_ordinary_gameplay_yields_nothing():
++    assert _pick(_voice(), _face(), _game()) == []
++
++
++def test_loud_game_audio_without_voice_is_not_a_reaction():
++    v = _voice()
++    v["total_db"][50:53] = 80.0           # explosion: loud, but not voiced
++    assert _pick(v, _face(), _game()) == []
++
++
++def test_unreacted_game_event_is_not_selected_when_a_real_reaction_exists():
++    v = _voice(); f = _face()
++    v["vocal"][90:94] += 15; v["f0"][90:94] += 120   # a shout at 90 s
++    f[90:94] += 12
++    out = _pick(v, f, _game(events=[(30, 36), (88, 91)]))
++    types = [m["hook_type"] for m in out]
++    assert types == ["reaction_to_event"]
++    assert "00:30" not in out[0]["start_time"]
++
++
++def test_reaction_to_event_outranks_commentary_and_keeps_trigger_in_window():
++    v = _voice(); f = _face()
++    for a in (40, 90):                                   # same shout twice
++        v["vocal"][a:a + 4] += 15; v["f0"][a:a + 4] += 120; f[a:a + 4] += 12
++    out = _pick(v, f, _game(events=[(37, 40)]))          # only the first has a trigger
++    by_type = {m["hook_type"]: m for m in out}
++    assert by_type["reaction_to_event"]["virality_score"] >= by_type["commentary_reaction"]["virality_score"]
++    m = by_type["reaction_to_event"]
++    assert m["start_time"] <= "00:37" and m["end_time"] > "00:44"
++    assert m["evidence"]["game_event"] is not None
++
++
++def test_silent_facecam_alone_is_weak_and_dropped():
++    f = _face(); f[60:64] += 12
++    out = _pick(_voice(), f, _game(events=[(58, 62)]))
++    # Only the low-scored "game event the streamer ignored" fallback may remain;
++    # visual_moments drops it, so it never becomes a pick on its own.
++    assert [m["hook_type"] for m in out] in ([], ["silent_action"])
++    assert all(m["virality_score"] <= 40 for m in out)
++
++
++def test_no_voice_no_face_returns_empty_for_fallback():
++    assert rm.select_streamer_moments("x.mp4", 60.0, target_count=3, clip_seconds=30,
++                                      voice={}, face=None, game_evidence=_game(60)) == []
++
++
++def test_hints_text_format(monkeypatch):
++    v = _voice(); f = _face()
++    v["vocal"][90:94] += 15; v["f0"][90:94] += 120; f[90:94] += 12
++    monkeypatch.setattr(rm, "extract_voice_evidence", lambda p: v)
++    monkeypatch.setattr(rm, "find_facecam", lambda p, d: (0.7, 0.6, 0.25, 0.3))
++    monkeypatch.setattr(rm, "extract_facecam_activity", lambda p, r: f)
++    monkeypatch.setattr(rm, "extract_frame_evidence", lambda p, mask_roi=None: _game(events=[(88, 91)]))
++    text = rm.build_reaction_hints("x.mp4", 120.0)
++    assert text.startswith("Measured streamer-reaction signals") and "reaction to event" in text
+diff --git a/tools/gameplay-eval/make_streamer_vod.py b/tools/gameplay-eval/make_streamer_vod.py
+new file mode 100644
+index 0000000..2b10fd2
+--- /dev/null
++++ b/tools/gameplay-eval/make_streamer_vod.py
+@@ -0,0 +1,272 @@
++"""SYNTHETIC streamer-VOD generator for the reaction test matrix.
++
++NOT real footage. It composes a game view (HUD, flashes, banners, shake), a
++facecam (a cartoon head whose mouth and lean follow the voice) and audio (game
++bed with chord pad + explosions, and synthetic voices: calm speech, excited
++speech, laughter pulses, a scream). It exists to check logic and false
++positives; it can not tell us how real streamers sound. Real-VOD validation is
++a separate, still-open step.
++
++Usage: python make_streamer_vod.py <out_dir> [seed] [variant]
++  variant 0 = tuning set, 1 = held-out set (different pitches/levels/timings)
++"""
++from __future__ import annotations
++
++import json
++import subprocess
++import sys
++import wave
++from pathlib import Path
++
++import cv2
++import numpy as np
++
++W, H, FPS, SR = 640, 360, 24, 16000
++FACE = (470, 226, 160, 120)  # x, y, w, h of the facecam box
++
++# (name, length_sec, role)  role: pos_corr | pos_comm | pos_masked | neg | weak
++PLAN = [
++    ("ordinary_a", 40, "neg"),
++    ("action_no_reaction", 28, "neg"),
++    ("laugh_at_event", 28, "pos_corr"),
++    ("ordinary_b", 25, "neg"),
++    ("facecam_silent", 28, "weak"),
++    ("scream_shock", 28, "pos_corr"),
++    ("funny_commentary", 28, "pos_comm"),
++    ("ordinary_c", 25, "neg"),
++    ("masked_laugh", 28, "pos_masked"),
++    ("unrelated_laugh", 28, "pos_comm"),
++    ("ordinary_d", 40, "neg"),
++]
++
++
++def _harm(f0, t, n=14, tilt=1.0, formants=((700, 400), (1800, 600))):
++    """Harmonic stack with simple formant emphasis. f0 may be an array."""
++    phase = 2 * np.pi * np.cumsum(f0) / SR
++    out = np.zeros_like(t)
++    for k in range(1, n + 1):
++        fk = f0 * k
++        g = 1.0 / (k ** tilt)
++        for fc, bw in formants:
++            g = g * (1 + 2.0 * np.exp(-((fk - fc) / bw) ** 2)) if False else g
++        env = sum(np.exp(-((fk - fc) / bw) ** 2) for fc, bw in formants) + 0.15
++        out += g * env * np.sin(k * phase)
++    return out / max(1e-6, np.abs(out).max())
++
++
++def voice(kind, dur, rng, var):
++    n = int(dur * SR)
++    t = np.arange(n) / SR
++    shift = 1.0 if var == 0 else 1.18  # held-out: a different speaker
++    if kind == "calm":
++        f0 = (122 * shift) + 8 * np.sin(2 * np.pi * 0.6 * t)
++        syll = np.clip(np.sin(2 * np.pi * (3.8 + 0.4 * var) * t) + 0.25, 0, 1) ** 0.8
++        words = (np.sin(2 * np.pi * 0.35 * t + rng.uniform(0, 6)) > -0.4).astype(float)
++        return 0.11 * _harm(f0, t) * syll * np.convolve(words, np.ones(400) / 400, "same")
++    if kind == "excited":
++        f0 = (185 * shift) + 38 * np.sin(2 * np.pi * 0.9 * t) + 25 * t / dur
++        syll = np.clip(np.sin(2 * np.pi * 4.6 * t) + 0.35, 0, 1) ** 0.7
++        return (0.26 + 0.1 * t / dur) * _harm(f0, t) * syll
++    if kind == "laugh":
++        rate = 5.2 if var == 0 else 4.6
++        f0 = (250 * shift) - 40 * (t / dur) + 12 * np.sin(2 * np.pi * 7 * t)
++        phase = (t * rate) % 1.0
++        pulse = np.exp(-phase * 9.0) * (phase < 0.6)
++        ramp = np.minimum(1, t / 0.4) * (1 - 0.35 * t / dur)
++        breath = rng.normal(0, 0.08, n) * pulse
++        return 0.34 * (_harm(f0, t, 10) * pulse * ramp + breath)
++    if kind == "scream":
++        f0 = (640 * shift) + 120 * t / dur + 18 * np.sin(2 * np.pi * 6 * t)
++        env = np.minimum(1, t / 0.2) * np.minimum(1, (dur - t) / 0.5)
++        return 0.48 * _harm(f0, t, 9, 0.7) * env
++    raise ValueError(kind)
++
++
++def game_audio(dur, rng, var):
++    n = int(dur * SR)
++    t = np.arange(n) / SR
++    pad = 0.025 * (np.sin(2 * np.pi * 220 * t) + np.sin(2 * np.pi * 277 * t) + np.sin(2 * np.pi * 330 * t))
++    hum = 0.025 * np.sin(2 * np.pi * 95 * t) * (1 + 0.2 * np.sin(2 * np.pi * 0.3 * t))
++    noise = np.convolve(rng.normal(0, 1, n), np.ones(8) / 8, "same") * 0.012
++    return 0.45 * (pad + hum + noise)
++
++
++def boom(dur, amp, rng):
++    n = int(dur * SR)
++    t = np.arange(n) / SR
++    x = rng.normal(0, 1, n)
++    x = np.convolve(x, np.ones(12) / 12, "same")  # low-passed noise: not voiced
++    return amp * x * np.exp(-t * 3.0) * 2.2
++
++
++def draw_scene(frame, t_local, ev, shake):
++    """frame: BGR canvas already holding the base scene."""
++    out = frame.copy()
++    # HUD
++    cv2.rectangle(out, (10, 330), (150, 345), (60, 190, 80), -1)
++    cv2.rectangle(out, (520, 8), (632, 100), (40, 40, 40), 1)
++    cv2.putText(out, "30/120", (360, 350), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
++    for kind, a, b in ev:
++        if not (a <= t_local <= b):
++            continue
++        if kind == "flash":
++            cv2.rectangle(out, (0, 0), (W, H), (60, 60, 255), -1) if False else None
++            out[:] = (0.6 * out + 0.4 * np.array([70, 70, 255])).astype(np.uint8)
++        elif kind == "banner":
++            cv2.putText(out, "WASTED", (150, 110), cv2.FONT_HERSHEY_SIMPLEX, 2.0, (40, 40, 255), 5)
++        elif kind == "feed":
++            cv2.putText(out, "VEHICLE DESTROYED", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
++        elif kind == "boomflash":
++            cv2.circle(out, (300, 190), 70, (80, 160, 255), -1)
++        elif kind == "tumble":
++            x = int(300 + 120 * np.sin(8 * t_local)); y = int(200 - 70 * abs(np.sin(5 * t_local)))
++            cv2.rectangle(out, (x, y), (x + 40, y + 40), (60, 60, 210), -1)
++    if shake:
++        M = np.float32([[1, 0, 8 * np.sin(55 * t_local)], [0, 1, 6 * np.cos(47 * t_local)]])
++        out = cv2.warpAffine(out, M, (W, H))
++    return out
++
++
++def draw_face(frame, openness, lean, bob, covered):
++    x0, y0, w, h = FACE
++    cv2.rectangle(frame, (x0, y0), (x0 + w, y0 + h), (90, 80, 70), -1)
++    cx = int(x0 + w / 2 + bob * 6)
++    cy = int(y0 + h / 2 + 4 - lean * 10)
++    rx, ry = int(30 + lean * 10), int(38 + lean * 12)
++    cv2.ellipse(frame, (cx, cy), (rx, ry), 0, 0, 360, (140, 180, 225), -1)
++    cv2.circle(frame, (cx - 12, cy - 10), 4, (30, 30, 30), -1)
++    cv2.circle(frame, (cx + 12, cy - 10), 4, (30, 30, 30), -1)
++    mh = int(2 + openness * 22)
++    cv2.ellipse(frame, (cx, cy + 16), (11 + int(openness * 6), mh), 0, 0, 360, (30, 30, 120), -1)
++    if covered:
++        cv2.rectangle(frame, (cx - 30, cy - 20), (cx + 30, cy + 25), (120, 150, 200), -1)
++
++
++def build(out_dir: Path, seed: int, var: int):
++    rng = np.random.default_rng(seed)
++    out_dir.mkdir(parents=True, exist_ok=True)
++    total = sum(p[1] for p in PLAN)
++    audio = np.zeros(int(total * SR) + SR)
++    truth = []
++    # per-scenario plan: events (game), face timeline callbacks, voice placements
++    frames_meta = []  # list of (t_abs, ev, shake, faceparams fn)
++    t0 = 0.0
++    sc = []
++    for name, length, role in PLAN:
++        a0 = int(t0 * SR)
++        n = int(length * SR)
++        audio[a0:a0 + n] += game_audio(length, rng, var)
++        ev, shake, face = [], [], []   # face: (a, b, kind)
++        voices = []  # (rel_start, kind, dur, gain)
++        gt = None  # (rel_start, rel_end) of the thing that should be clipped
++        if name.startswith("ordinary"):
++            for s in range(2, int(length) - 8, 11):
++                voices.append((s + rng.uniform(0, 2), "calm", 7.0, 1.0))
++        elif name == "action_no_reaction":
++            ev = [("feed", 10, 14), ("flash", 10, 10.3), ("banner", 11, 13.5), ("boomflash", 17, 18.4), ("flash", 17, 17.2)]
++            shake = [(10, 14)]
++            audio[a0 + int(10 * SR): a0 + int(10 * SR) + int(1.6 * SR)] += boom(1.6, 0.9, rng)[: int(1.6 * SR)]
++            audio[a0 + int(17 * SR): a0 + int(17 * SR) + int(1.6 * SR)] += boom(1.6, 1.0, rng)[: int(1.6 * SR)]
++            voices.append((3, "calm", 20, 1.0))
++            gt = (9, 18.5)
++        elif name == "laugh_at_event":
++            ev = [("feed", 9, 13), ("flash", 9, 9.3), ("banner", 9.5, 12), ("tumble", 9.5, 13)]
++            audio[a0 + int(9 * SR): a0 + int(9 * SR) + int(1.6 * SR)] += boom(1.6, 0.8, rng)[: int(1.6 * SR)]
++            voices += [(2, "calm", 6.5, 1.0), (10.6, "laugh", 6.0, 1.0)]
++            face = [(10.6, 16.6, "laugh")]
++            gt = (10.6, 16.6)
++        elif name == "scream_shock":
++            ev = [("flash", 10, 10.5), ("boomflash", 10, 11.5), ("shake", 10, 12)]
++            shake = [(10, 12.5)]
++            audio[a0 + int(10 * SR): a0 + int(10 * SR) + int(1.8 * SR)] += boom(1.8, 0.95, rng)[: int(1.8 * SR)]
++            voices += [(2, "calm", 6.0, 1.0), (10.4, "scream", 2.6, 1.0), (13.2, "excited", 4.0, 1.0)]
++            face = [(10.4, 13.0, "scream")]
++            gt = (10.4, 13.0)
++        elif name == "funny_commentary":
++            voices += [(2, "calm", 7.0, 1.0), (10, "excited", 7.0, 1.0), (13.5, "laugh", 2.5, 0.7)]
++            face = [(10, 16, "laugh")]
++            gt = (10, 16)
++        elif name == "unrelated_laugh":
++            voices += [(2, "calm", 7.0, 1.0), (12, "laugh", 4.5, 0.9)]
++            face = [(12, 16.5, "laugh")]
++            gt = (12, 16.5)
++        elif name == "facecam_silent":
++            ev = [("feed", 10, 14), ("flash", 10, 10.3), ("banner", 11, 13)]
++            face = [(10.4, 13.5, "lunge")]
++            voices.append((2, "calm", 6.0, 1.0))
++            gt = (10.4, 13.5)
++        elif name == "masked_laugh":
++            ev = [("boomflash", 8, 22), ("flash", 8, 8.2)]
++            shake = [(8, 14)]
++            for s in np.arange(8, 21, 1.1):
++                i = a0 + int(s * SR)
++                audio[i:i + int(1.5 * SR)] += boom(1.5, 0.55, rng)[: len(audio[i:i + int(1.5 * SR)])]
++            voices += [(2, "calm", 5.0, 1.0), (11, "laugh", 6.0, 0.6)]
++            face = [(11, 17, "laugh")]
++            gt = (11, 17)
++        for rel, kind, dur, gain in voices:
++            seg = voice(kind, dur, rng, var) * gain * 1.6
++            i = a0 + int(rel * SR)
++            audio[i:i + len(seg)] += seg[: len(audio[i:i + len(seg)])]
++        sc.append(dict(name=name, role=role, t0=t0, length=length, ev=ev, shake=shake, face=face, voices=voices))
++        if gt:
++            truth.append(dict(name=name, role=role, start=t0 + gt[0], end=t0 + gt[1]))
++        else:
++            truth.append(dict(name=name, role=role, start=t0, end=t0 + length))
++        t0 += length
++
++    audio = np.clip(audio * 0.9, -1, 1)
++    wav = out_dir / "vod.wav"
++    with wave.open(str(wav), "wb") as f:
++        f.setnchannels(1); f.setsampwidth(2); f.setframerate(SR)
++        f.writeframes((audio[: int(total * SR)] * 32767).astype(np.int16).tobytes())
++
++    # video
++    base = np.zeros((H, W, 3), np.uint8)
++    yy, xx = np.mgrid[0:H, 0:W]
++    base[..., 0] = (60 + 40 * xx / W).astype(np.uint8)
++    base[..., 1] = (80 + 40 * yy / H).astype(np.uint8)
++    base[..., 2] = 60
++    mp4 = out_dir / "vod.mp4"
++    proc = subprocess.Popen(
++        ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}",
++         "-r", str(FPS), "-i", "-", "-i", str(wav), "-c:v", "libx264", "-preset", "veryfast",
++         "-crf", "22", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-shortest", str(mp4)],
++        stdin=subprocess.PIPE)
++    for s in sc:
++        nfr = int(s["length"] * FPS)
++        for k in range(nfr):
++            t = k / FPS
++            drift = np.roll(base, int(t * 3) % W, axis=1)
++            fr = draw_scene(drift, t, s["ev"], any(a <= t <= b for a, b in s["shake"]))
++            openness, lean, bob, covered = 0.1, 0.0, 0.0, False
++            # mouth follows whichever voice is active
++            for rel, kind, dur, gain in s["voices"]:
++                if rel <= t < rel + dur:
++                    tt = t - rel
++                    if kind == "calm":
++                        openness = 0.15 + 0.25 * max(0, np.sin(2 * np.pi * 3.8 * tt))
++                    elif kind == "excited":
++                        openness = 0.3 + 0.35 * max(0, np.sin(2 * np.pi * 4.6 * tt))
++                    elif kind == "laugh":
++                        openness = 0.5 + 0.5 * max(0, np.sin(2 * np.pi * 5.2 * tt))
++                    elif kind == "scream":
++                        openness = 1.0
++            for a, b, kind in s["face"]:
++                if a <= t <= b:
++                    if kind == "laugh":
++                        lean = 0.6 * np.sin(2 * np.pi * 2.3 * (t - a)); bob = np.sin(2 * np.pi * 5.0 * (t - a))
++                    elif kind == "scream":
++                        lean = 1.0
++                    elif kind == "lunge":
++                        lean = 1.0 if (t - a) < 1.5 else 0.2; covered = (t - a) > 1.8; openness = 0.1
++            draw_face(fr, openness, lean, bob, covered)
++            proc.stdin.write(fr.tobytes())
++    proc.stdin.close(); proc.wait()
++    (out_dir / "truth.json").write_text(json.dumps(dict(seed=seed, variant=var, total=total, plan=truth), indent=1))
++    print("wrote", mp4, f"{total}s")
++
++
++if __name__ == "__main__":
++    build(Path(sys.argv[1]), int(sys.argv[2]) if len(sys.argv) > 2 else 1,
++          int(sys.argv[3]) if len(sys.argv) > 3 else 0)
+diff --git a/tools/gameplay-eval/score_streamer.py b/tools/gameplay-eval/score_streamer.py
+new file mode 100644
+index 0000000..d9a09d4
+--- /dev/null
++++ b/tools/gameplay-eval/score_streamer.py
+@@ -0,0 +1,47 @@
++"""Score selectors on the SYNTHETIC streamer-VOD matrix.
++Usage: score_streamer.py <vod_dir> [count] [--dump]
++Reports, per selector, which scenario each pick landed in and the verdicts."""
++import sys, json, time
++sys.path.insert(0, "backend"); sys.path.insert(0, "tools/gameplay-eval")
++from pathlib import Path
++from src.auto_director import reaction_moments as rm, gameplay_moments as gm, visual_moments as vm
++from src.auto_director.beat_grid import analyse_audio_beats
++
++d = Path(sys.argv[1]); count = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else 6
++truth = json.loads((d / "truth.json").read_text()); plan = truth["plan"]; dur = float(truth["total"]); vod = d / "vod.mp4"
++def sec(s): m, x = s.split(":"); return int(m) * 60 + int(x)
++
++def where(m):
++    s, e = sec(m["start_time"]), sec(m["end_time"])
++    best = max(plan, key=lambda p: max(0, min(e, p["end"]) - max(s, p["start"])))
++    ov = max(0, min(e, best["end"]) - max(s, best["start"]))
++    return best, ov
++
++def report(label, ms, t):
++    print(f"\n== {label}  ({t:.1f}s)")
++    pos_hit, fp = set(), []
++    for m in sorted(ms, key=lambda m: -m["virality_score"]):
++        p, ov = where(m); good = p["role"].startswith("pos") and ov >= 0.5 * (p["end"] - p["start"])
++        if good: pos_hit.add(p["name"])
++        elif p["role"] in ("neg", "weak") or not good: fp.append(p["name"])
++        print(f"  {m['start_time']}-{m['end_time']} score={m['virality_score']:>3} -> {p['name']:<20} role={p['role']:<10} {'HIT' if good else 'MISS/FP'}  [{m.get('hook_type','')}]")
++    pos = [p["name"] for p in plan if p["role"].startswith("pos")]
++    print(f"  positives found {len(pos_hit)}/{len(pos)}: {sorted(pos_hit)}; missed {sorted(set(pos)-pos_hit)}; false-positive picks: {fp}")
++    return {"found": len(pos_hit), "of": len(pos), "fp": len(fp), "n": len(ms)}
++
++res = {}
++t = time.time(); grid = analyse_audio_beats(vod)
++ms = vm.select_visual_moments(vod, dur, target_count=count, clip_seconds=30, beat_grid=grid)
++res["baseline(audio peaks)"] = report("BASELINE: audio peaks + cuts (V9)", ms, time.time() - t)
++t = time.time(); ms = gm.select_gameplay_moments(vod, dur, target_count=count, clip_seconds=30, beat_grid=grid, evidence=gm.extract_frame_evidence(vod))
++res["GA1 gameplay-only"] = report("GA1: gameplay frame-evidence only (no streamer model)", ms, time.time() - t)
++t = time.time(); voice = rm.extract_voice_evidence(vod); tv = time.time() - t
++t = time.time(); roi = (470/640, 226/360, 160/640, 120/360) if '--known-roi' in sys.argv else rm.find_facecam(vod, dur); face = rm.extract_facecam_activity(vod, roi) if roi else None; tf = time.time() - t
++print(f"\nvoice extract {tv:.1f}s, facecam {tf:.1f}s, roi={None if roi is None else [round(x,2) for x in roi]}")
++if "--dump" in sys.argv:
++    st, zs, vp = rm.reaction_series(voice, face)
++    for i in range(len(st)):
++        if st[i] > 0: print(i, f"str={st[i]:.1f}", " ".join(f"{k[:3]}={zs[k][i]:.1f}" for k in zs))
++t = time.time(); ms = rm.select_streamer_moments(vod, dur, target_count=count, clip_seconds=30, voice=voice, face=face, facecam_roi=roi)
++res["streamer reaction"] = report("NEW: streamer-reaction + event correlation", ms, time.time() - t)
++print(json.dumps(res))
+-- 
+2.56.0.windows.2
+

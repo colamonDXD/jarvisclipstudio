@@ -1,0 +1,535 @@
+From 52f54d0b4119d9ba22a4ad496842a7ebbc9de86a Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 18:13:03 +0530
+Subject: [PATCH 15/27] feat(live): trainable moment ranking +
+ autoresearch-style trainer against YouTube most-replayed labels
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/live/selection.py             | 146 ++++++++++++
+ backend/src/live/vod.py                   |  33 +--
+ backend/tests/unit/test_live_selection.py |  45 ++++
+ tools/live/train_selection.py             | 259 ++++++++++++++++++++++
+ 4 files changed, 459 insertions(+), 24 deletions(-)
+ create mode 100644 backend/src/live/selection.py
+ create mode 100644 backend/tests/unit/test_live_selection.py
+ create mode 100644 tools/live/train_selection.py
+
+diff --git a/backend/src/live/selection.py b/backend/src/live/selection.py
+new file mode 100644
+index 0000000..2931172
+--- /dev/null
++++ b/backend/src/live/selection.py
+@@ -0,0 +1,146 @@
++"""Trainable moment ranking for long streams (the VOD clipper's first stage).
++
++The same function serves the product (``vod.find_candidates``) and the
++trainer (``tools/live/train_selection.py``), so what is measured is what runs.
++
++``rank_moments(series, params)`` turns the per-second voice features (vocal
++level, pitch, laughter, voiced share) into scored reaction moments:
++
++1. causal z-scores per signal: each second against the median/MAD of the
++   ``baseline_sec`` before it (excluding the last ``exclude_sec``), the same
++   rule as ``voice_scan.VoiceTrack`` - vectorised with numpy so 11 h ranks in
++   about a second;
++2. a second is "active" when ``need_active`` signals reach ``active_z``, or
++   laughter reaches ``laugh_z``, or the scream rule fires (pitch z >=
++   ``scream_f0_z`` with vocal z >= ``scream_vocal_z``);
++3. active seconds closer than ``merge_gap`` merge into one moment;
++4. score = peak z x (``talk_base`` + ``talk_w`` x talk share around it)
++   x (1 + ``length_w`` x min(length, 10) / 10)
++   + ``energy_w`` x mean vocal z over the 20 s after the onset.
++
++``DEFAULT_PARAMS`` reproduce the hand-set rules shipped before training. A
++trained file (``selection_params.json`` next to this module, or
++``LIVE_SELECTION_PARAMS``) overrides them; the trainer writes it only when
++held-out streams improve.
++"""
++from __future__ import annotations
++
++import json
++import logging
++import os
++from pathlib import Path
++from typing import Any, Dict, List, Optional
++
++import numpy as np
++
++logger = logging.getLogger(__name__)
++
++FLOORS = {"vocal": 2.0, "f0": 18.0, "laugh": 0.12}
++PARAMS_FILE = Path(__file__).with_name("selection_params.json")
++
++DEFAULT_PARAMS: Dict[str, float] = {
++    "baseline_sec": 240.0, "exclude_sec": 8.0, "min_baseline": 20.0,
++    "active_z": 3.0, "need_active": 2.0, "laugh_z": 5.0, "scream_f0_z": 4.0, "scream_vocal_z": 1.5,
++    "merge_gap": 3.0, "talk_base": 0.6, "talk_w": 0.8, "length_w": 0.0, "energy_w": 0.0,
++    "min_gap": 90.0,
++}
++
++
++def load_params() -> Dict[str, float]:
++    path = Path(os.getenv("LIVE_SELECTION_PARAMS") or PARAMS_FILE)
++    params = dict(DEFAULT_PARAMS)
++    if path.is_file():
++        try:
++            data = json.loads(path.read_text(encoding="utf-8"))
++            params.update({k: float(v) for k, v in (data.get("params") or {}).items() if k in DEFAULT_PARAMS})
++        except Exception as exc:
++            logger.warning("Ignoring unreadable selection params %s: %s", path, exc)
++    return params
++
++
++def causal_z(values: np.ndarray, floor: float, baseline: int, exclude: int, min_baseline: int) -> np.ndarray:
++    """z[t] = (v[t] - median(v[t-baseline : t-exclude])) / max(1.4826 MAD, floor/4)."""
++    n = len(values)
++    out = np.zeros(n, dtype=np.float32)
++    width = baseline - exclude
++    if n == 0 or width < min_baseline:
++        return out
++    v = np.asarray(values, dtype=np.float64)
++    v = np.where(np.isnan(v), np.nanmedian(v) if np.isfinite(v).any() else 0.0, v)
++    padded = np.concatenate([np.full(baseline, np.nan), v])
++    from numpy.lib.stride_tricks import sliding_window_view
++
++    windows = sliding_window_view(padded, width)[:n]           # windows[t] = v[t-baseline : t-exclude]
++    counts = np.sum(~np.isnan(windows), axis=1)
++    import warnings
++
++    with np.errstate(all="ignore"), warnings.catch_warnings():
++        warnings.simplefilter("ignore", RuntimeWarning)  # the first seconds have an all-NaN baseline
++        med = np.nanmedian(windows, axis=1)
++        mad = np.nanmedian(np.abs(windows - med[:, None]), axis=1) * 1.4826
++    z = (v - med) / np.maximum(mad, floor * 0.25)
++    z[counts < min_baseline] = 0.0
++    out[:] = np.nan_to_num(z, nan=0.0)
++    return out
++
++
++def zscores(series: Dict[str, List[float]], params: Dict[str, float]) -> Dict[str, np.ndarray]:
++    return {k: causal_z(np.asarray(series[k], dtype=np.float64), floor, int(params["baseline_sec"]),
++                        int(params["exclude_sec"]), int(params["min_baseline"]))
++            for k, floor in FLOORS.items()}
++
++
++def rank_moments(series: Dict[str, List[float]], params: Optional[Dict[str, float]] = None,
++                 z: Optional[Dict[str, np.ndarray]] = None) -> List[Dict[str, Any]]:
++    """Scored moments [{onset, end, peak, signals, talk, score}], best first (no spacing)."""
++    p = dict(DEFAULT_PARAMS, **(params or {}))
++    z = z if z is not None else zscores(series, p)
++    n = min(len(z["vocal"]), len(z["f0"]), len(z["laugh"]))
++    if n == 0:
++        return []
++    zv, zf, zl = z["vocal"][:n], z["f0"][:n], z["laugh"][:n]
++    active_count = (zv >= p["active_z"]).astype(int) + (zf >= p["active_z"]).astype(int) + (zl >= p["active_z"]).astype(int)
++    scream = (zf >= p["scream_f0_z"]) & (zv >= p["scream_vocal_z"])
++    active = (active_count >= int(round(p["need_active"]))) | (zl >= p["laugh_z"]) | scream
++    idx = np.flatnonzero(active)
++    if len(idx) == 0:
++        return []
++    peak_all = np.maximum(np.maximum(zv, zf), zl)
++    voiced = np.asarray(series.get("voiced_frac") or [0.5] * n, dtype=np.float64)[:n]
++    talking = (voiced >= 0.25).astype(np.float64)
++    talk_cum = np.concatenate([[0.0], np.cumsum(talking)])
++    zv_cum = np.concatenate([[0.0], np.cumsum(np.clip(zv, 0, None))])
++    moments = []
++    start = prev = int(idx[0])
++    for t in list(idx[1:]) + [None]:
++        if t is not None and t - prev <= p["merge_gap"]:
++            prev = int(t)
++            continue
++        seg = slice(start, prev + 1)
++        peak = float(np.max(peak_all[seg]))
++        lo, hi = max(0, start - 5), min(n, start + 25)
++        talk = float((talk_cum[hi] - talk_cum[lo]) / max(1, hi - lo))
++        e_hi = min(n, start + 20)
++        energy = float((zv_cum[e_hi] - zv_cum[start]) / max(1, e_hi - start))
++        length = prev - start + 1
++        score = (peak * (p["talk_base"] + p["talk_w"] * talk) * (1.0 + p["length_w"] * min(length, 10) / 10.0)
++                 + p["energy_w"] * energy)
++        signals = sorted({name for name, arr in (("vocal", zv), ("f0", zf), ("laugh", zl))
++                          if float(np.max(arr[seg])) >= p["active_z"]}
++                         | ({"scream"} if bool(np.any(scream[seg])) else set()))
++        moments.append({"onset": float(start), "end": float(prev), "peak": peak, "signals": signals,
++                        "talk": round(talk, 2), "score": float(score)})
++        if t is not None:
++            start = prev = int(t)
++    moments.sort(key=lambda m: -m["score"])
++    return moments
++
++
++def spaced(moments: List[Dict[str, Any]], limit: int, min_gap: float) -> List[Dict[str, Any]]:
++    picked: List[Dict[str, Any]] = []
++    for m in moments:
++        if all(abs(m["onset"] - q["onset"]) >= min_gap for q in picked):
++            picked.append(m)
++        if len(picked) >= limit:
++            break
++    return picked
+diff --git a/backend/src/live/vod.py b/backend/src/live/vod.py
+index e98b1ff..1e7bc61 100644
+--- a/backend/src/live/vod.py
++++ b/backend/src/live/vod.py
+@@ -129,33 +129,18 @@ def heat_at(heatmap: Sequence[Dict[str, float]], t: float) -> float:
+ 
+ 
+ def find_candidates(series: Dict[str, List[float]], heatmap: Sequence[Dict[str, float]], limit: int) -> List[Dict[str, Any]]:
+-    from .voice_scan import VoiceTrack
++    """Reaction moments ranked by ``selection.rank_moments`` (trainable: a
++    trained ``selection_params.json`` takes effect here), then boosted by the
++    "most replayed" heatmap when the video has one, and spaced apart."""
++    from .selection import load_params, rank_moments, spaced
+ 
+-    track = VoiceTrack(baseline_sec=240.0)
+-    n = min(len(series[k]) for k in ("vocal", "f0", "laugh"))
+-    for sec in range(n):
+-        track.times.append(float(sec))
+-        for k in ("vocal", "f0", "laugh"):
+-            track.feats[k].append(series[k][sec])
+-    flags = track.onsets()
+-    voiced = series.get("voiced_frac") or []
++    params = load_params()
+     scored = []
+-    for flag in flags:
+-        onset = float(flag["onset"])
+-        talk = sum(1 for v in voiced[int(onset) - 5:int(onset) + 25] if v >= 0.25) / 30.0 if voiced else 0.5
+-        heat = heat_at(heatmap, onset)
+-        # Voice strength, more when the streamer keeps talking around it and
+-        # when viewers rewatched that part (heatmap 0..1).
+-        score = float(flag["peak"]) * (0.6 + 0.8 * talk) * (1.0 + 1.5 * heat)
+-        scored.append({**flag, "onset": onset, "talk": round(talk, 2), "heat": round(heat, 3), "score": round(score, 2)})
++    for m in rank_moments(series, params):
++        heat = heat_at(heatmap, m["onset"])
++        scored.append({**m, "heat": round(heat, 3), "score": round(m["score"] * (1.0 + 1.5 * heat), 2)})
+     scored.sort(key=lambda f: -f["score"])
+-    picked: List[Dict[str, Any]] = []
+-    for flag in scored:
+-        if all(abs(flag["onset"] - p["onset"]) >= MIN_GAP for p in picked):
+-            picked.append(flag)
+-        if len(picked) >= limit:
+-            break
+-    return picked
++    return spaced(scored, limit, float(params.get("min_gap", MIN_GAP)))
+ 
+ 
+ # --------------------------------------------------------------------------
+diff --git a/backend/tests/unit/test_live_selection.py b/backend/tests/unit/test_live_selection.py
+new file mode 100644
+index 0000000..e6e25f6
+--- /dev/null
++++ b/backend/tests/unit/test_live_selection.py
+@@ -0,0 +1,45 @@
++"""The trainable ranker matches the shipped voice rules under default params."""
++from __future__ import annotations
++
++import json
++import random
++
++from src.live.selection import DEFAULT_PARAMS, load_params, rank_moments, spaced
++from src.live.voice_scan import VoiceTrack
++
++
++def _series(n, spikes, seed=3):
++    rng = random.Random(seed)
++    s = {"vocal": [], "f0": [], "laugh": [], "voiced_frac": []}
++    for i in range(n):
++        s["vocal"].append(-40 + rng.random() * 4)
++        s["f0"].append(150 + rng.random() * 30)
++        s["laugh"].append(rng.random() * 0.05)
++        s["voiced_frac"].append(0.6)
++    for t in spikes:
++        for d in range(3):
++            s["vocal"][t + d], s["f0"][t + d], s["laugh"][t + d] = -8.0, 430.0, 0.9
++    return s
++
++
++def test_defaults_reproduce_the_live_voice_rules():
++    series = _series(3000, [500, 900, 1700, 1704, 2600])
++    track = VoiceTrack(baseline_sec=240.0)
++    for sec in range(3000):
++        track.times.append(float(sec))
++        for k in ("vocal", "f0", "laugh"):
++            track.feats[k].append(series[k][sec])
++    old = sorted((f["onset"], round(f["peak"], 3)) for f in track.onsets())
++    new = sorted((m["onset"], round(m["peak"], 3)) for m in rank_moments(series, DEFAULT_PARAMS))
++    assert old == new and len(new) == 4  # 1700 and 1704 merge (gap <= 3 s)
++
++
++def test_spacing_and_trained_params_file(tmp_path, monkeypatch):
++    series = _series(3000, [500, 560, 1700])
++    moments = rank_moments(series)
++    assert [round(m["onset"]) for m in spaced(moments, 5, 90.0)] in ([500, 1700], [1700, 500], [560, 1700], [1700, 560])
++    f = tmp_path / "p.json"
++    f.write_text(json.dumps({"params": {"active_z": 2.2, "bogus": 1}}), encoding="utf-8")
++    monkeypatch.setenv("LIVE_SELECTION_PARAMS", str(f))
++    p = load_params()
++    assert p["active_z"] == 2.2 and "bogus" not in p and p["min_gap"] == DEFAULT_PARAMS["min_gap"]
+diff --git a/tools/live/train_selection.py b/tools/live/train_selection.py
+new file mode 100644
+index 0000000..0ecda5b
+--- /dev/null
++++ b/tools/live/train_selection.py
+@@ -0,0 +1,259 @@
++"""Train the long-stream moment ranking against what viewers actually rewatched.
++
++  python tools/live/train_selection.py collect --out D:/SnipNova-Dev/selection-data --target 40
++  python tools/live/train_selection.py train   --data D:/SnipNova-Dev/selection-data --minutes 90
++
++Labels: YouTube's "Most replayed" heatmap (100 points per video; the Mr. HiSum
++dataset, NeurIPS 2023, shows it is a reliable highlight label aggregated over
++50k+ viewers). The heatmap is ONLY the answer key: the ranker sees nothing but
++the streamer's audio features.
++
++collect: searches YouTube for long streams of many kinds (gaming, IRL, just
++chatting, podcasts), keeps 40 min - 6 h videos that have a heatmap, downloads
++the audio only, extracts the per-second voice features (the same scan the
++product runs), saves features + heatmap, deletes the audio.
++
++train: autoresearch-style loop. Proposes parameter changes, scores them on the
++training streams, keeps a change only when it helps, and reports the score on
++HELD-OUT streams it never trained on. Score of a video = mean heat percentile
++(0-1, random = 0.5) of the top-K spaced picks. The params file is written only
++when the held-out score improves over the shipped defaults.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++import random
++import shutil
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[2]
++sys.path.insert(0, str(ROOT / "backend"))
++sys.path.insert(0, str(ROOT / "tools" / "phase2" / "_winshim"))
++
++QUERIES = [
++    "gta 6 stream full vod", "gta 6 livestream day 1 full", "kai cenat stream full", "ishowspeed stream full",
++    "xqc stream vod", "just chatting stream full vod", "irl stream full vod", "minecraft stream full vod",
++    "fortnite stream full vod", "valorant stream full vod", "podcast full episode reaction", "horror game stream full",
++    "elden ring stream full", "speedrun stream full vod", "react stream full vod", "subathon stream vod",
++]
++
++
++def _ytdlp():
++    import os
++
++    if os.getenv("YTDLP_BIN"):
++        return os.environ["YTDLP_BIN"]
++    exe = ROOT / "backend" / ".venv" / "Scripts" / "yt-dlp.exe"
++    if exe.is_file():
++        return str(exe)
++    import shutil as sh
++
++    return sh.which("yt-dlp") or "yt-dlp"
++
++
++def _run(args, timeout=None):
++    return subprocess.run([_ytdlp(), "--no-update", "--no-warnings", "-q", "--js-runtimes", "node", *args],
++                          capture_output=True, text=True, timeout=timeout)
++
++
++def collect(out: Path, target: int, per_query: int, min_sec: float, max_sec: float) -> None:
++    from src.live.vod import scan_audio
++
++    out.mkdir(parents=True, exist_ok=True)
++    done = {p.parent.name for p in out.glob("*/features.json")}
++    seen = set(done)
++    print(f"collect: {len(done)} videos already in {out}", flush=True)
++    for query in QUERIES:
++        if len(done) >= target:
++            break
++        listing = _run(["--flat-playlist", "--print", "%(id)s|%(duration)s", f"ytsearch{per_query}:{query}"], timeout=120)
++        for line in listing.stdout.splitlines():
++            if len(done) >= target:
++                break
++            vid, _, dur = line.partition("|")
++            if not vid or vid in seen:
++                continue
++            seen.add(vid)
++            try:
++                d = float(dur)
++            except ValueError:
++                continue
++            if not (min_sec <= d <= max_sec):
++                continue
++            info = _run(["--skip-download", "-J", f"https://www.youtube.com/watch?v={vid}"], timeout=120)
++            try:
++                meta = json.loads(info.stdout)
++            except ValueError:
++                continue
++            heat = meta.get("heatmap") or []
++            if len(heat) < 50:
++                continue
++            folder = out / vid
++            folder.mkdir(exist_ok=True)
++            t0 = time.time()
++            dl = _run(["-f", "bestaudio[abr<=160]/bestaudio/ba", "-N", "8", "-o", str(folder / "audio.%(ext)s"),
++                       f"https://www.youtube.com/watch?v={vid}"], timeout=1800)
++            audio = next((p for p in folder.glob("audio.*") if p.suffix not in (".part", ".ytdl")), None)
++            if dl.returncode != 0 or audio is None:
++                shutil.rmtree(folder, ignore_errors=True)
++                continue
++            series = scan_audio(audio, float(meta.get("duration") or d), workers=6)
++            (folder / "features.json").write_text(json.dumps({
++                "id": vid, "title": meta.get("title"), "channel": meta.get("channel"), "query": query,
++                "duration": meta.get("duration"), "view_count": meta.get("view_count"), "heatmap": heat,
++                "series": {k: [round(x, 4) for x in v] for k, v in series.items()}}), encoding="utf-8")
++            audio.unlink(missing_ok=True)
++            done.add(vid)
++            print(f"[{len(done)}/{target}] {vid} {d / 3600:.1f} h '{(meta.get('title') or '')[:60]}' "
++                  f"({query}) in {time.time() - t0:.0f}s", flush=True)
++    print(f"collect: {len(done)} videos", flush=True)
++
++
++# --------------------------------------------------------------------------
++# Training
++# --------------------------------------------------------------------------
++
++SPACE = {
++    "baseline_sec": [120.0, 180.0, 240.0, 360.0],
++    "active_z": (1.8, 4.5), "need_active": [1.0, 2.0], "laugh_z": (2.5, 8.0),
++    "scream_f0_z": (2.5, 6.0), "scream_vocal_z": (0.3, 3.0), "merge_gap": (1.0, 8.0),
++    "talk_base": (0.1, 1.2), "talk_w": (0.0, 2.0), "length_w": (0.0, 1.5), "energy_w": (0.0, 3.0),
++    "min_gap": [60.0, 90.0, 150.0, 240.0],
++}
++
++
++def _heat_rank(heatmap):
++    values = [float(h.get("value", 0)) for h in heatmap]
++    order = sorted(range(len(values)), key=lambda i: values[i])
++    ranks = [0.0] * len(values)
++    for r, i in enumerate(order):
++        ranks[i] = r / max(1, len(values) - 1)
++    return [(float(h["start_time"]), float(h["end_time"]), ranks[i]) for i, h in enumerate(heatmap)]
++
++
++def _rank_at(buckets, t):
++    for s, e, r in buckets:
++        if s <= t < e:
++            return r
++    return 0.5
++
++
++def load(data: Path):
++    videos = []
++    for f in sorted(data.glob("*/features.json")):
++        d = json.loads(f.read_text(encoding="utf-8"))
++        d["buckets"] = _heat_rank(d["heatmap"])
++        d["k"] = max(5, min(15, int(float(d["duration"]) / 600)))
++        videos.append(d)
++    return videos
++
++
++def score_video(video, params, zcache):
++    from src.live.selection import rank_moments, spaced
++
++    key = int(params["baseline_sec"])
++    z = zcache[(video["id"], key)]
++    picks = spaced(rank_moments(video["series"], params, z=z), video["k"], params["min_gap"])
++    if not picks:
++        return 0.0
++    # The clip starts a few seconds before the reaction and runs ~30 s: score
++    # the heat where the clip plays (onset .. onset+20 s, sampled).
++    vals = [sum(_rank_at(video["buckets"], m["onset"] + d) for d in (0, 10, 20)) / 3 for m in picks]
++    return sum(vals) / len(picks) * min(1.0, len(picks) / video["k"])
++
++
++def evaluate(videos, params, zcache):
++    return sum(score_video(v, params, zcache) for v in videos) / max(1, len(videos))
++
++
++def propose(best, rng, step):
++    cand = dict(best)
++    for name in rng.sample(list(SPACE), k=rng.choice([1, 1, 2, 3])):
++        space = SPACE[name]
++        if isinstance(space, list):
++            cand[name] = rng.choice(space)
++        else:
++            lo, hi = space
++            if rng.random() < 0.3:
++                cand[name] = rng.uniform(lo, hi)
++            else:
++                cand[name] = min(hi, max(lo, best[name] + rng.gauss(0, (hi - lo) * step)))
++    return cand
++
++
++def train(data: Path, minutes: float, seed: int) -> None:
++    from src.live.selection import DEFAULT_PARAMS, PARAMS_FILE, zscores
++
++    videos = load(data)
++    if len(videos) < 6:
++        sys.exit(f"need at least 6 videos with features, found {len(videos)}")
++    split = lambda v: int(hashlib.sha256(v["id"].encode()).hexdigest(), 16) % 10 < 7
++    tr, va = [v for v in videos if split(v)], [v for v in videos if not split(v)]
++    print(f"train {len(tr)} videos / held-out {len(va)} videos", flush=True)
++    t0 = time.time()
++    zcache = {}
++    for v in videos:
++        for b in SPACE["baseline_sec"]:
++            zcache[(v["id"], int(b))] = zscores(v["series"], dict(DEFAULT_PARAMS, baseline_sec=b))
++    print(f"z-scores precomputed in {time.time() - t0:.0f}s", flush=True)
++    base_tr, base_va = evaluate(tr, DEFAULT_PARAMS, zcache), evaluate(va, DEFAULT_PARAMS, zcache)
++    print(f"shipped defaults: train {base_tr:.4f}  held-out {base_va:.4f}  (random = ~0.50)", flush=True)
++    rng = random.Random(seed)
++    best, best_tr = dict(DEFAULT_PARAMS), base_tr
++    log = [{"step": 0, "train": base_tr, "heldout": base_va, "params": best}]
++    deadline, step, i, kept = time.time() + minutes * 60, 0.25, 0, 0
++    while time.time() < deadline:
++        i += 1
++        cand = propose(best, rng, step)
++        s = evaluate(tr, cand, zcache)
++        if s > best_tr + 1e-4:
++            best, best_tr, kept = cand, s, kept + 1
++            va_s = evaluate(va, best, zcache)
++            log.append({"step": i, "train": s, "heldout": va_s, "params": best})
++            print(f"#{i}: kept (train {s:.4f}, held-out {va_s:.4f})", flush=True)
++        if i % 200 == 0:
++            step = max(0.05, step * 0.85)
++            print(f"#{i}: {kept} kept, best train {best_tr:.4f}, {int((deadline - time.time()) / 60)} min left", flush=True)
++    best_va = evaluate(va, best, zcache)
++    report = {"videos": len(videos), "train_videos": [v["id"] for v in tr], "heldout_videos": [v["id"] for v in va],
++              "experiments": i, "kept": kept, "defaults": {"train": base_tr, "heldout": base_va},
++              "trained": {"train": best_tr, "heldout": best_va}, "params": best, "log": log}
++    (data / "training_report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
++    gain = (best_va - base_va) / max(base_va, 1e-6)
++    print(f"done: {i} experiments, {kept} kept. held-out {base_va:.4f} -> {best_va:.4f} ({gain * 100:+.1f}%)", flush=True)
++    if gain >= 0.02:
++        PARAMS_FILE.write_text(json.dumps({"trained_on": len(tr), "heldout": len(va), "heldout_score": best_va,
++                                           "defaults_heldout_score": base_va, "params": best}, indent=1), encoding="utf-8")
++        print(f"wrote {PARAMS_FILE}", flush=True)
++    else:
++        print("held-out did not improve by 2%: params NOT written (defaults stay)", flush=True)
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    sub = ap.add_subparsers(dest="cmd", required=True)
++    c = sub.add_parser("collect")
++    c.add_argument("--out", required=True)
++    c.add_argument("--target", type=int, default=40)
++    c.add_argument("--per-query", type=int, default=12)
++    c.add_argument("--min-sec", type=float, default=2400)
++    c.add_argument("--max-sec", type=float, default=6 * 3600)
++    t = sub.add_parser("train")
++    t.add_argument("--data", required=True)
++    t.add_argument("--minutes", type=float, default=90)
++    t.add_argument("--seed", type=int, default=7)
++    a = ap.parse_args()
++    if a.cmd == "collect":
++        collect(Path(a.out), a.target, a.per_query, a.min_sec, a.max_sec)
++    else:
++        train(Path(a.data), a.minutes, a.seed)
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+-- 
+2.56.0.windows.2
+

@@ -1,0 +1,30 @@
+{
+ "source": "tools/live/study_viral_hooks.py, 26 YouTube Shorts with 10M+ views",
+ "niches": [
+  "challenge",
+  "comedy",
+  "edit-movie-anime",
+  "facts-education",
+  "gaming-streamer",
+  "india",
+  "reaction",
+  "travel"
+ ],
+ "medians": {
+  "first_cut_s": 3.07,
+  "cuts_per_min": 4.95,
+  "brightness": 127.7,
+  "saturation": 64.05,
+  "hits_per_min": 15.9,
+  "speech_start_s": 0.0
+ },
+ "profile": {
+  "first_cut_s": 3.07,
+  "cuts_per_min": 4.95,
+  "target_brightness": 127.7,
+  "target_saturation": 64.05,
+  "max_punches": 6,
+  "punch_seconds": 1.0,
+  "punch_zoom": 1.15
+ }
+}

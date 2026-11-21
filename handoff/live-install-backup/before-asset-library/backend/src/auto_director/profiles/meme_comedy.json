@@ -1,0 +1,63 @@
+{
+  "niche": "meme_comedy",
+  "pacing": {
+    "target_cuts_per_min": [15, 25],
+    "silence_trim_aggressive": true,
+    "min_shot_sec": 2.4,
+    "max_shot_sec": 4.0
+  },
+  "transitions": {
+    "default": "cut",
+    "duration_sec": 0.0,
+    "on_topic_change": "cut",
+    "on_punchline": "zoom_bounce",
+    "signature": {"name": "zoomin", "duration_sec": 0.3}
+  },
+  "zooms": {
+    "punch_in_scale": 1.35,
+    "punch_in_trigger": "punchline",
+    "ken_burns": false
+  },
+  "captions": {
+    "preset_id": "large_centre_pop",
+    "words_per_line": 3,
+    "position": "center"
+  },
+  "overlays": {
+    "info_cards": false,
+    "lower_thirds": false,
+    "reference_images": "off",
+    "ref_image_at_entity_mentions": false
+  },
+  "broll": {
+    "enabled": false,
+    "source": "off",
+    "density_per_min": 0.0
+  },
+  "audio": {
+    "music_mood": "comedy",
+    "music_volume_0_to_1": 0.15,
+    "ducking_db": 0.0,
+    "sfx_from_user_library": true
+  },
+  "color": {
+    "lut": "punchy"
+  },
+  "hook": {
+    "title_style": "contrast",
+    "title_seconds": 2.0
+  },
+  "scene_rules": {
+    "plan_sfx_cap": 2,
+    "plan_transition_cap": 1,
+    "plan_punch_zoom_cap": "subtle",
+    "strong_punch_allowed_hook_types": ["punchline"],
+    "pause_protection_sec": 0.8
+  },
+  "effects": {
+    "audio_flashes": {
+      "enabled": true,
+      "intensity": 0.5
+    }
+  }
+}

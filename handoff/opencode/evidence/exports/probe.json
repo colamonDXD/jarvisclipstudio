@@ -1,0 +1,42 @@
+[
+  {
+    "preset": "tiktok",
+    "path": "D:\\SnipNova-Dev\\opencode\\test-footage\\exports\\tiktok\\tiktok_482802b52f6b.mp4",
+    "size": "1348964",
+    "duration": "8.000000",
+    "video": "h264 1080x1920",
+    "audio": "aac"
+  },
+  {
+    "preset": "reels",
+    "path": "D:\\SnipNova-Dev\\opencode\\test-footage\\exports\\reels\\reels_c47e2072a5a6.mp4",
+    "size": "1348964",
+    "duration": "8.000000",
+    "video": "h264 1080x1920",
+    "audio": "aac"
+  },
+  {
+    "preset": "shorts",
+    "path": "D:\\SnipNova-Dev\\opencode\\test-footage\\exports\\shorts\\shorts_36620d48fa41.mp4",
+    "size": "1408246",
+    "duration": "8.000000",
+    "video": "h264 1080x1920",
+    "audio": "aac"
+  },
+  {
+    "preset": "youtube_landscape",
+    "path": "D:\\SnipNova-Dev\\opencode\\test-footage\\exports\\youtube_landscape\\youtube_landscape_36335836afee.mp4",
+    "size": "1437534",
+    "duration": "8.000000",
+    "video": "h264 1920x1080",
+    "audio": "aac"
+  },
+  {
+    "preset": "square",
+    "path": "D:\\SnipNova-Dev\\opencode\\test-footage\\exports\\square\\square_152f7cd7fcfa.mp4",
+    "size": "1065481",
+    "duration": "8.000000",
+    "video": "h264 1080x1080",
+    "audio": "aac"
+  }
+]

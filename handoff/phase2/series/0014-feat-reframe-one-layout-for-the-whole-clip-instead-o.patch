@@ -1,0 +1,258 @@
+From 0be0da595bf849c6dac2d8e63fb1efc844acc3b2 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 08:14:41 +0530
+Subject: [PATCH 14/22] feat(reframe): one layout for the whole clip instead of
+ switching per shot
+
+Luffy's first try-it clip (a handheld awards-night vlog) had been cut
+into 40 shots in 58 s, each choosing fit or a face crop, so the picture
+jumped between a zoomed crop and a small fit with blurred bands every
+second or two. unify_layout_plan sums screen time per layout family
+(fit / face-crop / split); a clip that mixes families is re-planned
+with the winner (the always-fit plan or the always-crop face-tracked
+plan). Split-dominant (two-person) and delegated facecam clips keep the
+planner's plan. REFRAME_CONSISTENT=0 restores per-shot switching.
+
+On that clip: fit 43.7 s vs crop 14.3 s, so the whole clip is fit.
+The harness gains --framing auto|fit|crop and the try-it page a Layout
+picker (Auto one-layout / face-follow crop / whole frame).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/media/reframe_plan.py             | 67 ++++++++++++++++++-
+ backend/tests/unit/test_reframe_consistent.py | 59 ++++++++++++++++
+ tools/phase2/auto_edit.py                     |  6 +-
+ tools/phase2/try_it.py                        | 11 ++-
+ 4 files changed, 136 insertions(+), 7 deletions(-)
+ create mode 100644 backend/tests/unit/test_reframe_consistent.py
+
+diff --git a/backend/src/media/reframe_plan.py b/backend/src/media/reframe_plan.py
+index 4a193f0..7fcae6d 100644
+--- a/backend/src/media/reframe_plan.py
++++ b/backend/src/media/reframe_plan.py
+@@ -3389,6 +3389,63 @@ def attach_reframe_plan(
+         return False
+ 
+ 
++_CROP_FAMILY = frozenset({"single", "pair", "static", "plain", "crop"})
++
++
++def consistent_layout_enabled() -> bool:
++    """REFRAME_CONSISTENT (default on): one layout family per clip."""
++    return os.getenv("REFRAME_CONSISTENT", "1").strip().lower() not in {"0", "false", "no", "off"}
++
++
++def unify_layout_plan(
++    plan: Optional[Dict[str, Any]],
++    analysis: Dict[str, Any],
++    ranges: Sequence[Tuple[float, float]],
++    duration: float,
++) -> Optional[Dict[str, Any]]:
++    """One layout for the whole clip instead of switching shot by shot.
++
++    The planner decides per shot (fit for wide or content shots, a face crop
++    for close shots, split for two people). On a handheld vlog that meant the
++    picture jumped between a zoomed crop and a small fit with blurred bands
++    every second or two (Luffy, 2026-11-18: "too much zoom in zoom out ...
++    make one type for the whole short"). When a clip mixes families, the
++    family covering the most screen time wins and the whole clip is
++    re-planned with it: the always-fit plan, or the always-crop face-tracked
++    plan. A split-dominant clip keeps the planner's plan (two-person layouts
++    need it). Delegated (facecam) clips are untouched.
++    """
++    if plan is None or plan.get("delegate") or not consistent_layout_enabled():
++        return plan
++    shots = plan.get("shots") or []
++    if len(shots) < 2:
++        return plan
++    totals = {"fit": 0.0, "split": 0.0, "crop": 0.0}
++    for shot in shots:
++        span = max(0.0, float(shot.get("end", 0)) - float(shot.get("start", 0)))
++        mode = str(shot.get("mode") or "")
++        family = "fit" if mode == "fit" else "split" if mode == "split" else "crop"
++        totals[family] += span
++    if sum(1 for value in totals.values() if value > 0) < 2:
++        return plan
++    winner = max(totals, key=totals.get)
++    if winner == "split":
++        return plan
++    unified = (
++        build_fit_reframe_plan(analysis, ranges, duration)
++        if winner == "fit"
++        else build_plain_reframe_plan(analysis, ranges, duration, framing="crop")
++    )
++    if unified is None:
++        return plan
++    logger.info(
++        "Reframe plan: one layout for the whole clip (%s); shot time was %s",
++        winner, {k: round(v, 1) for k, v in totals.items()},
++    )
++    unified["unified_from"] = {k: round(v, 2) for k, v in totals.items()}
++    return unified
++
++
+ def _attach_reframe_plan(
+     edl: Dict[str, Any],
+     source_path: Path,
+@@ -3410,11 +3467,17 @@ def _attach_reframe_plan(
+     elif framing == "crop":
+         plan = build_plain_reframe_plan(analysis, ranges, duration, framing="crop")
+     elif framing == "auto":
+-        plan = build_reframe_plan(analysis, ranges, duration, source_path=source_path)
++        plan = unify_layout_plan(
++            build_reframe_plan(analysis, ranges, duration, source_path=source_path),
++            analysis, ranges, duration,
++        )
+     elif plain:
+         plan = build_plain_reframe_plan(analysis, ranges, duration)
+     else:
+-        plan = build_reframe_plan(analysis, ranges, duration, source_path=source_path)
++        plan = unify_layout_plan(
++            build_reframe_plan(analysis, ranges, duration, source_path=source_path),
++            analysis, ranges, duration,
++        )
+     if plan is None:
+         return False
+     # The plain GEOMETRY (a real Plain plan, or a framing="crop" plan)
+diff --git a/backend/tests/unit/test_reframe_consistent.py b/backend/tests/unit/test_reframe_consistent.py
+new file mode 100644
+index 0000000..a141681
+--- /dev/null
++++ b/backend/tests/unit/test_reframe_consistent.py
+@@ -0,0 +1,59 @@
++"""One layout per clip (REFRAME_CONSISTENT, 2026-11-18).
++
++Luffy's test clip (a handheld awards-night vlog) jumped between a zoomed
++face crop and a small fit with blurred bands every second or two. A clip
++that mixes layout families is now re-planned with the family covering the
++most screen time; split-dominant (two-person) and delegated clips keep the
++planner's plan.
++"""
++
++import pytest
++
++from src.media import reframe_plan
++
++
++@pytest.fixture(autouse=True)
++def _stubs(monkeypatch):
++    monkeypatch.delenv("REFRAME_CONSISTENT", raising=False)
++    monkeypatch.setattr(reframe_plan, "build_fit_reframe_plan",
++                        lambda analysis, ranges, duration: {"delegate": None, "shots": [], "framing": "fit"})
++    monkeypatch.setattr(reframe_plan, "build_plain_reframe_plan",
++                        lambda analysis, ranges, duration, framing=None: {"delegate": None, "shots": [], "framing": framing})
++
++
++def _plan(*shots):
++    return {"delegate": None, "shots": [{"start": s, "end": e, "mode": m} for s, e, m in shots]}
++
++
++def _unify(plan):
++    return reframe_plan.unify_layout_plan(plan, {}, [(0.0, 60.0)], 60.0)
++
++
++def test_crop_dominant_mix_becomes_one_face_follow_crop():
++    out = _unify(_plan((0, 10, "fit"), (10, 40, "single"), (40, 50, "fit"), (50, 60, "static")))
++    assert out["framing"] == "crop"
++    assert out["unified_from"] == {"fit": 20.0, "split": 0.0, "crop": 40.0}
++
++
++def test_fit_dominant_mix_becomes_one_whole_frame_fit():
++    out = _unify(_plan((0, 35, "fit"), (35, 45, "single"), (45, 60, "fit")))
++    assert out["framing"] == "fit"
++
++
++def test_split_dominant_two_person_clip_keeps_the_planner_plan():
++    plan = _plan((0, 40, "split"), (40, 60, "single"))
++    assert _unify(plan) is plan
++
++
++def test_single_family_and_delegated_plans_are_untouched():
++    one = _plan((0, 30, "single"), (30, 60, "static"))
++    assert _unify(one) is one
++    delegated = {"delegate": "plain", "shots": []}
++    assert _unify(delegated) is delegated
++    assert _unify(None) is None
++
++
++def test_off_switch(monkeypatch):
++    monkeypatch.setenv("REFRAME_CONSISTENT", "0")
++    plan = _plan((0, 10, "fit"), (10, 60, "single"))
++    assert _unify(plan) is plan
+diff --git a/tools/phase2/auto_edit.py b/tools/phase2/auto_edit.py
+index 4a94c3e..76263af 100644
+--- a/tools/phase2/auto_edit.py
++++ b/tools/phase2/auto_edit.py
+@@ -169,7 +169,7 @@ async def main_async(a) -> int:
+         # Same stage the pipeline runs (services/video_service.py): the
+         # subject-aware reframe plan. Without it the EDL graph centre-crops.
+         from src.media.reframe_plan import attach_reframe_plan
+-        reframed = attach_reframe_plan(edl, source, [(start, end)], False, framing="auto")
++        reframed = attach_reframe_plan(edl, source, [(start, end)], False, framing=a.framing)
+         if stock:
+             from src.media.pixabay_broll import resolve_edl_broll
+             resolve_edl_broll(edl)
+@@ -179,7 +179,7 @@ async def main_async(a) -> int:
+         ok = create_optimized_clip(source, start, end, clip_path, add_subtitles=True,
+                                    caption_template=(profile.get("captions") or {}).get("preset_id") or "default",
+                                    hook_title=s.get("hook_title"), edl=edl, profile_name=a.niche,
+-                                   layout_report=layout_report, framing_mode="auto",
++                                   layout_report=layout_report, framing_mode=a.framing,
+                                    layout_template=a.layout_template,
+                                    layout_credit=clean_layout_credit(a.credit) if a.layout_template else None)
+         render_s = round(time.time() - t, 1)
+@@ -255,6 +255,8 @@ def main() -> int:
+     ap.add_argument("--llm", default="auto")
+     ap.add_argument("--select", choices=("ai", "fixed"), default="ai")
+     ap.add_argument("--ollama-url", default="http://localhost:11434/v1")
++    ap.add_argument("--framing", choices=("auto", "fit", "crop"), default="auto",
++                    help="auto = one layout per clip (planner), fit = whole frame, crop = face-follow crop")
+     ap.add_argument("--layout-template", choices=("facecam_red", "facecam_gold"),
+                     help="streamer 'face on top, game below' template (clips with a facecam)")
+     ap.add_argument("--credit", help="credit line for the template, e.g. @KaiCenat")
+diff --git a/tools/phase2/try_it.py b/tools/phase2/try_it.py
+index b1fa84b..031f18c 100644
+--- a/tools/phase2/try_it.py
++++ b/tools/phase2/try_it.py
+@@ -71,6 +71,10 @@ def home() -> str:
+  <label>Moment selection</label><select name="select">
+    <option value="fixed">Fixed windows (no key needed, not AI)</option>
+    <option value="ai">AI selection (needs the free Groq key in the .env below)</option></select>
++ <label>Layout (one look for the whole short)</label><select name="framing">
++   <option value="auto">Auto — picks ONE layout per clip</option>
++   <option value="crop">Face-follow crop (zoomed, follows the head)</option>
++   <option value="fit">Whole frame (fit, nothing cut off)</option></select>
+  <label>Gaming layout (gaming niche, clips with a facecam)</label><select name="template">
+    <option value="">Auto</option><option value="facecam_red">Face top · red</option>
+    <option value="facecam_gold">Face top · gold</option></select>
+@@ -86,7 +90,7 @@ def home() -> str:
+ @app.post("/run")
+ async def run(video: UploadFile = File(...), niche: str = Form("gaming"), clips: int = Form(2),
+               select: str = Form("fixed"), template: str = Form(""), credit: str = Form(""),
+-              env_file: str = Form("")):
++              env_file: str = Form(""), framing: str = Form("auto")):
+     if env_file.strip() and not Path(env_file.strip()).is_file():
+         return HTMLResponse(
+             f"<html><head>{STYLE}</head><body><h1>That .env file was not found</h1>"
+@@ -105,7 +109,8 @@ async def run(video: UploadFile = File(...), niche: str = Form("gaming"), clips:
+     niche = niche if niche in PROFILES else "gaming"
+     cmd = [str(PY), str(ROOT / "tools" / "phase2" / "auto_edit.py"), "--video", str(source),
+            "--niche", niche, "--clips", str(max(1, min(6, int(clips)))),
+-           "--select", "ai" if select == "ai" else "fixed"]
++           "--select", "ai" if select == "ai" else "fixed",
++           "--framing", framing if framing in ("auto", "fit", "crop") else "auto"]
+     if template in ("facecam_red", "facecam_gold"):
+         cmd += ["--layout-template", template]
+         if credit.strip():
+@@ -122,7 +127,7 @@ async def run(video: UploadFile = File(...), niche: str = Form("gaming"), clips:
+     proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT, env=env,
+                             creationflags=flags, start_new_session=(os.name != "nt"))
+     (folder / "meta.json").write_text(json.dumps({
+-        "name": f"{video.filename} · {niche}{' · ' + template if template else ''}",
++        "name": f"{video.filename} · {niche} · {framing}{' · ' + template if template else ''}",
+         "stem": stem, "pid": proc.pid, "started": time.time(),
+     }), encoding="utf-8")
+     return RedirectResponse(f"/run/{run_id}", status_code=303)
+-- 
+2.56.0.windows.2
+

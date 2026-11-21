@@ -1,0 +1,529 @@
+From 7db28ebce4bd64e4087bfdc817e4bcf6d79dba8e Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 16:13:59 +0530
+Subject: [PATCH 14/18] feat(live): rolling live recorder and cut-from-the-past
+ buffer (LIVE_CLIPPING, off)
+
+Live AI clipping MVP, step 1 (approved by Luffy 2026-11-18; architecture in
+handoff/LIVE_CLIPPING_FEASIBILITY.md). Not wired into any route or worker yet.
+
+- live/recorder.py: one persistent pull per stream. Page URLs (Twitch,
+  YouTube) are resolved with `yt-dlp -g` on every (re)connect (live URLs
+  expire; YouTube serves separate video + audio HLS) and ffmpeg reads the
+  playlists directly with reconnects; other inputs go straight to ffmpeg.
+  Stream copy into N-second segments (no re-encode), one run directory per
+  connection with its own wall-clock origin; watchdog with backoff; prunes
+  the buffer to keep_seconds.
+- live/buffer.py: wall-clock segment index across runs, gap detection (an
+  outage is reported, never stitched), pruning, and cut_window(start, end):
+  stream-copies the covering segments and returns the exact offset/duration
+  of the requested span inside the file, plus gaps and whether the buffer
+  could not cover the request.
+
+Evidence: tests play a generated video in real time as a fake live source:
+16 s buffered while still recording, a window cut from 10-2 s BEFORE the
+detection time, a killed pull reconnects as a new run with the gap reported.
+Real stream (NASA's public-domain live feed, 40 s): 7 segments, 35 s
+buffered, 0 gaps, a 15 s window cut from 20-5 s before the request, 720p
+H.264 + AAC (handoff/live-mvp/real_live_cut_window.mp4).
+Tests: test_live_buffer 6/6 (40 s, real-time).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/live/__init__.py           |  21 +++
+ backend/src/live/buffer.py             | 142 +++++++++++++++++++
+ backend/src/live/recorder.py           | 184 +++++++++++++++++++++++++
+ backend/tests/unit/test_live_buffer.py | 113 +++++++++++++++
+ 4 files changed, 460 insertions(+)
+ create mode 100644 backend/src/live/__init__.py
+ create mode 100644 backend/src/live/buffer.py
+ create mode 100644 backend/src/live/recorder.py
+ create mode 100644 backend/tests/unit/test_live_buffer.py
+
+diff --git a/backend/src/live/__init__.py b/backend/src/live/__init__.py
+new file mode 100644
+index 0000000..26e3b23
+--- /dev/null
++++ b/backend/src/live/__init__.py
+@@ -0,0 +1,21 @@
++"""Live AI clipping (MVP, approved by Luffy 2026-11-18; off by default).
++
++A live session records a stream into a rolling buffer of short stream-copied
++segments (``recorder``), keeps an index that maps every segment to wall-clock
++time (``buffer``), and cuts windows out of footage that is already on disk,
++so a clip can start 30 s *before* the moment that triggered it. Moment
++detection (chat + audio + visual confirmation) and rendering through the
++existing clip pipeline build on these two pieces.
++
++Scope and rules (handoff/LIVE_CLIPPING_FEASIBILITY.md):
++- only streams the user owns or is authorised to clip;
++- ₹0: ffmpeg + yt-dlp locally, no paid services;
++- ``LIVE_CLIPPING`` (default off) gates every entry point.
++"""
++from __future__ import annotations
++
++import os
++
++
++def live_clipping_enabled() -> bool:
++    return os.getenv("LIVE_CLIPPING", "off").strip().lower() in ("on", "1", "true", "yes")
+diff --git a/backend/src/live/buffer.py b/backend/src/live/buffer.py
+new file mode 100644
+index 0000000..30bbdb3
+--- /dev/null
++++ b/backend/src/live/buffer.py
+@@ -0,0 +1,142 @@
++"""Rolling segment buffer: wall-clock index, pruning, gaps, cut-from-the-past.
++
++The recorder writes, per connection ("run"), a directory of stream-copied
++segments plus ffmpeg's CSV segment list (``filename,start,end`` in seconds
++from the start of that run) and a small ``run.json`` with the wall-clock
++time the run's media timeline starts at. That gives every segment an
++absolute wall-clock span, which is what chat timestamps and detections are
++expressed in.
++
++Segments are cut by ffmpeg's segmenter at keyframes, so every segment
++starts decodable. ``cut_window`` concatenates the overlapping segments
++WITHOUT re-encoding (seconds, not minutes) and returns where the requested
++span sits inside the produced file; the clip pipeline trims exactly from
++there. A gap between segments (dropped connection, skipped media) is
++reported, and a window that spans a gap is flagged, never silently stitched.
++"""
++from __future__ import annotations
++
++import csv
++import json
++import logging
++import subprocess
++import time
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Dict, List, Optional, Sequence, Tuple
++
++logger = logging.getLogger(__name__)
++
++GAP_TOLERANCE_SEC = 0.75
++SEGMENT_LIST = "segments.csv"
++RUN_META = "run.json"
++
++
++@dataclass(frozen=True)
++class Segment:
++    path: Path
++    run: str
++    start: float  # wall-clock epoch seconds
++    end: float
++
++    @property
++    def duration(self) -> float:
++        return self.end - self.start
++
++
++def write_run_meta(run_dir: Path, t0_wall: float, source: str) -> None:
++    run_dir.mkdir(parents=True, exist_ok=True)
++    (run_dir / RUN_META).write_text(json.dumps({"t0_wall": t0_wall, "source": source}), encoding="utf-8")
++
++
++def _read_run(run_dir: Path) -> List[Segment]:
++    meta_path, list_path = run_dir / RUN_META, run_dir / SEGMENT_LIST
++    if not meta_path.is_file() or not list_path.is_file():
++        return []
++    try:
++        t0 = float(json.loads(meta_path.read_text(encoding="utf-8"))["t0_wall"])
++    except (ValueError, KeyError, OSError):
++        return []
++    segments: List[Segment] = []
++    with list_path.open(newline="", encoding="utf-8") as fh:
++        for row in csv.reader(fh):
++            if len(row) < 3:
++                continue
++            try:
++                start, end = float(row[1]), float(row[2])
++            except ValueError:
++                continue
++            path = run_dir / row[0]
++            if path.is_file() and end > start:
++                segments.append(Segment(path, run_dir.name, t0 + start, t0 + end))
++    return segments
++
++
++class SegmentBuffer:
++    """All completed segments of a live session, across reconnects."""
++
++    def __init__(self, session_dir: Path):
++        self.session_dir = Path(session_dir)
++
++    def segments(self) -> List[Segment]:
++        runs = sorted(p for p in self.session_dir.glob("run-*") if p.is_dir())
++        out: List[Segment] = []
++        for run in runs:
++            out.extend(_read_run(run))
++        return sorted(out, key=lambda s: s.start)
++
++    def span(self) -> Optional[Tuple[float, float]]:
++        segs = self.segments()
++        return (segs[0].start, segs[-1].end) if segs else None
++
++    def gaps(self) -> List[Tuple[float, float]]:
++        segs = self.segments()
++        return [(a.end, b.start) for a, b in zip(segs, segs[1:]) if b.start - a.end > GAP_TOLERANCE_SEC]
++
++    def prune(self, keep_seconds: float, now: Optional[float] = None) -> int:
++        """Delete segments that ended more than ``keep_seconds`` ago."""
++        now = time.time() if now is None else now
++        removed = 0
++        for seg in self.segments():
++            if seg.end < now - keep_seconds:
++                try:
++                    seg.path.unlink()
++                    removed += 1
++                except OSError:
++                    pass
++        return removed
++
++    def cut_window(self, start_wall: float, end_wall: float, out_path: Path) -> Optional[Dict]:
++        """Stream-copy the segments covering [start_wall, end_wall] into ``out_path``.
++
++        Returns ``{path, file_start_wall, offset, duration, gaps, clipped}``:
++        the requested span is ``[offset, offset + duration]`` inside the file.
++        ``clipped`` says the buffer did not reach the full request (too old,
++        or not recorded yet); ``gaps`` lists holes inside the window.
++        """
++        segs = [s for s in self.segments() if s.end > start_wall and s.start < end_wall]
++        if not segs:
++            return None
++        gaps = [(a.end, b.start) for a, b in zip(segs, segs[1:]) if b.start - a.end > GAP_TOLERANCE_SEC]
++        out_path = Path(out_path)
++        out_path.parent.mkdir(parents=True, exist_ok=True)
++        concat = out_path.with_suffix(".concat.txt")
++        concat.write_text("".join(f"file '{s.path.as_posix()}'\n" for s in segs), encoding="utf-8")
++        cmd = ["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(concat),
++               "-c", "copy", "-movflags", "+faststart", str(out_path)]
++        result = subprocess.run(cmd, capture_output=True, text=True)
++        concat.unlink(missing_ok=True)
++        if result.returncode != 0 or not out_path.is_file():
++            logger.warning("Live buffer cut failed: %s", (result.stderr or "")[-300:])
++            return None
++        file_start = segs[0].start
++        real_start = max(start_wall, file_start)
++        real_end = min(end_wall, segs[-1].end)
++        return {
++            "path": str(out_path),
++            "file_start_wall": file_start,
++            "offset": round(real_start - file_start, 3),
++            "duration": round(real_end - real_start, 3),
++            "gaps": gaps,
++            "clipped": real_start > start_wall + 0.5 or real_end < end_wall - 0.5,
++        }
+diff --git a/backend/src/live/recorder.py b/backend/src/live/recorder.py
+new file mode 100644
+index 0000000..1b06c0a
+--- /dev/null
++++ b/backend/src/live/recorder.py
+@@ -0,0 +1,184 @@
++"""Live recorder: one persistent pull into stream-copied segments, with a watchdog.
++
++``LiveRecorder(source, session_dir).start()`` runs in a background thread:
++
++- a stream page URL (twitch.tv, youtube.com) is resolved with ``yt-dlp -g``
++  to the HLS the public player uses (separate video + audio playlists on
++  YouTube, one on Twitch; the user must own or be authorised to clip the
++  stream) and ffmpeg reads those playlists directly; any other input (an
++  HLS/RTMP URL, or a local file played in real time for tests) goes
++  straight to ffmpeg;
++- ffmpeg stream-copies into ``run-XXXX/seg_%06d.ts`` segments of
++  ``segment_sec`` with a CSV list (no re-encoding: ~1-3% CPU);
++- each (re)connection is a new run with its own wall-clock origin
++  (``run.json``), so a reconnect never corrupts earlier timing; the
++  playlist URL is resolved again on every reconnect (live URLs expire);
++- the watchdog restarts a dropped pull with backoff until ``stop()`` or
++  ``max_restarts``, and prunes the buffer to ``keep_seconds``.
++
++The wall-clock origin is the moment the first segment's first packet is
++written (taken from the first segment file's creation as soon as it
++appears, minus the segment's own start offset). It is accurate to the
++stream's ingest delay, which the moment fuser calibrates per stream.
++"""
++from __future__ import annotations
++
++import logging
++import shutil
++import subprocess
++import threading
++import time
++from pathlib import Path
++from typing import List, Optional
++
++from .buffer import SEGMENT_LIST, SegmentBuffer, write_run_meta
++
++logger = logging.getLogger(__name__)
++
++PAGE_HOSTS = ("twitch.tv", "youtube.com", "youtu.be")
++
++
++def _is_page_url(source: str) -> bool:
++    return source.startswith(("http://", "https://")) and any(h in source for h in PAGE_HOSTS)
++
++
++class LiveRecorder:
++    def __init__(self, source: str, session_dir: Path, *, segment_sec: float = 4.0,
++                 keep_seconds: float = 1800.0, max_height: int = 1080,
++                 realtime_file: bool = False, max_restarts: int = 50):
++        self.source = source
++        self.session_dir = Path(session_dir)
++        self.segment_sec = segment_sec
++        self.keep_seconds = keep_seconds
++        self.max_height = max_height
++        self.realtime_file = realtime_file  # tests: play a local file at 1x speed
++        self.max_restarts = max_restarts
++        self.buffer = SegmentBuffer(self.session_dir)
++        self._stop = threading.Event()
++        self._thread: Optional[threading.Thread] = None
++        self._procs: List[subprocess.Popen] = []
++        self.restarts = 0
++        self.last_error: Optional[str] = None
++
++    # ------------------------------------------------------------------ control
++    def start(self) -> "LiveRecorder":
++        self.session_dir.mkdir(parents=True, exist_ok=True)
++        self._thread = threading.Thread(target=self._run_forever, name="live-recorder", daemon=True)
++        self._thread.start()
++        return self
++
++    def stop(self, timeout: float = 10.0) -> None:
++        self._stop.set()
++        self._kill()
++        if self._thread:
++            self._thread.join(timeout)
++
++    @property
++    def running(self) -> bool:
++        return bool(self._thread and self._thread.is_alive())
++
++    # ------------------------------------------------------------------ internals
++    def _kill(self) -> None:
++        for proc in self._procs:
++            try:
++                proc.terminate()
++                proc.wait(timeout=5)
++            except Exception:
++                try:
++                    proc.kill()
++                except Exception:
++                    pass
++        self._procs = []
++
++    def _next_run_dir(self) -> Path:
++        index = len([p for p in self.session_dir.glob("run-*") if p.is_dir()])
++        return self.session_dir / f"run-{index:04d}"
++
++    def _ffmpeg_cmd(self, run_dir: Path, input_args: List[str], maps: List[str]) -> List[str]:
++        return ["ffmpeg", "-hide_banner", "-loglevel", "error", *input_args,
++                *maps, "-c", "copy",
++                "-f", "segment", "-segment_time", f"{self.segment_sec}",
++                "-segment_list", str(run_dir / SEGMENT_LIST), "-segment_list_type", "csv",
++                "-segment_list_flags", "+live", "-reset_timestamps", "1",
++                str(run_dir / "seg_%06d.ts")]
++
++    def _resolve_page(self) -> List[str]:
++        """Fresh stream URLs for a page (they expire): [video(+audio)] HLS."""
++        fmt = (f"bv*[height<={self.max_height}]+ba/b[height<={self.max_height}]/b")
++        cmd = ["yt-dlp", "-q", "--no-warnings", "-g", "-f", fmt, self.source]
++        if shutil.which("node"):
++            cmd[1:1] = ["--js-runtimes", "node"]
++        result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
++        urls = [line.strip() for line in result.stdout.splitlines() if line.strip().startswith("http")]
++        if not urls:
++            raise RuntimeError((result.stderr or "yt-dlp returned no stream URL").strip()[-300:])
++        return urls[:2]
++
++    def _launch(self, run_dir: Path) -> subprocess.Popen:
++        if _is_page_url(self.source):
++            urls = self._resolve_page()
++            live_in = ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
++            input_args: List[str] = []
++            for url in urls:
++                input_args += [*live_in, "-i", url]
++            maps = ["-map", "0:v:0?", "-map", "0:a:0?"] if len(urls) == 1 else ["-map", "0:v:0", "-map", "1:a:0"]
++        else:
++            input_args = (["-re"] if self.realtime_file else []) + ["-i", self.source]
++            maps = ["-map", "0:v:0?", "-map", "0:a:0?"]
++        ff = subprocess.Popen(self._ffmpeg_cmd(run_dir, input_args, maps), stderr=subprocess.PIPE)
++        self._procs.append(ff)
++        return ff
++
++    def _stamp_origin(self, run_dir: Path, started: float, ff: subprocess.Popen) -> None:
++        """Write run.json once the first segment exists (its wall-clock origin)."""
++        first = run_dir / "seg_000000.ts"
++        while not self._stop.is_set() and ff.poll() is None and not first.exists():
++            time.sleep(0.05)
++        origin = started
++        if first.exists():
++            try:
++                origin = first.stat().st_ctime
++            except OSError:
++                pass
++        write_run_meta(run_dir, origin, self.source)
++
++    def _run_forever(self) -> None:
++        backoff = 2.0
++        while not self._stop.is_set():
++            run_dir = self._next_run_dir()
++            run_dir.mkdir(parents=True, exist_ok=True)
++            started = time.time()
++            try:
++                ff = self._launch(run_dir)
++            except FileNotFoundError as exc:
++                self.last_error = f"missing tool: {exc}"
++                logger.error("Live recorder cannot start: %s", exc)
++                return
++            except Exception as exc:  # stream offline, URL resolution failed
++                self.last_error = str(exc)
++                self.restarts += 1
++                if self.restarts > self.max_restarts:
++                    break
++                logger.warning("Live recorder: cannot resolve the stream (%s); retrying in %.0fs", exc, backoff)
++                self._stop.wait(backoff)
++                backoff = min(backoff * 2, 60.0)
++                continue
++            self._stamp_origin(run_dir, started, ff)
++            while not self._stop.is_set() and ff.poll() is None:
++                self.buffer.prune(self.keep_seconds)
++                time.sleep(1.0)
++            if self._stop.is_set():
++                break
++            err = (ff.stderr.read().decode(errors="replace") if ff.stderr else "")[-400:]
++            self.last_error = err or f"ffmpeg exited {ff.returncode}"
++            self._kill()
++            if self.realtime_file and ff.returncode == 0:
++                logger.info("Live recorder: test source finished")
++                break
++            self.restarts += 1
++            if self.restarts > self.max_restarts:
++                logger.error("Live recorder: giving up after %d restarts (%s)", self.restarts, self.last_error)
++                break
++            logger.warning("Live recorder: pull dropped (%s); reconnecting in %.0fs", self.last_error, backoff)
++            self._stop.wait(backoff)
++            backoff = min(backoff * 2, 60.0)
+diff --git a/backend/tests/unit/test_live_buffer.py b/backend/tests/unit/test_live_buffer.py
+new file mode 100644
+index 0000000..14225ab
+--- /dev/null
++++ b/backend/tests/unit/test_live_buffer.py
+@@ -0,0 +1,113 @@
++"""Live MVP: rolling buffer index, gaps, pruning, cut-from-the-past, recorder."""
++from __future__ import annotations
++
++import json
++import subprocess
++import time
++from pathlib import Path
++
++import pytest
++
++from src.live import live_clipping_enabled
++from src.live.buffer import SegmentBuffer, write_run_meta
++from src.live.recorder import LiveRecorder, _is_page_url
++
++
++def _fake_run(session: Path, name: str, t0: float, spans):
++    run = session / name
++    run.mkdir(parents=True)
++    write_run_meta(run, t0, "test")
++    rows = []
++    for i, (a, b) in enumerate(spans):
++        f = f"seg_{i:06d}.ts"
++        (run / f).write_bytes(b"x")
++        rows.append(f"{f},{a},{b}\n")
++    (run / "segments.csv").write_text("".join(rows), encoding="utf-8")
++
++
++def test_index_spans_runs_in_wall_clock_and_reports_the_reconnect_gap(tmp_path):
++    _fake_run(tmp_path, "run-0000", 1000.0, [(0, 4), (4, 8), (8, 12)])
++    _fake_run(tmp_path, "run-0001", 1015.0, [(0, 4), (4, 8)])  # 3 s outage
++    buf = SegmentBuffer(tmp_path)
++    segs = buf.segments()
++    assert [round(s.start) for s in segs] == [1000, 1004, 1008, 1015, 1019]
++    assert buf.span() == (1000.0, 1023.0)
++    assert buf.gaps() == [(1012.0, 1015.0)]
++
++
++def test_prune_keeps_only_the_recent_window(tmp_path):
++    _fake_run(tmp_path, "run-0000", 1000.0, [(0, 4), (4, 8), (8, 12)])
++    buf = SegmentBuffer(tmp_path)
++    assert buf.prune(keep_seconds=5, now=1014.0) == 2
++    assert [round(s.start) for s in buf.segments()] == [1008]
++
++
++def test_page_urls_go_through_yt_dlp():
++    assert _is_page_url("https://www.twitch.tv/somechannel")
++    assert _is_page_url("https://www.youtube.com/watch?v=abc")
++    assert not _is_page_url("https://cdn.example/stream.m3u8")
++    assert not _is_page_url("D:/test.mp4")
++
++
++def test_switch_default_off(monkeypatch):
++    monkeypatch.delenv("LIVE_CLIPPING", raising=False)
++    assert not live_clipping_enabled()
++
++
++def _probe_duration(path: str) -> float:
++    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
++                          "-of", "csv=p=0", path], capture_output=True, text=True).stdout
++    return float(out.strip())
++
++
++@pytest.fixture
++def fake_live_source(tmp_path):
++    """A 30 s test video (H.264/AAC, keyframe every 1 s) played in real time."""
++    src = tmp_path / "source.ts"
++    subprocess.run(
++        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=30",
++         "-f", "lavfi", "-i", "sine=frequency=440:duration=30", "-c:v", "libx264", "-preset", "ultrafast",
++         "-g", "30", "-c:a", "aac", "-shortest", str(src)],
++        check=True, capture_output=True)
++    return src
++
++
++def test_recorder_buffers_live_and_cuts_footage_from_before_the_detection(tmp_path, fake_live_source):
++    session = tmp_path / "session"
++    rec = LiveRecorder(str(fake_live_source), session, segment_sec=2.0, realtime_file=True).start()
++    try:
++        time.sleep(16.0)  # 16 s of "live" stream
++        detected_at = time.time()  # a moment detected NOW ...
++        span = rec.buffer.span()
++        assert span is not None and span[1] - span[0] >= 10.0
++        # ... and the clip needs the 8 s BEFORE it (pre-roll from the buffer).
++        cut = rec.buffer.cut_window(detected_at - 10.0, detected_at - 2.0, tmp_path / "window.mp4")
++        assert cut is not None and not cut["gaps"]
++        produced = _probe_duration(cut["path"])
++        assert produced >= cut["offset"] + cut["duration"] - 0.1
++        assert 6.0 <= cut["duration"] <= 8.5
++        assert rec.running  # still recording while we cut
++    finally:
++        rec.stop()
++
++
++def test_recorder_reconnects_after_a_drop_and_reports_the_gap(tmp_path, fake_live_source):
++    session = tmp_path / "session"
++    rec = LiveRecorder(str(fake_live_source), session, segment_sec=2.0, realtime_file=True)
++    rec.realtime_file = True
++    rec.start()
++    try:
++        time.sleep(6.0)
++        # Simulate a dropped connection: kill the pull mid-stream.
++        rec._procs[-1].kill()
++        deadline = time.time() + 20
++        while time.time() < deadline and len(list(session.glob("run-*"))) < 2:
++            time.sleep(0.5)
++        time.sleep(6.0)
++        runs = sorted(session.glob("run-*"))
++        assert len(runs) >= 2 and rec.restarts >= 1
++        assert json.loads((runs[1] / "run.json").read_text())["t0_wall"] > \
++            json.loads((runs[0] / "run.json").read_text())["t0_wall"]
++        assert rec.buffer.gaps()  # the outage is visible, never stitched over
++    finally:
++        rec.stop()
+-- 
+2.56.0.windows.2
+

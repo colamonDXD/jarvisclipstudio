@@ -1,0 +1,15 @@
+{"case": "real_hd/kai_sa_20000_hd.mp4", "label": "Kai Cenat 1080p, cam mid-left", "expected_reaction": true, "kind": "reaction", "seconds": 22.9}
+{"case": "real_more/kai_sa_20000.mp4", "label": "Kai Cenat 360p, cam mid-left", "expected_reaction": true, "kind": "reaction", "seconds": 29.0}
+{"case": "real_more/kai_gta4_30000.mp4", "label": "Kai Cenat GTA IV, small top-left cam", "expected_reaction": true, "kind": "reaction", "seconds": 35.3}
+{"case": "real_more/kai_gta4_9000.mp4", "label": "Kai Cenat GTA IV, looking down at desk", "expected_reaction": true, "kind": "fit", "seconds": 45.1}
+{"case": "real_twitch/vicens_1800.mp4", "label": "Vicens GTA V, cam left", "expected_reaction": true, "kind": "reaction", "seconds": 29.8}
+{"case": "real_twitch/vicens_4200.mp4", "label": "Vicens GTA V, cam left", "expected_reaction": true, "kind": "reaction", "seconds": 23.3}
+{"case": "real_twitch/vicens_7200.mp4", "label": "Vicens GTA V, cam left", "expected_reaction": true, "kind": "reaction", "seconds": 40.2}
+{"case": "real_twitch/vicens_sample.mp4", "label": "Vicens GTA V, cam left", "expected_reaction": true, "kind": "reaction", "seconds": 33.1}
+{"case": "real_more/speed_tw_2400.mp4", "label": "iShowSpeed Omegle split (two people)", "expected_reaction": false, "kind": "fit", "seconds": 22.5}
+{"case": "real_more/speed_tw_7000.mp4", "label": "iShowSpeed full-frame cam", "expected_reaction": false, "kind": "stage", "seconds": 39.4}
+{"case": "phase2_src/1oXjtK5Nsjw.mp4", "label": "Video-call podcast, two windows", "expected_reaction": false, "kind": "fit", "seconds": 38.5}
+{"case": "phase2_src/D3cAyFmhi_M.mp4", "label": "Travel vlog", "expected_reaction": false, "kind": "fit", "seconds": 26.8}
+{"case": "phase2_src/dwZK6iQlyEw.mp4", "label": "Stand-up comedy", "expected_reaction": false, "kind": "compositor", "seconds": 12.3}
+{"case": "phase2_src/TkHlhgTutFs.mp4", "label": "Talking head speech", "expected_reaction": false, "kind": "fit", "seconds": 13.1}
+{"case": "phase2_src/-m-gudHhLxc.mp4", "label": "Lecture: slides + presenter window", "expected_reaction": null, "kind": "reaction", "seconds": 14.7}

@@ -1,0 +1,94 @@
+From e59cb7793c22fb67076f1ab815fc15fe972f4a6e Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 21:35:53 +0530
+Subject: [PATCH 25/27] feat(captions): karaoke fill (spoken words turn yellow
+ and stay) for the face-on-top style; slang hint for Groq Whisper
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/caption_templates.py    |  5 +++--
+ backend/src/live/groq_transcribe.py | 14 ++++++++++++--
+ backend/src/media/captions.py       |  5 ++++-
+ 3 files changed, 19 insertions(+), 5 deletions(-)
+
+diff --git a/backend/src/caption_templates.py b/backend/src/caption_templates.py
+index d87b8b9..dcbfd73 100644
+--- a/backend/src/caption_templates.py
++++ b/backend/src/caption_templates.py
+@@ -286,7 +286,7 @@ CAPTION_TEMPLATES: Dict[str, Dict[str, Any]] = {
+         "font_family": "Anton-Regular",
+         "font_size": 68,
+         "font_color": "#FFFFFF",
+-        "highlight_color": "#FFFFFF",
++        "highlight_color": "#FFD400",
+         "emphasis_color": "#FFFFFF",
+         "stroke_color": "#000000",
+         "stroke_width": 2,
+@@ -294,7 +294,8 @@ CAPTION_TEMPLATES: Dict[str, Dict[str, Any]] = {
+         "background_color": None,
+         "word_box": False,
+         "word_box_color": None,
+-        "animation": "pop",
++        "animation": "karaoke",
++        "karaoke_fill": True,
+         "word_pop": True,
+         "emoji": False,
+         "uppercase": True,
+diff --git a/backend/src/live/groq_transcribe.py b/backend/src/live/groq_transcribe.py
+index 24c63b0..24b6e40 100644
+--- a/backend/src/live/groq_transcribe.py
++++ b/backend/src/live/groq_transcribe.py
+@@ -25,6 +25,16 @@ logger = logging.getLogger(__name__)
+ GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+ 
+ 
++# Streamer slang and meme words the speech model mishears without a hint
++# ("lapiz" came out as "my face"). Whisper uses the prompt as context.
++SLANG = ("Lapiz, lapis lazuli, chat, bro, GG, W, L, aura, rizz, gyatt, skibidi, sigma, fanum tax, Ohio, mewing, "
++         "ong, fr, no cap, bussin, sus, cap, OMEGALUL, KEKW, pog, poggers, Kai Cenat, IShowSpeed, Lacy, xQc, GTA 6, Lucia")
++
++
++def slang_prompt() -> str:
++    return os.getenv("LIVE_ASR_PROMPT", SLANG)[:800]
++
++
+ def groq_enabled() -> bool:
+     if os.getenv("LIVE_TRANSCRIPTION_PROVIDER", "").strip().lower() == "local":
+         return False
+@@ -65,7 +75,7 @@ def groq_transcribe_file(audio: Path, timeout: float = 60.0) -> Optional[Dict[st
+                 headers={"Authorization": f"Bearer {os.environ['GROQ_API_KEY'].strip()}"},
+                 data={"model": os.getenv("LIVE_GROQ_MODEL", "whisper-large-v3-turbo"),
+                       "response_format": "verbose_json",
+-                      "timestamp_granularities[]": ["word", "segment"]},
++                      "timestamp_granularities[]": ["word", "segment"], "prompt": slang_prompt()},
+                 files={"file": (Path(audio).name, fh, "audio/mpeg")},
+                 timeout=timeout,
+             )
+@@ -104,7 +114,7 @@ def transcribe_with_groq(video: Path, timeout: float = 60.0) -> bool:
+                     headers={"Authorization": f"Bearer {os.environ['GROQ_API_KEY'].strip()}"},
+                     data={"model": os.getenv("LIVE_GROQ_MODEL", "whisper-large-v3-turbo"),
+                           "response_format": "verbose_json",
+-                          "timestamp_granularities[]": ["word", "segment"]},
++                          "timestamp_granularities[]": ["word", "segment"], "prompt": slang_prompt()},
+                     files={"file": ("audio.mp3", fh, "audio/mpeg")},
+                     timeout=timeout,
+                 )
+diff --git a/backend/src/media/captions.py b/backend/src/media/captions.py
+index 0f04b27..3c9721c 100644
+--- a/backend/src/media/captions.py
++++ b/backend/src/media/captions.py
+@@ -1799,7 +1799,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+                 for local_j, other in enumerate(chunk):
+                     gj = indices[local_j]
+                     disp = render_text(gj, other)
+-                    parts.append(active_span(disp) if local_j == local_i else idle_span(gj, disp))
++                    # karaoke_fill: words already spoken stay highlighted (owner:
++                    # "as he says the word it should be yellow and continue yellow").
++                    spoken = bool(template.get("karaoke_fill")) and local_j < local_i
++                    parts.append(active_span(disp) if (local_j == local_i or spoken) else idle_span(gj, disp))
+                 line = " ".join(parts)
+                 # Entrance only on the first word's event so it plays once, not
+                 # once per word.
+-- 
+2.56.0.windows.2
+

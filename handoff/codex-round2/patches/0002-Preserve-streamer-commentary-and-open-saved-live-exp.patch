@@ -1,0 +1,538 @@
+From 764082f005dc1b4c65b5ccd307695543534fbdb2 Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Fri, 20 Nov 2026 13:34:44 +0530
+Subject: [PATCH 2/7] Preserve streamer commentary and open saved live exports
+ in the editor
+
+---
+ .env.example                                |  1 +
+ CHANGELOG.md                                |  2 +
+ backend/src/api/routes/live.py              | 12 ++++
+ backend/src/api/routes/tasks.py             |  7 +++
+ backend/src/live/library.py                 | 70 +++++++++++++++++++++
+ backend/src/live/moments.py                 | 43 +++++++++++--
+ backend/src/repositories/live_repository.py |  8 ++-
+ backend/src/workers/live_worker.py          | 10 ++-
+ backend/tests/unit/test_live_api.py         | 16 ++++-
+ backend/tests/unit/test_live_moments.py     | 11 +++-
+ docker-compose.yml                          |  2 +
+ frontend/src/app/live/page.tsx              | 18 ++++++
+ frontend/src/components/home-app.tsx        | 13 ++++
+ tools/live/train_selection.py               | 18 ++++--
+ 14 files changed, 213 insertions(+), 18 deletions(-)
+ create mode 100644 backend/src/live/library.py
+
+diff --git a/.env.example b/.env.example
+index 4aba197..b029bf7 100644
+--- a/.env.example
++++ b/.env.example
+@@ -567,6 +567,7 @@ APIFY_STORAGE_KEY_TEMPLATE=
+ # Gold, word-wrapped titles in the top safe area for streamer clips.
+ STYLED_HOOK_TITLE=off
+ REACTION_PUNCH=off
++LIVE_CLIP_LIBRARY=off
+ # Use openai:clip-free with the bundled LiteLLM gateway for NVIDIA,
+ # Groq, OpenRouter free and local Ollama fallback on live/VOD text jobs.
+ LIVE_VOD_LLM=
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index ae02c79..ed28282 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,8 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-20
++- **New** Live exports can be saved to Clips and opened in the editor. The upload form offers vocal separation on installations that support it.
++- **Fixed** Gaming captions now compare spoken phrases with text visible in the game before removing dialogue. Streamer comments can appear while game subtitles are on screen.
+ - **New:** Clip cards accept selection feedback, and the Live page accepts Kick stream links. Enable `REACTION_PUNCH` to place one eased zoom and a quiet impact at the measured reaction. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **New:** Hand-drawn live layouts now include four corner cameras, a circle camera, side-by-side, gameplay only, full-frame crop and blurred fill. The layout preview and saved channel settings support all eleven choices. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Improved:** Streamer exports can use a gold, word-wrapped top title with `STYLED_HOOK_TITLE=on`. The gateway route `clip-free` tries NVIDIA, Groq, OpenRouter free and local Ollama in order. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+diff --git a/backend/src/api/routes/live.py b/backend/src/api/routes/live.py
+index a224f3a..b281261 100644
+--- a/backend/src/api/routes/live.py
++++ b/backend/src/api/routes/live.py
+@@ -197,6 +197,18 @@ async def delete_session(session_id: str, request: Request, db: AsyncSession = D
+     return {"deleted": True}
+ 
+ 
++@router.post("/clips/{clip_id}/library")
++async def save_to_library(clip_id: str, request: Request, db: AsyncSession = Depends(get_db)):
++    from ...live.library import save_live_clip
++
++    _require_enabled()
++    user_id = await resolve_authenticated_user_id(request, db, get_config())
++    saved = await save_live_clip(db, user_id, clip_id)
++    if not saved:
++        raise HTTPException(status_code=404, detail="Finished clip unavailable")
++    return saved
++
++
+ @router.get("/clips/{clip_id}/file")
+ async def clip_file(clip_id: str, request: Request, kind: str = "clip", db: AsyncSession = Depends(get_db)):
+     _require_enabled()
+diff --git a/backend/src/api/routes/tasks.py b/backend/src/api/routes/tasks.py
+index 3217606..aaa5d0a 100644
+--- a/backend/src/api/routes/tasks.py
++++ b/backend/src/api/routes/tasks.py
+@@ -1001,6 +1001,13 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
+         raise HTTPException(status_code=500, detail=f"Error creating task: {str(e)}")
+ 
+ 
++@router.get("/render/capabilities")
++async def render_capabilities():
++    from ...media.separation import separation_enabled
++
++    return {"vocal_separation": separation_enabled()}
++
++
+ @router.get("/billing/summary")
+ async def get_billing_summary(request: Request, db: AsyncSession = Depends(get_db)):
+     """Get monetization status and current usage for authenticated user."""
+diff --git a/backend/src/live/library.py b/backend/src/live/library.py
+new file mode 100644
+index 0000000..0b51b9b
+--- /dev/null
++++ b/backend/src/live/library.py
+@@ -0,0 +1,70 @@
++"""Save a finished live clip as an independently editable library clip."""
++import os
++from pathlib import Path
++import shutil
++import tempfile
++from uuid import NAMESPACE_URL, uuid5
++
++from sqlalchemy import func, insert, text
++
++from ..config import get_config
++from ..models import Task
++from ..repositories.clip_repository import ClipRepository
++from ..utils.async_helpers import run_in_thread
++
++
++def _copy_export(source: Path, target: Path):
++    target.parent.mkdir(parents=True, exist_ok=True)
++    with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as handle:
++        staged = Path(handle.name)
++    try:
++        shutil.copyfile(source, staged)
++        os.replace(staged, target)
++    finally:
++        staged.unlink(missing_ok=True)
++
++
++async def save_live_clip(db, user_id: str, clip_id: str):
++    row = (await db.execute(text(
++        "SELECT c.id,c.session_id,c.n,c.clip_path,c.duration,c.reason,s.url,s.settings "
++        "FROM live_clips c JOIN live_sessions s ON s.id=c.session_id "
++        "WHERE c.id=:id AND s.user_id=:uid AND c.status='ready' FOR UPDATE OF c"
++    ), {"id": clip_id, "uid": user_id})).mappings().first()
++    if not row:
++        return None
++    task_id = str(uuid5(NAMESPACE_URL, "snipnova:live-task:" + clip_id))
++    editor_id = str(uuid5(NAMESPACE_URL, "snipnova:live-clip:" + clip_id))
++    existing = await db.scalar(text(
++        "SELECT g.id FROM generated_clips g JOIN tasks t ON t.id=g.task_id "
++        "WHERE t.id=:task AND t.user_id=:uid AND g.id=:clip"
++    ), {"task": task_id, "uid": user_id, "clip": editor_id})
++    if existing:
++        return {"task_id": task_id, "clip_id": editor_id}
++    root = Path(os.getenv("TEMP_DIR") or get_config().temp_dir).resolve()
++    source = Path(row["clip_path"] or "").resolve()
++    if not source.is_relative_to(root / "live" / row["session_id"]) or not source.is_file():
++        return None
++    duration = float(row["duration"] or 0)
++    if duration <= 0:
++        return None
++    title = f"Live clip {row['n']}"
++    target = root / "clips" / task_id / f"{editor_id}.mp4"
++    await run_in_thread(_copy_export, source, target)
++    try:
++        await db.execute(text(
++            "INSERT INTO sources(id,type,title,url) VALUES (:id,'video_url',:title,:url) ON CONFLICT (id) DO NOTHING"
++        ), {"id": task_id, "title": title, "url": row["url"]})
++        await db.execute(insert(Task).values(
++            id=task_id, user_id=user_id, source_id=task_id, status="completed", progress=100,
++            completed_at=func.now(), generated_clips_ids=[editor_id],
++            source_metadata={"live_session_id": row["session_id"], "live_clip_id": clip_id},
++        ))
++        seconds = round(duration)
++        await ClipRepository.create_clip(db, task_id, target.name, str(target), "00:00",
++                                         f"{seconds // 60:02d}:{seconds % 60:02d}", duration, "", 0,
++                                         row["reason"] or "", 1, clip_id=editor_id)
++        await db.commit()
++    except Exception:
++        await db.rollback()
++        raise
++    return {"task_id": task_id, "clip_id": editor_id}
+diff --git a/backend/src/live/moments.py b/backend/src/live/moments.py
+index b214d86..72836d3 100644
+--- a/backend/src/live/moments.py
++++ b/backend/src/live/moments.py
+@@ -14,7 +14,9 @@ from __future__ import annotations
+ 
+ import json
+ import logging
++import re
+ import subprocess
++from difflib import SequenceMatcher
+ from pathlib import Path
+ from typing import Dict, Optional, Sequence, Tuple
+ 
+@@ -123,17 +125,18 @@ def creator_on_camera(window: Path, onset_in_window: float, *, min_ratio: float
+ GAME_SUBTITLE_SCORE = 1.5
+ 
+ 
+-def game_subtitle_seconds(video: Path) -> list:
++def game_subtitle_lines(video: Path, speech_seconds: set[int]) -> dict:
+     import cv2
+     import numpy as np
++    from ..auto_director.reference_style import _tesseract_words
+ 
+     capture = cv2.VideoCapture(str(video))
+     fps = float(capture.get(cv2.CAP_PROP_FPS) or 30.0)
+     total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+     seconds = int(total / fps) if fps else 0
+     kernel = np.ones((3, 3), np.uint8)
+-    flags = []
+-    for sec in range(seconds + 1):
++    lines = {}
++    for sec in sorted(s for s in speech_seconds if 0 <= s <= seconds):
+         capture.set(cv2.CAP_PROP_POS_FRAMES, int(min(max(total - 1, 0), (sec + 0.5) * fps)))
+         ok, frame = capture.read()
+         score = 0.0
+@@ -144,9 +147,36 @@ def game_subtitle_seconds(video: Path) -> list:
+             white = (hsv[..., 2] > 215) & (hsv[..., 1] < 40)
+             near_dark = cv2.dilate((hsv[..., 2] < 90).astype(np.uint8), kernel) > 0
+             score = float((white & near_dark).mean()) * 1000.0
+-        flags.append(score >= GAME_SUBTITLE_SCORE)
++            if score >= GAME_SUBTITLE_SCORE:
++                enlarged = cv2.resize(band, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
++                detected, available = _tesseract_words(enlarged)
++                if not available:
++                    break
++                groups = {}
++                for entry in detected or []:
++                    groups.setdefault(entry["line"], []).append(entry["text"])
++                lines[sec] = list(groups.values())
+     capture.release()
+-    return flags
++    return lines
++
++
++def remove_matching_dialogue(words: list, lines: dict) -> list:
++    """Suppress consecutive spoken words that also appear in a nearby subtitle line."""
++    def normalize(value):
++        return re.sub(r"[^\w]", "", str(value).casefold())
++
++    tokens = [normalize(w.get("text", "")) for w in words]
++    times = [float(w.get("start", 0)) / 1000 for w in words]
++    suppressed = set()
++    for sec, visible in lines.items():
++        near = [i for i, t in enumerate(times) if sec - 1.5 <= t < sec + 2.5]
++        for line in visible:
++            screen = [normalize(token) for token in line]
++            matcher = SequenceMatcher(None, [tokens[i] for i in near], screen, autojunk=False)
++            for start, offset, size in matcher.get_matching_blocks():
++                if size >= 2 and sum(len(s) for s in screen[offset:offset + size]) >= 6:
++                    suppressed.update(near[start:start + size])
++    return [word for i, word in enumerate(words) if i not in suppressed]
+ 
+ 
+ def drop_game_words(words: list, game_sub: Sequence[bool]) -> list:
+@@ -165,7 +195,8 @@ def keep_streamer_words(source: Path, data: Dict) -> Dict:
+     words = data.get("words") or []
+     if not words:
+         return data
+-    kept = drop_game_words(words, game_subtitle_seconds(source))
++    speech_seconds = {int(float(word.get("start", 0)) / 1000) for word in words}
++    kept = remove_matching_dialogue(words, game_subtitle_lines(source, speech_seconds))
+     cache = source.with_suffix(".transcript_cache.json")
+     if cache.exists():
+         full = source.with_suffix(".transcript_cache.full.json")
+diff --git a/backend/src/repositories/live_repository.py b/backend/src/repositories/live_repository.py
+index cc41c2f..38dbe1b 100644
+--- a/backend/src/repositories/live_repository.py
++++ b/backend/src/repositories/live_repository.py
+@@ -189,12 +189,14 @@ class LiveRepository:
+             "CAST(:signals AS JSONB), :strength, :talk, :preview)"), params)
+         await db.commit()
+ 
+-    async def update_clip(self, db: AsyncSession, session_id: str, event: Dict[str, Any]) -> None:
+-        await db.execute(text(
++    async def update_clip(self, db: AsyncSession, session_id: str, event: Dict[str, Any]) -> Optional[str]:
++        result = await db.execute(text(
+             "UPDATE live_clips SET status = :status, clip_path = COALESCE(:path, clip_path), "
+             "duration = COALESCE(:duration, duration), render_seconds = COALESCE(:render_s, render_seconds), "
+             "reason = COALESCE(:error, reason), updated_at = CURRENT_TIMESTAMP "
+-            "WHERE session_id = :sid AND n = :n"),
++            "WHERE session_id = :sid AND n = :n RETURNING id"),
+             {"sid": session_id, "n": event["n"], "status": event["status"], "path": event.get("clip_path"),
+              "duration": event.get("duration"), "render_s": event.get("render_s"), "error": event.get("error")})
++        clip_id = result.scalar()
+         await db.commit()
++        return clip_id
+diff --git a/backend/src/workers/live_worker.py b/backend/src/workers/live_worker.py
+index c3d0a53..39c8f71 100644
+--- a/backend/src/workers/live_worker.py
++++ b/backend/src/workers/live_worker.py
+@@ -84,7 +84,15 @@ async def drain(repo: LiveRepository, run: Running) -> None:
+             elif event["type"] == "moment":
+                 await repo.record_moment(db, sid, event)
+             elif event["type"] == "clip":
+-                await repo.update_clip(db, sid, event)
++                clip_id = await repo.update_clip(db, sid, event)
++                if clip_id and event["status"] == "ready" and os.getenv("LIVE_CLIP_LIBRARY", "off").lower() == "on":
++                    from ..live.library import save_live_clip
++
++                    try:
++                        await save_live_clip(db, run.row["user_id"], clip_id)
++                    except Exception:
++                        await db.rollback()
++                        logger.exception("Live clip is ready. Its library copy can be retried from the Live page.")
+ 
+ 
+ async def tick(repo: LiveRepository, worker_id: str, running: Dict[str, Running], now: float) -> None:
+diff --git a/backend/tests/unit/test_live_api.py b/backend/tests/unit/test_live_api.py
+index 2053921..23492c8 100644
+--- a/backend/tests/unit/test_live_api.py
++++ b/backend/tests/unit/test_live_api.py
+@@ -69,7 +69,7 @@ async def test_start_list_get_stop(client, auth_headers, live_on, clean_live):
+ 
+ 
+ @pytest.mark.parametrize("body,fragment", [
+-    ({"url": "https://example.com/stream"}, "YouTube or Twitch"),
++    ({"url": "https://example.com/stream"}, "YouTube, Twitch or Kick"),
+     ({"url": "https://www.twitch.tv/x", "layout_template": "neon"}, "layout_template"),
+     ({"url": "https://www.twitch.tv/x", "max_clips": 0}, "max_clips"),
+     ({"url": "https://www.twitch.tv/x", "streamer_words_only": "yes"}, "streamer_words_only"),
+@@ -138,12 +138,26 @@ async def test_worker_claim_events_and_files(client, auth_headers, live_on, clea
+     assert file.status_code == 200 and file.headers["content-type"] == "video/mp4"
+     assert (await client.delete(f"/live/sessions/{created['id']}", headers=auth_headers)).status_code == 409
+ 
++    async with AsyncSessionLocal() as db:
++        from src.models import User
++        if await db.get(User, "user-1") is None:
++            db.add(User(id="user-1", email="clip-library@example.test", name="Test"))
++        await db.commit()
++    link = f"/live/clips/{ready['id']}/library"
++    saved = await client.post(link, headers=auth_headers)
++    assert saved.status_code == 200, saved.text
++    assert (await client.post(link, headers=auth_headers)).json() == saved.json()
++
+     async with AsyncSessionLocal() as db:
+         assert await repo.request_stop(db, created["id"], "user-1")
+         assert await repo.heartbeat(db, created["id"], {"recording": True}) is True  # worker sees the stop
+         await repo.finish_session(db, created["id"], "stopped")
+     assert (await client.delete(f"/live/sessions/{created['id']}", headers=auth_headers)).status_code == 200
+     assert not Path(tmp_path / "live" / created["id"]).exists()
++    ids = saved.json()
++    library_file = await client.get(
++        f"/tasks/{ids['task_id']}/clips/{ids['clip_id']}/file", headers=auth_headers)
++    assert library_file.status_code == 200 and library_file.content == bytes(32)
+ 
+ 
+ async def test_files_outside_the_live_folder_are_never_served(client, auth_headers, live_on, clean_live, tmp_path):
+diff --git a/backend/tests/unit/test_live_moments.py b/backend/tests/unit/test_live_moments.py
+index 0e77686..7f6ff53 100644
+--- a/backend/tests/unit/test_live_moments.py
++++ b/backend/tests/unit/test_live_moments.py
+@@ -1,7 +1,7 @@
+ """Live clipping: the hook-first window and the streamer-only caption filter."""
+ from __future__ import annotations
+ 
+-from src.live.moments import drop_game_words, speech_window
++from src.live.moments import drop_game_words, remove_matching_dialogue, speech_window
+ 
+ 
+ def test_window_opens_on_the_lead_in_and_ends_at_the_first_silence():
+@@ -54,3 +54,12 @@ def test_yt_dlp_is_found_next_to_python_when_not_on_path(monkeypatch, tmp_path):
+     monkeypatch.setattr(shutil, "which", lambda name: None)
+     monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
+     assert yt_dlp_binary() == str(exe)
++
++
++def test_simultaneous_streamer_speech_survives_visible_game_dialogue():
++    words = [{"text": value, "start": ms} for value, ms in [
++        ("Get", 1100), ("DOWN!", 1300), ("bro", 1450), ("what", 1750),
++        ("get", 8500), ("down", 8700),
++    ]]
++    assert remove_matching_dialogue(words, {1: [["Get", "down."], ["what"]]}) == words[2:]
++    assert remove_matching_dialogue(words, {}) == words
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 7858b27..5dac006 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -192,6 +192,7 @@ services:
+       - LLM=${LLM:-}
+       - STYLED_HOOK_TITLE=${STYLED_HOOK_TITLE:-off}
+       - REACTION_PUNCH=${REACTION_PUNCH:-off}
++      - LIVE_CLIP_LIBRARY=${LIVE_CLIP_LIBRARY:-off}
+       - LIVE_VOD_LLM=${LIVE_VOD_LLM:-}
+       - OPENAI_API_KEY=${OPENAI_API_KEY}
+       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+@@ -393,6 +394,7 @@ services:
+       - LLM=${LLM:-}
+       - STYLED_HOOK_TITLE=${STYLED_HOOK_TITLE:-off}
+       - REACTION_PUNCH=${REACTION_PUNCH:-off}
++      - LIVE_CLIP_LIBRARY=${LIVE_CLIP_LIBRARY:-off}
+       - LIVE_VOD_LLM=${LIVE_VOD_LLM:-}
+       - OPENAI_API_KEY=${OPENAI_API_KEY}
+       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+diff --git a/frontend/src/app/live/page.tsx b/frontend/src/app/live/page.tsx
+index 5d4bd51..018adf2 100644
+--- a/frontend/src/app/live/page.tsx
++++ b/frontend/src/app/live/page.tsx
+@@ -109,6 +109,19 @@ function StatusLine({ session }: { session: LiveSession }) {
+ }
+ 
+ function ClipCard({ clip }: { clip: LiveClip }) {
++  const [saving, setSaving] = useState(false);
++  async function openEditor() {
++    setSaving(true);
++    try {
++      const response = await fetch(`/api/live/clips/${clip.id}/library`, { method: "POST" });
++      const result = await response.json();
++      if (!response.ok) throw new Error(errorText(result, "Could not save clip"));
++      window.location.assign(`/tasks/${encodeURIComponent(result.task_id)}/edit?clip=${encodeURIComponent(result.clip_id)}`);
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Could not open editor");
++      setSaving(false);
++    }
++  }
+   const src = clip.has_clip ? `/api/live/clips/${clip.id}/file?kind=clip` : `/api/live/clips/${clip.id}/file?kind=preview`;
+   const badge =
+     clip.status === "ready" ? null :
+@@ -138,6 +151,11 @@ function ClipCard({ clip }: { clip: LiveClip }) {
+             <span key={s} className="rounded-full bg-muted px-2 py-0.5 text-xs">{SIGNAL_LABELS[s] ?? s}</span>
+           ))}
+         </div>
++        {clip.has_clip && (
++          <Button variant="outline" size="sm" className="w-full" disabled={saving} onClick={() => void openEditor()}>
++            {saving ? "Saving…" : "Save to Clips and edit"}
++          </Button>
++        )}
+         {clip.has_clip && (
+           <Button asChild size="sm" className="w-full">
+             <a href={`/api/live/clips/${clip.id}/file?kind=clip`} download>
+diff --git a/frontend/src/components/home-app.tsx b/frontend/src/components/home-app.tsx
+index c075499..e82c11a 100644
+--- a/frontend/src/components/home-app.tsx
++++ b/frontend/src/components/home-app.tsx
+@@ -203,6 +203,8 @@ export default function HomeApp() {
+   // B-roll — and the payload stores an explicit false there, so the
+   // switch is honoured exactly as displayed.
+   const [brollEnabled, setBrollEnabled] = useState(true);
++  const [separationAvailable, setSeparationAvailable] = useState(false);
++  const [separateVocals, setSeparateVocals] = useState(false);
+   // Brand Kit opt-in for this generation; null = no kit (renders as
+   // before). The kit only fills what the other controls leave unchosen.
+   const [brandKitId, setBrandKitId] = useState<string | null>(null);
+@@ -375,6 +377,10 @@ export default function HomeApp() {
+       .then((response) => (response.ok ? response.json() : null))
+       .then((data) => { if (data) setAvailableTemplates(data.templates || []); })
+       .catch((error) => console.error("Failed to load caption templates:", error));
++    fetch("/api/tasks/render/capabilities")
++      .then((response) => response.ok ? response.json() : null)
++      .then((data) => setSeparationAvailable(data?.vocal_separation === true))
++      .catch(() => setSeparationAvailable(false));
+     // Brand kits are offered only when the user has saved at least one.
+     fetch("/api/brand-kits")
+       .then((response) => (response.ok ? response.json() : null))
+@@ -560,6 +566,7 @@ export default function HomeApp() {
+           // switch. Plain stores an explicit false (Plain never uses
+           // B-roll); in Auto the picked On/Off travels as-is.
+           broll_enabled: templateMode === "plain" ? false : brollEnabled,
++          ...(separationAvailable && separateVocals ? { separation_opt_in: true } : {}),
+           // Omit for no kit so the task stores no opt-in, as before.
+           ...(brandKitId ? { brand_kit_id: brandKitId } : {}),
+           // Omit for no recipe so the task is created from the form
+@@ -1197,6 +1204,12 @@ export default function HomeApp() {
+               </OptionPanel>
+ 
+               <OptionPanel title="B-roll & music" icon={Music} className="md:col-span-2">
++                {separationAvailable && (
++                  <OptionRow label="Separate voice from music">
++                    <Switch checked={separateVocals} onCheckedChange={setSeparateVocals}
++                      aria-label="Separate voice from music" disabled={controlsDisabled} />
++                  </OptionRow>
++                )}
+                 <OptionRow label={t("broll")}>
+                   <ToggleGroup
+                     type="single"
+diff --git a/tools/live/train_selection.py b/tools/live/train_selection.py
+index 994d50a..b1bd6f1 100644
+--- a/tools/live/train_selection.py
++++ b/tools/live/train_selection.py
+@@ -25,6 +25,7 @@ import argparse
+ import hashlib
+ import json
+ import random
++import re
+ import shutil
+ import subprocess
+ import sys
+@@ -86,7 +87,7 @@ def collect(out: Path, target: int, per_query: int, min_sec: float, max_sec: flo
+             if len(done) >= target:
+                 break
+             vid, _, dur = line.partition("|")
+-            if not vid or vid in seen:
++            if not re.fullmatch(r"[A-Za-z0-9_-]{11}", vid) or vid in seen:
+                 continue
+             seen.add(vid)
+             try:
+@@ -95,7 +96,11 @@ def collect(out: Path, target: int, per_query: int, min_sec: float, max_sec: flo
+                 continue
+             if not (min_sec <= d <= max_sec):
+                 continue
++            time.sleep(2)
+             info = _run(["--skip-download", "-J", f"https://www.youtube.com/watch?v={vid}"], timeout=120)
++            if "not a bot" in info.stderr.lower() or "too many requests" in info.stderr.lower():
++                print("YouTube requested a verification or cooldown. Collection paused.", flush=True)
++                return
+             try:
+                 meta = json.loads(info.stdout)
+             except ValueError:
+@@ -115,7 +120,6 @@ def collect(out: Path, target: int, per_query: int, min_sec: float, max_sec: flo
+                        f"https://www.youtube.com/watch?v={vid}"], timeout=1800)
+             audio = next((p for p in folder.glob("audio.*") if p.suffix not in (".part", ".ytdl")), None)
+             if dl.returncode != 0 or audio is None:
+-                shutil.rmtree(folder, ignore_errors=True)
+                 continue
+             series = scan_audio(audio, float(meta.get("duration") or d), workers=6)
+             (folder / "features.json").write_text(json.dumps({
+@@ -202,7 +206,7 @@ def propose(best, rng, step):
+     return cand
+ 
+ 
+-def train(data: Path, minutes: float, seed: int) -> None:
++def train(data: Path, minutes: float, seed: int, candidate_out: Path | None = None) -> None:
+     from src.live.selection import DEFAULT_PARAMS, PARAMS_FILE, load_params, zscores
+ 
+     videos = load(data)
+@@ -246,9 +250,10 @@ def train(data: Path, minutes: float, seed: int) -> None:
+     gain = (best_va - base_va) / max(base_va, 1e-6)
+     print(f"done: {i} experiments, {kept} kept. held-out {base_va:.4f} -> {best_va:.4f} ({gain * 100:+.1f}%)", flush=True)
+     if gain >= 0.02 and best_va > incumbent_va:
+-        PARAMS_FILE.write_text(json.dumps({"trained_on": len(tr), "heldout": len(va), "heldout_score": best_va,
++        target = candidate_out or PARAMS_FILE
++        target.write_text(json.dumps({"trained_on": len(tr), "heldout": len(va), "heldout_score": best_va,
+                                            "defaults_heldout_score": base_va, "params": best}, indent=1), encoding="utf-8")
+-        print(f"wrote {PARAMS_FILE}", flush=True)
++        print(f"wrote {target}", flush=True)
+     else:
+         print("Candidate did not clear both the baseline margin and the installed picker score. Keeping current weights.", flush=True)
+ 
+@@ -271,11 +276,12 @@ def main() -> int:
+     t.add_argument("--data", required=True)
+     t.add_argument("--minutes", type=float, default=90)
+     t.add_argument("--seed", type=int, default=7)
++    t.add_argument("--candidate-out", type=Path, help="Save a qualifying candidate here for independent evaluation")
+     a = ap.parse_args()
+     if a.cmd == "collect":
+         collect(Path(a.out), a.target, a.per_query, a.min_sec, a.max_sec)
+     else:
+-        train(Path(a.data), a.minutes, a.seed)
++        train(Path(a.data), a.minutes, a.seed, a.candidate_out)
+     return 0
+ 
+ 

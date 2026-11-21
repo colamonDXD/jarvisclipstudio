@@ -1,0 +1,38 @@
+=== Jn8a0b481cg | highkeyoli | 01:30:16
+title: (FULL REACTION) Reacting to Minecraft LIVE - September 2026!
+chat file: Jn8a0b481cg.live_chat.json (14397681 bytes)
+messages: 9527 | unique authors: 2018 | last message at 01:30:16
+rate max/mean: 54/1.76 messages per second
+fetch+parse seconds: 1.4
+top hype seconds (ranked by hype messages in the second, then share, then rate):
+  00:00:00  msgs= 54 unique= 53 hype=0.20 (11) rate_z=   0.0 hype_z=    0.0 | WERE WAITING || NOWWWW || SCAM
+  01:09:30  msgs= 12 unique= 12 hype=0.83 (10) rate_z=   6.7 hype_z=   66.7 | ENDDD UPDATE PLEEASEEEEEE || WWWWW || WHAAAT
+  01:09:18  msgs= 13 unique= 13 hype=0.77 (10) rate_z=   7.4 hype_z=   61.5 | WHATTGTTTTTTT || OOOOOOOOOOOOOOO || HOLY SHIT
+  01:09:24  msgs= 10 unique= 10 hype=0.80 (8) rate_z=   5.4 hype_z=   64.0 | WTTTTT || WHAT || THIS IS SOOO PEAK
+  01:09:38  msgs= 13 unique= 13 hype=0.54 (7) rate_z=   7.4 hype_z=    0.9 | OH MY GOD || YEEES || YESSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
+
+=== n1qreRsqcPo | Bahmania Gaming | 01:08:34
+title: GRANNY LIVE | CAN I ESCAPE GRANNY'S HOUSE? | SCARY HORROR GAMEPLAY LIVE!
+chat file: n1qreRsqcPo.live_chat.json (903127 bytes)
+messages: 560 | unique authors: 174 | last message at 01:08:25
+rate max/mean: 3/0.14 messages per second
+fetch+parse seconds: 0.4
+top hype seconds (ranked by hype messages in the second, then share, then rate):
+  00:12:50  msgs=  1 unique=  1 hype=1.00 (1) rate_z=   4.0 hype_z=   80.0 | NOOB NOOB NOOB NOOB
+  00:13:06  msgs=  1 unique=  1 hype=1.00 (1) rate_z=   4.0 hype_z=   80.0 | BEN TÜRK
+  00:20:26  msgs=  1 unique=  1 hype=1.00 (1) rate_z=   4.0 hype_z=   80.0 | :face_with_tears_of_joy::face_with_tears_of_joy::face_with_tears_of_joy::face_with_tears_of_joy::face_with_tears_of_joy::face_with_tears_of_joy::face_with_tears_of_joy::face_with_tears_of_joy::face_with_tears_of_joy::face_with_tears_of_joy:
+  00:27:02  msgs=  1 unique=  1 hype=1.00 (1) rate_z=   4.0 hype_z=   80.0 | ????hg
+  00:27:55  msgs=  1 unique=  1 hype=1.00 (1) rate_z=   4.0 hype_z=   80.0 | :rolling_on_the_floor_laughing::rolling_on_the_floor_laughing:
+
+=== R0pmRdfHpX4 | Eddy Blox | 01:52:06
+title: OMG! New BLACK MARKET Update Is Finally Here In Steal An Egg | LIVE | ROBLOX
+chat file: R0pmRdfHpX4.live_chat.json (58530735 bytes)
+messages: 36323 | unique authors: 3873 | last message at 01:52:06
+rate max/mean: 51/5.40 messages per second
+fetch+parse seconds: 5.1
+top hype seconds (ranked by hype messages in the second, then share, then rate):
+  00:33:35  msgs= 26 unique= 20 hype=0.73 (19) rate_z=   6.1 hype_z=    2.8 | w || w || w
+  00:33:26  msgs= 15 unique= 13 hype=0.80 (12) rate_z=   2.4 hype_z=    4.2 | l || w || l
+  00:33:43  msgs= 16 unique= 13 hype=0.75 (12) rate_z=   1.8 hype_z=    2.9 | w || w || w
+  00:33:34  msgs= 21 unique= 14 hype=0.57 (12) rate_z=   4.4 hype_z=    2.2 | w || w || w
+  00:33:50  msgs= 21 unique= 19 hype=0.57 (12) rate_z=   2.9 hype_z=    1.6 | :face_with_tears_of_joy::face_with_tears_of_joy::face_with_tears_of_joy::face_with_tears_of_joy::face_with_tears_of_joy::face_with_tears_of_joy::rolling_on_the_floor_laughing::face_with_tears_of_joy: || w || w

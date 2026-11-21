@@ -1,0 +1,630 @@
+From 2f997caccb18a0bee9d4b5170f28de0ca87c8e49 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 15:11:38 +0530
+Subject: [PATCH 06/18] feat(reframe): show the screen being reacted to,
+ stacked over the reactor
+
+Root cause #1b of clip1.mp4: the stimulus (the stage screen with the "Best IRL
+Streamer" nominees) only appeared in wide shots, and framing either showed the
+whole 16:9 frame small or cropped to a face and cut the screen away.
+
+media/screen_subject.py, SCREEN_SUBJECT (default OFF until Luffy approves):
+the clip is sampled every 1.5 s for a lit, coloured/detailed rectangle in the
+upper half of the frame (a screen), with the faces not on it; runs of
+sightings (gaps <= 4.5 s merged) become decisions: a readable-fit window when
+screen + people fit in 80% of the width, otherwise the existing stacked split
+layout with the whole screen in the top tile and the main person (largest
+face off the screen) in the bottom tile. When a clip has screen runs, the
+whole clip uses one full-frame fit layout and switches to the stack only while
+the screen is on (the shot-by-shot subject plan switched 44 times in 60 s).
+Phase-2 harness turns on all review switches.
+
+Evidence: handoff/quality-clip1/step3/ - same 141-201 s window: 22.5-46.5 s is
+the nominees screen on top (readable: "BEST IRL STREAMER", "EVELYN ORTIZ")
+over the streamer watching (frame_30s_stack.png); before_vs_all_steps.mp4.
+Limits: brightness heuristic; low-in-frame screens (phones) skipped; "main
+person" = largest face; ~94 s analysis per 60 s of 4K.
+Tests: test_screen_subject 8/8.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                              |   1 +
+ backend/src/media/reframe_plan.py         |  35 ++-
+ backend/src/media/screen_subject.py       | 334 ++++++++++++++++++++++
+ backend/tests/unit/test_screen_subject.py |  96 +++++++
+ tools/phase2/auto_edit.py                 |  43 ++-
+ 5 files changed, 494 insertions(+), 15 deletions(-)
+ create mode 100644 backend/src/media/screen_subject.py
+ create mode 100644 backend/tests/unit/test_screen_subject.py
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index fc0392c..76aec48 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,7 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-18
++- **Improved:** When a clip shows a screen that matters (a stage screen announcing nominees, a monitor, a meme on a window), the screen is now shown readable on top with the person reacting below, instead of being cropped away or shown tiny. The rest of the clip keeps one calm full-frame layout, so the layout only changes when the screen comes on and goes off. Off until approved: set `SCREEN_SUBJECT=on` to try it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Improved:** Clip picking can now see moments that happen in the picture, not only in the words: an award walk-up, a speech with burned-in subtitles, a celebration. These moments are offered to the AI picker, and a clip that ends just as one starts now keeps going until it finishes (within the 60-second limit). Off until approved: set `SELECTION_EVENTS=on` and `CLIP_CAP_KEEP_VISUAL_TAIL=on` to try it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Fixed:** Captions no longer repeat a phrase over and over when the speech recogniser loops over loud crowd or music noise; the phrase is shown once. Caption lines now follow the phrasing of the speech (sentence ends, pauses, commas) and never leave a single word stranded on its own line. Off until approved: set `CAPTION_LOOP_FILTER=on` and `CAPTION_PHRASE_SPLIT=on` to try it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Improved:** Wide shots no longer fill the top and bottom of the frame with a blurred copy of the picture: the bars become a calm, dark tint of the shot's own colour, so captions and titles sit on a clean background. On 4K footage people are now found at a sharper resolution, so medium shots of the speaker are framed on them instead of shown tiny. Off until approved: set `FIT_PAD=ambient` and `REFRAME_HIRES_PROBE=on` to try it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+diff --git a/backend/src/media/reframe_plan.py b/backend/src/media/reframe_plan.py
+index 226646f..3d2c734 100644
+--- a/backend/src/media/reframe_plan.py
++++ b/backend/src/media/reframe_plan.py
+@@ -3730,18 +3730,33 @@ def _attach_reframe_plan(
+         plan = build_fit_reframe_plan(analysis, ranges, duration)
+     elif framing == "crop":
+         plan = build_plain_reframe_plan(analysis, ranges, duration, framing="crop")
+-    elif framing == "auto":
+-        plan = unify_layout_plan(
+-            build_reframe_plan(analysis, ranges, duration, source_path=source_path),
+-            analysis, ranges, duration,
+-        )
+-    elif plain:
++    elif plain and framing != "auto":
+         plan = build_plain_reframe_plan(analysis, ranges, duration)
+     else:
+-        plan = unify_layout_plan(
+-            build_reframe_plan(analysis, ranges, duration, source_path=source_path),
+-            analysis, ranges, duration,
+-        )
++        raw_plan = build_reframe_plan(analysis, ranges, duration, source_path=source_path)
++        plan = unify_layout_plan(raw_plan, analysis, ranges, duration)
++        from .screen_subject import apply_screen_windows, screen_subject_enabled
++
++        if screen_subject_enabled() and raw_plan is not None and not raw_plan.get("delegate"):
++            # A lit screen carrying the story (clip1 Step 3). When the clip
++            # shows one, the whole clip uses ONE stable full-frame layout and
++            # switches to the screen-on-top / person-below stack only while
++            # the screen is on (layout changes only where content changes;
++            # the shot-by-shot subject plan would switch every few seconds).
++            try:
++                from .screen_subject import screen_runs
++
++                width = int(raw_plan.get("width") or 0)
++                height = int(raw_plan.get("height") or 0)
++                runs = screen_runs(source_path, ranges, duration, width, height)
++                if runs:
++                    fit_plan = build_fit_reframe_plan(analysis, ranges, duration)
++                    if fit_plan is not None and apply_screen_windows(
++                        fit_plan, source_path, ranges, runs=runs
++                    ):
++                        plan = fit_plan
++            except Exception as exc:
++                logger.warning("Screen subject framing unavailable: %s", exc)
+     if plan is None:
+         return False
+     # The plain GEOMETRY (a real Plain plan, or a framing="crop" plan)
+diff --git a/backend/src/media/screen_subject.py b/backend/src/media/screen_subject.py
+new file mode 100644
+index 0000000..0547b70
+--- /dev/null
++++ b/backend/src/media/screen_subject.py
+@@ -0,0 +1,334 @@
++"""Step 3 of the clip1 correction: when a screen carries the story, show it.
++
++Root cause #1b of clip1.mp4 (handoff/quality-clip1/ROOT_CAUSE.md): the
++thing being reacted to (a stage screen with the nominees, a monitor, a
++meme on a window) only appears in wide shots, and the framing either shows
++the whole 16:9 frame small (the screen's text unreadable) or crops to a
++face (the screen cut away).
++
++``SCREEN_SUBJECT`` (default off until the owner approves the corrected
++render, Sanji Q15): for every FIT shot, a few frames are checked for a
++large bright rectangle (a lit screen in a darker scene). When one is
++found in most of the shot's frames, the shot gets a readable-fit window
++(the same ``fit_windows`` mechanism ``plan_fit_windows`` uses, drawn by
++the existing compositor) that frames the screen together with the
++people in the shot, so both appear larger, and neither is cut away.
++Shots without a screen, or where screen + people already span most of
++the frame, are left untouched. Never replaces the screen with anything:
++it only decides how much of the real frame to show.
++
++When screen and person are too far apart for one window (a stage screen
++on the left, the streamer on the right of a wide shot), the shot becomes
++the existing stacked split layout: the whole screen in the top tile, the
++main person (largest face not on the screen) in the bottom tile.
++
++Limits (honest): detection is a brightness heuristic, not a screen
++classifier: a lit window or wall can count; screens low in the frame
++(a phone, a laptop) are skipped; "main person" is the largest face, which
++in an audience can be someone near the camera rather than the streamer.
++"""
++from __future__ import annotations
++
++import logging
++import os
++import subprocess
++from pathlib import Path
++from typing import Any, Dict, List, Optional, Sequence, Tuple
++
++logger = logging.getLogger(__name__)
++
++PROBE_WIDTH = 960
++SAMPLES_PER_SHOT = 3
++MIN_AREA_FRAC = 0.03
++MAX_AREA_FRAC = 0.45
++MIN_FILL = 0.45
++MIN_ASPECT, MAX_ASPECT = 1.1, 3.2
++MARGIN_FRAC = 0.04
++MAX_UNION_FRAC = 0.80     # a window wider than this gains too little to bother
++MIN_FACE_AREA_FRAC = 0.0015
++
++
++def screen_subject_enabled() -> bool:
++    return os.getenv("SCREEN_SUBJECT", "off").strip().lower() in ("on", "1", "true", "yes")
++
++
++def find_bright_screen(frame_bgr: Any) -> Optional[Tuple[float, float, float, float]]:
++    """(left, right, top, bottom) fractions of the largest lit rectangle, or None."""
++    import cv2
++    import numpy as np
++
++    h, w = frame_bgr.shape[:2]
++    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
++    threshold = max(100.0, float(np.percentile(gray, 80)))
++    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
++    edges = cv2.Canny(gray, 60, 160)
++    if float(np.percentile(gray, 50)) > 140:  # a bright scene overall: no lit-screen contrast
++        return None
++    mask = (gray >= threshold).astype(np.uint8) * 255
++    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(3, w // 60), max(3, h // 60)))
++    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
++    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
++    best = None
++    for index in range(1, count):
++        x, y, bw, bh, area = stats[index]
++        box_area = bw * bh
++        if box_area < MIN_AREA_FRAC * w * h or box_area > MAX_AREA_FRAC * w * h:
++            continue
++        if area / max(1, box_area) < MIN_FILL:
++            continue
++        if (y + bh / 2) / h > 0.5:
++            # Stage screens and monitors sit above the people in a wide
++            # shot; a bright patch at chest height (a jacket panel) is
++            # not a screen. Limit: a phone/laptop screen low in frame is missed.
++            continue
++        aspect = bw / max(1, bh)
++        if not (MIN_ASPECT <= aspect <= MAX_ASPECT):
++            continue
++        # A screen SHOWS something: colour or detail inside. A white
++        # jacket panel or a glare of stage lights is flat and colourless.
++        inner = (slice(y, y + bh), slice(x, x + bw))
++        saturation = float(hsv[inner][..., 1].mean())
++        detail = float((edges[inner] > 0).mean())
++        if saturation < 60 and detail < 0.05:
++            continue
++        if best is None or box_area > best[4]:
++            best = (x, y, bw, bh, box_area)
++    if best is None:
++        return None
++    x, y, bw, bh, _ = best
++    return x / w, (x + bw) / w, y / h, (y + bh) / h
++
++
++def _frame_at(source: Path, t: float) -> Optional[Any]:
++    import numpy as np
++
++    try:
++        probe = subprocess.run(
++            ["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(source),
++             "-frames:v", "1", "-vf", f"scale={PROBE_WIDTH}:-2", "-f", "rawvideo",
++             "-pix_fmt", "bgr24", "pipe:1"],
++            capture_output=True, timeout=60,
++        )
++    except Exception:
++        return None
++    data = probe.stdout
++    if probe.returncode != 0 or not data:
++        return None
++    height = len(data) // (PROBE_WIDTH * 3)
++    if height <= 0:
++        return None
++    return np.frombuffer(data[: PROBE_WIDTH * 3 * height], dtype=np.uint8).reshape(height, PROBE_WIDTH, 3)
++
++
++def _face_boxes(frame: Any) -> List[Tuple[float, float, float, float]]:
++    """(x, y, w, h) fractions of the main person's face and comparable ones."""
++    try:
++        from .face_detection import open_yunet_detector
++
++        detector = open_yunet_detector()
++        if detector is None:
++            return []
++        h, w = frame.shape[:2]
++        boxes = [b for b in detector.detect(frame) if b[2] * b[3] >= MIN_FACE_AREA_FRAC * w * h]
++        if not boxes:
++            return []
++        # The main person (largest face) and anyone comparable; the rest
++        # of the audience is not who the shot is about.
++        largest = max(b[2] * b[3] for b in boxes)
++        return [(b[0] / w, b[1] / h, b[2] / w, b[3] / h) for b in boxes if b[2] * b[3] >= 0.3 * largest]
++    except Exception:
++        return []
++
++
++def _faces(frame: Any) -> List[Tuple[float, float]]:
++    return [(x, x + bw) for x, _y, bw, _bh in _face_boxes(frame)]
++
++
++def _screen_tile(screen: Tuple[float, float, float, float], width: int, height: int) -> Dict[str, int]:
++    """Top tile (1080x960 shape) holding the whole screen, in source px."""
++    aspect = 1080.0 / 960.0
++    left, right, top, bottom = screen
++    sw, sh = (right - left) * width, (bottom - top) * height
++    tile_w, tile_h = sw * 1.06, sh * 1.06
++    if tile_w / tile_h > aspect:
++        tile_h = tile_w / aspect
++    else:
++        tile_w = tile_h * aspect
++    if tile_h > height:  # cannot be taller than the frame: trim width instead
++        tile_h, tile_w = float(height), height * aspect
++    if tile_w > width:
++        tile_w, tile_h = float(width), width / aspect
++    cx, cy = (left + right) / 2 * width, (top + bottom) / 2 * height
++    x = min(max(0.0, cx - tile_w / 2), width - tile_w)
++    y = min(max(0.0, cy - tile_h / 2), height - tile_h)
++    even = lambda v: int(v) // 2 * 2
++    return {"tile_x": even(x), "tile_y": even(y), "tile_w": even(tile_w), "tile_h": even(tile_h)}
++
++
++RUN_SAMPLE_SEC = 1.5
++
++
++def clip_to_source(t: float, ranges: Sequence[Tuple[float, float]]) -> float:
++    """Clip-timeline seconds -> source seconds through the keep ranges."""
++    for start, end in ranges:
++        length = end - start
++        if t <= length:
++            return start + max(0.0, t)
++        t -= length
++    return ranges[-1][1] if ranges else t
++
++
++def _sample(source: Path, t_source: float) -> Tuple[Optional[Tuple[float, float, float, float]], List[Tuple[float, float, float, float]]]:
++    frame = _frame_at(source, t_source)
++    if frame is None:
++        return None, []
++    found = find_bright_screen(frame)
++    if not found:
++        return None, []
++    # Faces on the screen are its content, not the reactor.
++    faces = [b for b in _face_boxes(frame)
++             if not (found[0] <= b[0] + b[2] / 2 <= found[1] and found[2] <= b[1] + b[3] / 2 <= found[3])]
++    return found, faces
++
++
++def decide(screens: Sequence[Tuple[float, float, float, float]],
++           faces: Sequence[Tuple[float, float, float, float]],
++           src_width: int, src_height: int) -> Optional[Dict[str, Any]]:
++    """Window or stack for a run of samples that showed a screen, or None."""
++    if len(screens) < 2 or src_width <= 0 or src_height <= 0:
++        return None
++    ordered = sorted(screens, key=lambda b: (b[1] - b[0]) * (b[3] - b[2]))
++    screen = ordered[len(ordered) // 2]  # median-sized detection
++    left, right = screen[0], screen[1]
++    for f in faces:
++        left, right = min(left, f[0]), max(right, f[0] + f[2])
++    left, right = max(0.0, left - MARGIN_FRAC), min(1.0, right + MARGIN_FRAC)
++    min_frac = (1080.0 * src_height / 1920.0) / src_width
++    span = max(right - left, min_frac)
++    info = {"screen": [round(float(v), 3) for v in screen], "faces": len(faces), "samples": len(screens)}
++    if span <= MAX_UNION_FRAC:
++        crop_w = int(round(span * src_width)) // 2 * 2
++        center = (left + right) / 2 * src_width
++        x = int(round(min(max(0.0, center - crop_w / 2), src_width - crop_w)))
++        return {"mode": "fit_window", "crop_w": crop_w, "x": x, **info}
++    if not faces:
++        return None
++    # Screen and person too far apart for one window: stack them, screen
++    # on top (readable), the main person below.
++    from .reframe_plan import _split_region
++
++    main = max(faces, key=lambda b: b[2] * b[3])
++    face_px = (main[0] * src_width, main[1] * src_height, main[2] * src_width, main[3] * src_height)
++    return {"mode": "stack", "top": _screen_tile(screen, src_width, src_height),
++            "bottom": _split_region(face_px, src_width, src_height), **info}
++
++
++def screen_runs(source: Path, ranges: Sequence[Tuple[float, float]], duration: float,
++                src_width: int, src_height: int) -> List[Dict[str, Any]]:
++    """[{start, end, decision}] on the clip timeline where a screen is shown."""
++    times = [RUN_SAMPLE_SEC / 2 + k * RUN_SAMPLE_SEC for k in range(max(1, int(duration / RUN_SAMPLE_SEC)))]
++    hits = [(t, *_sample(source, clip_to_source(t, ranges))) for t in times]
++    runs: List[Dict[str, Any]] = []
++    current: Optional[Dict[str, Any]] = None
++    misses = 0
++    for t, screen, faces in hits:
++        if screen is not None:
++            if current is None:
++                current = {"start": t, "end": t, "screens": [], "faces": []}
++            current["end"] = t
++            current["screens"].append(screen)
++            current["faces"].extend(faces)
++            misses = 0
++        elif current is not None:
++            misses += 1
++            if misses > 1:  # one missed sample does not end a run
++                runs.append(current)
++                current, misses = None, 0
++    if current is not None:
++        runs.append(current)
++    # Runs a few samples apart are one screen moment (a reaction cutaway,
++    # a missed detection): merge them so one shot is never split by a gap.
++    merged: List[Dict[str, Any]] = []
++    for run in runs:
++        if merged and run["start"] - merged[-1]["end"] <= 3 * RUN_SAMPLE_SEC:
++            merged[-1]["end"] = run["end"]
++            merged[-1]["screens"].extend(run["screens"])
++            merged[-1]["faces"].extend(run["faces"])
++        else:
++            merged.append(run)
++    runs = merged
++    out = []
++    for run in runs:
++        decision = decide(run["screens"], run["faces"], src_width, src_height)
++        if decision is not None:
++            out.append({"start": max(0.0, run["start"] - RUN_SAMPLE_SEC / 2),
++                        "end": min(duration, run["end"] + RUN_SAMPLE_SEC / 2), "decision": decision})
++    return out
++
++
++def _split_fit_shots_at(plan: Dict[str, Any], edges: Sequence[float]) -> None:
++    """Cut fit shots at run edges so a run maps onto whole shots."""
++    out: List[Dict[str, Any]] = []
++    for shot in plan.get("shots") or []:
++        if shot.get("mode") != "fit" or shot.get("fit_windows"):
++            out.append(shot)
++            continue
++        cuts = [e for e in edges if float(shot["start"]) + 0.5 < e < float(shot["end"]) - 0.5]
++        bounds = [float(shot["start"])] + sorted(cuts) + [float(shot["end"])]
++        for a, b in zip(bounds, bounds[1:]):
++            out.append({**shot, "start": a, "end": b})
++    plan["shots"] = out
++
++
++def apply_screen_windows(plan: Dict[str, Any], source: Path,
++                         ranges: Optional[Sequence[Tuple[float, float]]] = None,
++                         all_modes: bool = False,
++                         runs: Optional[List[Dict[str, Any]]] = None) -> int:
++    """Frame every shot inside a screen run; returns how many shots changed.
++
++    Shots and runs are on the CLIP timeline (``ranges`` maps them to the
++    source). Fit shots always qualify (and are cut at run edges first);
++    with ``all_modes`` a face-crop shot mostly inside a run qualifies too
++    (the crop would cut the screen away). Existing split shots
++    (two-person stacks) are left alone.
++    """
++    width, height = int(plan.get("width") or 0), int(plan.get("height") or 0)
++    shots = plan.get("shots") or []
++    if not shots:
++        return 0
++    duration = max(float(sh["end"]) for sh in shots)
++    if runs is None:
++        runs = screen_runs(source, list(ranges or [(0.0, duration)]), duration, width, height)
++    if not runs:
++        return 0
++    _split_fit_shots_at(plan, [edge for r in runs for edge in (r["start"], r["end"])])
++    applied = 0
++    for shot in plan["shots"]:
++        mode = shot.get("mode")
++        if mode == "split" or shot.get("fit_windows"):
++            continue
++        if mode != "fit" and not all_modes:
++            continue
++        start, end = float(shot["start"]), float(shot["end"])
++        overlaps = [(min(end, r["end"]) - max(start, r["start"]), r) for r in runs]
++        overlaps = [(o, r) for o, r in overlaps if o > 0]
++        if not overlaps:
++            continue
++        best_overlap, run = max(overlaps, key=lambda item: item[0])
++        if best_overlap < 0.5 * (end - start):
++            continue  # the screen is only a small part of this shot
++        decision = run["decision"]
++        if decision["mode"] == "fit_window":
++            shot["mode"] = "fit"
++            shot["reason"] = "screen_subject_fit"
++            shot["fit_windows"] = [[start, end, decision["crop_w"], decision["x"]]]
++        else:
++            shot["mode"] = "split"
++            shot["reason"] = "screen_subject_stack"
++            shot["split"] = {"left": dict(decision["top"]), "right": dict(decision["bottom"])}
++        shot["screen_subject"] = decision
++        applied += 1
++    if applied:
++        logger.info("Screen subject: %d shot(s) framed in %d screen run(s): %s", applied, len(runs),
++                    [(round(r["start"], 1), round(r["end"], 1), r["decision"]["mode"]) for r in runs])
++    return applied
+diff --git a/backend/tests/unit/test_screen_subject.py b/backend/tests/unit/test_screen_subject.py
+new file mode 100644
+index 0000000..9199e84
+--- /dev/null
++++ b/backend/tests/unit/test_screen_subject.py
+@@ -0,0 +1,96 @@
++"""Step 3: a lit screen that carries the story is framed, never cropped away."""
++from __future__ import annotations
++
++import numpy as np
++
++from src.media import screen_subject as ss
++
++
++def _dark_frame(w=960, h=540):
++    rng = np.random.default_rng(0)
++    return (rng.integers(10, 40, size=(h, w, 3))).astype(np.uint8)
++
++
++def _textured_screen(frame, x0, y0, x1, y1):
++    frame[y0:y1, x0:x1] = (230, 120, 40)  # bright, saturated (BGR blue-ish)
++    frame[y0 + 10:y1 - 10:12, x0 + 10:x1 - 10] = (255, 255, 255)  # text-like lines
++    return frame
++
++
++def test_detects_a_lit_content_screen_high_in_frame():
++    frame = _textured_screen(_dark_frame(), 40, 20, 440, 280)
++    found = ss.find_bright_screen(frame)
++    assert found is not None
++    left, right, top, bottom = found
++    assert left < 0.06 and 0.44 < right < 0.48 and top < 0.06 and 0.5 < bottom < 0.54
++
++
++def test_flat_white_patch_and_low_bright_patch_are_not_screens():
++    flat = _dark_frame()
++    flat[20:280, 40:440] = 245  # flat, colourless (a white wall / jacket)
++    assert ss.find_bright_screen(flat) is None
++    low = _textured_screen(_dark_frame(), 40, 300, 440, 530)  # chest height
++    assert ss.find_bright_screen(low) is None
++
++
++def test_screen_tile_holds_the_whole_screen_in_the_tile_shape():
++    tile = ss._screen_tile((0.0, 0.466, 0.0, 0.578), 3840, 2160)
++    assert abs(tile["tile_w"] / tile["tile_h"] - 1080 / 960) < 0.01
++    assert tile["tile_w"] >= 0.466 * 3840 * 0.99 or tile["tile_h"] == 2160 // 2 * 2
++    assert tile["tile_x"] >= 0 and tile["tile_x"] + tile["tile_w"] <= 3840
++    assert tile["tile_y"] >= 0 and tile["tile_y"] + tile["tile_h"] <= 2160
++
++
++def test_apply_turns_shots_inside_screen_runs_into_window_or_stack(monkeypatch, tmp_path):
++    window = {"mode": "fit_window", "crop_w": 2000, "x": 100}
++    stack = {"mode": "stack", "top": {"tile_x": 0, "tile_y": 0, "tile_w": 1894, "tile_h": 1684},
++             "bottom": {"tile_x": 2796, "tile_y": 1034, "tile_w": 754, "tile_h": 646}}
++    runs = [{"start": 0.0, "end": 10.0, "decision": window}, {"start": 10.0, "end": 20.0, "decision": stack}]
++    seen = {}
++    monkeypatch.setattr(ss, "screen_runs", lambda src, ranges, dur, w, h: seen.update(ranges=ranges) or runs)
++    plan = {"width": 3840, "height": 2160, "shots": [
++        {"start": 0.0, "end": 10.0, "mode": "fit"},
++        {"start": 10.0, "end": 15.0, "mode": "fit"},
++        {"start": 15.0, "end": 20.0, "mode": "fit"},
++        {"start": 20.0, "end": 30.0, "mode": "fit"},
++        {"start": 30.0, "end": 40.0, "mode": "single"},
++    ]}
++    assert ss.apply_screen_windows(plan, tmp_path / "src.mp4", [(141.0, 181.0)]) == 3
++    assert seen["ranges"] == [(141.0, 181.0)]
++    a, b, c, d, e = plan["shots"]
++    assert a["mode"] == "fit" and a["fit_windows"] == [[0.0, 10.0, 2000, 100]]
++    assert b["mode"] == c["mode"] == "split" and b["split"] == c["split"]  # one continuous stack
++    assert b["split"]["left"]["tile_w"] == 1894  # top tile = the screen
++    assert d == {"start": 20.0, "end": 30.0, "mode": "fit"}
++    assert e["mode"] == "single"
++
++
++def test_clip_time_maps_through_keep_ranges():
++    assert ss.clip_to_source(5.0, [(141.0, 201.0)]) == 146.0
++    assert ss.clip_to_source(12.0, [(10.0, 20.0), (50.0, 60.0)]) == 52.0
++
++
++def test_decide_prefers_one_window_when_screen_and_person_are_close():
++    screens = [(0.10, 0.40, 0.0, 0.5)] * 3
++    near = [(0.42, 0.3, 0.05, 0.08)]
++    far = [(0.85, 0.3, 0.05, 0.08)]
++    assert ss.decide(screens, near, 3840, 2160)["mode"] == "fit_window"
++    assert ss.decide(screens, far, 3840, 2160)["mode"] == "stack"
++    assert ss.decide(screens[:1], near, 3840, 2160) is None  # one sighting is not a run
++
++
++def test_switch_default_off(monkeypatch):
++    monkeypatch.delenv("SCREEN_SUBJECT", raising=False)
++    assert not ss.screen_subject_enabled()
++
++
++def test_crop_shots_showing_a_screen_are_stacked_only_with_all_modes(monkeypatch, tmp_path):
++    stack = {"mode": "stack", "top": {"tile_x": 0, "tile_y": 0, "tile_w": 1080, "tile_h": 960},
++             "bottom": {"tile_x": 2000, "tile_y": 1000, "tile_w": 540, "tile_h": 480}}
++    monkeypatch.setattr(ss, "screen_runs", lambda *_a: [{"start": 0.0, "end": 18.0, "decision": stack}])
++    plan = {"width": 3840, "height": 2160, "shots": [{"start": 0.0, "end": 9.0, "mode": "single"},
++                                                    {"start": 9.0, "end": 18.0, "mode": "split", "split": {}}]}
++    assert ss.apply_screen_windows(plan, tmp_path / "s.mp4") == 0
++    assert ss.apply_screen_windows(plan, tmp_path / "s.mp4", all_modes=True) == 1
++    assert plan["shots"][0]["mode"] == "split" and plan["shots"][0]["reason"] == "screen_subject_stack"
++    assert plan["shots"][1]["split"] == {}  # an existing two-person stack is never touched
+diff --git a/tools/phase2/auto_edit.py b/tools/phase2/auto_edit.py
+index e52e94f..3cb8142 100644
+--- a/tools/phase2/auto_edit.py
++++ b/tools/phase2/auto_edit.py
+@@ -136,7 +136,8 @@ async def main_async(a) -> int:
+     # owner approves the render, Sanji Q15): the harness renders with them.
+     for _switch, _value in (("EDL_CONTENT_CUTS", "on"), ("FIT_PAD", "ambient"),
+                             ("REFRAME_HIRES_PROBE", "on"), ("CAPTION_LOOP_FILTER", "on"),
+-                            ("CAPTION_PHRASE_SPLIT", "on")):
++                            ("CAPTION_PHRASE_SPLIT", "on"), ("SELECTION_EVENTS", "on"),
++                            ("CLIP_CAP_KEEP_VISUAL_TAIL", "on"), ("SCREEN_SUBJECT", "on")):
+         os.environ.setdefault(_switch, _value)
+     from src.ai import get_most_relevant_parts_by_transcript
+     from src.auto_director import edl as E
+@@ -153,8 +154,30 @@ async def main_async(a) -> int:
+              for w in data.get("words") or []]
+     print(f"transcribed {len(words)} words in {timings['transcribe_s']}s", flush=True)
+ 
++    # Visual story moments (Step 4). The SigLIP weights are reused from the
++    # Phase 1 live run's cache when present (no download).
++    phase1_models = ROOT / "test-footage" / "phase1" / "live" / "temp" / "models" / "huggingface"
++    if phase1_models.is_dir():
++        os.environ.setdefault("HF_HOME", str(phase1_models))
++        os.environ.setdefault("HF_HUB_OFFLINE", "1")
++    from src.auto_director import story_events as SE
++    story_spans = []
++    if SE.story_events_enabled():
++        t = time.time()
++        story_spans = SE.detect_story_events(video)
++        timings["story_events_s"] = round(time.time() - t, 1)
++        print(f"story events: {len(story_spans)} spans in {timings['story_events_s']}s", flush=True)
++
+     t = time.time()
+-    if a.select == "fixed":
++    if a.select == "events":
++        total = words[-1]["end"] if words else 0.0
++        win = SE.event_window(story_spans, words, total)
++        segments = [] if win is None else [{
++            "start_time": win["start_time"], "end_time": win["end_time"], "hook_title": None,
++            "virality_score": None, "hook_type": "visual-event-window",
++            "reasoning": "No-model fallback: strongest visual story moment with its lead-in "
++                         + str([(e["start"], e["end"], e["label"]) for e in win["events"]])}]
++    elif a.select == "fixed":
+         # Pipeline check without an AI model: sentence-aligned windows, clearly labelled.
+         segments = fixed_windows(words, a.clips)
+     else:
+@@ -164,10 +187,19 @@ async def main_async(a) -> int:
+     print(f"selected {len(segments)} moments in {timings['select_s']}s", flush=True)
+ 
+     profile = E.load_profile(a.niche)
+-    report = {"video": str(video), "niche": a.niche, "llm": a.llm, "stock_broll": bool(stock), "timings": timings, "clips": []}
++    report = {"video": str(video), "niche": a.niche, "llm": a.llm, "stock_broll": bool(stock), "timings": timings, "clips": [],
++              "story_events": [e.as_dict() for e in story_spans]}
+     for i, seg in enumerate(segments):
+         s = seg.model_dump() if hasattr(seg, "model_dump") else dict(seg)
+         start, end = _sec(s["start_time"]), _sec(s["end_time"])
++        payoff = None
++        if story_spans:
++            # Same rule as services/video_service.py: never cut away
++            # before a visual story moment finishes.
++            new_end, payoff = SE.extend_to_payoff(start, end, story_spans, words)
++            if payoff:
++                print(f"payoff: {start:.1f}-{end:.1f} extended to {new_end:.1f} ({payoff['because']['label']})", flush=True)
++                end = new_end
+         dur = end - start
+         rel = [{"word": w["text"], "text": w["text"], "start": round(w["start"] - start, 3), "end": round(w["end"] - start, 3)}
+                for w in words if start <= w["start"] < end]
+@@ -224,7 +256,7 @@ async def main_async(a) -> int:
+         report["clips"].append({
+             "clip": clip_path.name, "render_ok": ok, "render_s": render_s,
+             "source_start": start, "source_end": end, "duration": round(dur, 1),
+-            "selection": {"virality": s.get("virality_score"), "hook_type": s.get("hook_type"),
++            "selection": {"virality": s.get("virality_score"), "hook_type": s.get("hook_type"), "payoff": payoff,
+                           "hook_title": s.get("hook_title"), "reasoning": s.get("reasoning")},
+             "decisions": {
+                 "segments": len(edl.get("segments") or []),
+@@ -285,7 +317,8 @@ def main() -> int:
+     ap.add_argument("--clips", type=int, default=2)
+     ap.add_argument("--env-file")
+     ap.add_argument("--llm", default="auto")
+-    ap.add_argument("--select", choices=("ai", "fixed"), default="ai")
++    ap.add_argument("--select", choices=("ai", "fixed", "events"), default="ai",
++                    help="events = no-model fallback from visual story moments (SELECTION_EVENTS)")
+     ap.add_argument("--ollama-url", default="http://localhost:11434/v1")
+     ap.add_argument("--template", choices=("auto", "plain"), default="auto",
+                     help="plain = cuts + captions only (no B-roll, music, SFX, effects); auto = full template")
+-- 
+2.56.0.windows.2
+

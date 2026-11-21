@@ -1,0 +1,960 @@
+From 023f5f10a4a4a6188107dfbc8106fa62e72c74be Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 21:08:19 +0530
+Subject: [PATCH 05/22] feat(reframe): find a streamer's facecam window from
+ its border
+
+The face-first reactor check needs a face in most samples, in an upper
+corner, with another face lower down. Real streams miss all three: the
+facecam face is ~16 px after the analysis downscale, cameras float
+half-way down a side, and gameplay rarely shows faces (Kai Cenat 1080p:
+face found in 6/121 samples).
+
+facecam_rect finds the camera window instead: per-pixel median Sobel
+edges over ~10 frames, side-anchored rectangles of plausible size and
+aspect (overlapping candidates collapsed), a YuNet face on the
+full-resolution crop in >= 40 % of frames, and no second camera-sized
+face fixed elsewhere (video calls, Omegle splits). The EDL planner
+delegates such clips to the plain path, where choose_reaction_layout
+falls back to the window when the face-first check misses; the
+reaction layout now handles insets that do not touch the top
+(inset_bottom; identical for top-anchored insets).
+
+Real-video check (30 windows, 15 videos): 14/16 streamer facecams,
+2/2 lecture presenter windows, 0 false positives on podcast, vlog,
+comedy, talking head and both iShowSpeed layouts. Misses: Kai looking
+down at his desk. FACECAM_RECT_DETECT=0 switches it off.
+
+Also adds media/gaming_templates.py (face-on-top stack renderer, wired
+in the next commit) and a Gaming HD entry in the Phase 2 runner.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                            |   1 +
+ backend/src/media/facecam_rect.py       | 327 ++++++++++++++++++++++++
+ backend/src/media/gaming_templates.py   | 176 +++++++++++++
+ backend/src/media/reaction_layout.py    |  58 +++--
+ backend/src/media/reframe_plan.py       |  35 ++-
+ backend/tests/unit/test_facecam_rect.py | 199 ++++++++++++++
+ tools/phase2/run_all.py                 |   1 +
+ 7 files changed, 769 insertions(+), 28 deletions(-)
+ create mode 100644 backend/src/media/facecam_rect.py
+ create mode 100644 backend/src/media/gaming_templates.py
+ create mode 100644 backend/tests/unit/test_facecam_rect.py
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 0711168..e4d52ee 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,7 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-17
++- **Improved:** Streamer clips now find the facecam even when it sits half-way down the side of the screen or the face is small, and even when the game shows no faces. The app looks for the camera window itself, checks there is a face in it, and then puts the streamer on top and the game below. It ignores video calls (several people in fixed windows) and stream overlays with a printed face. Set `FACECAM_RECT_DETECT=0` to switch this off.
+ - **Fixed:** Video-call podcasts (each person in their own window) sometimes came out as the whole call shrunk into the middle of the vertical frame, with small faces. A still face in a top corner was being mistaken for a streamer's facecam. Now a facecam also needs a camera frame the app can actually measure; otherwise the clip gets the normal layout, which shows both people large, one above the other. Set `REFRAME_REACTOR_NEEDS_INSET=0` to restore the previous check.
+ - **Fixed:** On a computer with an NVIDIA graphics card but without the CUDA libraries installed (common outside the Docker image), transcription crashed or hung. It now switches to the processor once and remembers that for the rest of the run. `WHISPER_DEVICE=cpu` forces the processor.
+ - **Improved:** Clip quality checks can now flag a clip that is far from the -14 LUFS loudness short-form platforms use, and a clip that opens or ends mid-sentence or cuts a word. Both are warnings only and run when the pipeline supplies the loudness target and transcript.
+diff --git a/backend/src/media/facecam_rect.py b/backend/src/media/facecam_rect.py
+new file mode 100644
+index 0000000..82dc53b
+--- /dev/null
++++ b/backend/src/media/facecam_rect.py
+@@ -0,0 +1,327 @@
++"""Find a streamer's facecam rectangle from its persistent border.
++
++The face-first reactor check (``reaction_layout.find_reactor_face``) needs a
++face detected in most sampled frames, in an upper corner, with another face
++lower in the frame. Real streams break all three: the facecam face is small
++in the analysis pass (often ~16 px after downscaling), the camera can float
++half-way down a side, and gameplay rarely has faces. This module looks for
++the camera window itself instead:
++
++1. Persistent edges: the per-pixel median Sobel response over frames spread
++   across the clip. Gameplay edges move; an overlay border does not.
++2. A side-anchored rectangle: two long horizontal edge runs with matching
++   extents and an inner vertical run joining them (an outer vertical run, or
++   the frame edge, on the other side). Top/bottom may be the frame edge.
++3. A face inside: YuNet on the full-resolution crop, upscaled when small,
++   must find a face in at least ``FACE_FRACTION`` of the frames.
++
++Switch: ``FACECAM_RECT_DETECT`` (default on; ``0``/``off`` disables).
++"""
++
++from __future__ import annotations
++
++import os
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any, Callable, List, Optional, Sequence, Tuple
++
++import cv2
++import numpy as np
++
++from .common import logger
++
++Box = Tuple[float, float, float, float]
++
++WORK_WIDTH = 960
++EDGE_THRESHOLD = 36.0
++MIN_W_FRAC, MAX_W_FRAC = 0.10, 0.40
++MIN_H_FRAC, MAX_H_FRAC = 0.15, 0.55
++MIN_ASPECT, MAX_ASPECT = 0.9, 2.2
++MIN_FACE_HEIGHT_FRAC = 0.22
++SIDE_FRAC = 0.15
++LINE_COVERAGE = 0.70
++FACE_FRACTION = 0.40
++MIN_FRAMES = 6
++SECOND_CAMERA_PRESENCE = 0.9
++SECOND_CAMERA_SIZE = (0.6, 1.6)
++
++
++@dataclass(frozen=True)
++class FacecamRect:
++    rect: Box          # (x, y, w, h) in source pixels
++    face: Box          # median face box in source pixels
++    side: str          # "left" or "right"
++    face_frames: int
++    frames: int
++
++
++def facecam_rect_enabled() -> bool:
++    return os.getenv("FACECAM_RECT_DETECT", "1").strip().lower() not in {
++        "0", "false", "no", "off",
++    }
++
++
++def _read_frames(path: Path, times: Sequence[float]) -> List[np.ndarray]:
++    cap = cv2.VideoCapture(str(path))
++    frames: List[np.ndarray] = []
++    try:
++        for t in times:
++            cap.set(cv2.CAP_PROP_POS_MSEC, float(t) * 1000.0)
++            ok, frame = cap.read()
++            if ok and frame is not None:
++                frames.append(frame)
++    finally:
++        cap.release()
++    return frames
++
++
++def persistent_edges(gray_frames: Sequence[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
++    """(horizontal-edge map, vertical-edge map): per-pixel medians over frames."""
++    horizontal, vertical = [], []
++    for gray in gray_frames:
++        g = gray.astype(np.float32)
++        horizontal.append(np.abs(cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3)))
++        vertical.append(np.abs(cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3)))
++    return np.median(np.stack(horizontal), axis=0), np.median(np.stack(vertical), axis=0)
++
++
++def _coverage(mask_line: np.ndarray) -> float:
++    return float(mask_line.mean()) if mask_line.size else 0.0
++
++
++def _line_strength(edge: np.ndarray, axis_index: int, start: int, end: int, horizontal: bool) -> float:
++    """Fraction of a straight line (allowing 1 px jitter) above the threshold."""
++    lo, hi = sorted((start, end))
++    if hi - lo < 4:
++        return 0.0
++    if horizontal:
++        rows = edge[max(0, axis_index - 1): axis_index + 2, lo:hi]
++        return _coverage((rows > EDGE_THRESHOLD).any(axis=0))
++    cols = edge[lo:hi, max(0, axis_index - 1): axis_index + 2]
++    return _coverage((cols > EDGE_THRESHOLD).any(axis=1))
++
++
++def _peaks(profile: np.ndarray, min_value: float, min_gap: int) -> List[int]:
++    order = np.argsort(profile)[::-1]
++    picked: List[int] = []
++    for index in order:
++        if profile[index] < min_value:
++            break
++        if all(abs(int(index) - p) >= min_gap for p in picked):
++            picked.append(int(index))
++        if len(picked) >= 12:
++            break
++    return picked
++
++
++def find_rect_candidates(
++    horizontal: np.ndarray, vertical: np.ndarray
++) -> List[Tuple[float, Box, str]]:
++    """Side-anchored rectangles in work pixels, best first: (score, box, side)."""
++    height, width = horizontal.shape
++    candidates: List[Tuple[float, Box, str]] = []
++    min_w, max_w = int(width * MIN_W_FRAC), int(width * MAX_W_FRAC)
++    min_h, max_h = int(height * MIN_H_FRAC), int(height * MAX_H_FRAC)
++    h_mask = horizontal > EDGE_THRESHOLD
++    v_mask = vertical > EDGE_THRESHOLD
++    for side in ("left", "right"):
++        band = slice(0, int(width * (SIDE_FRAC + MAX_W_FRAC))) if side == "left" else slice(
++            int(width * (1 - SIDE_FRAC - MAX_W_FRAC)), width
++        )
++        offset = band.start or 0
++        # Inner vertical edge candidates: columns with long persistent runs.
++        col_profile = v_mask[:, band].mean(axis=0)
++        row_profile = h_mask[:, band].mean(axis=1)
++        inner_xs = [x + offset for x in _peaks(col_profile, min_h / height * LINE_COVERAGE, 6)]
++        rows = _peaks(row_profile, min_w / (band.stop - offset) * LINE_COVERAGE, 6)
++        rows = sorted(set(rows + [0, height - 1]))
++        for inner in inner_xs:
++            # Outer edge: the frame edge, or a persistent vertical line.
++            outer_options = [0] if side == "left" else [width - 1]
++            for x in inner_xs:
++                if x != inner and (x < inner if side == "left" else x > inner):
++                    outer_options.append(x)
++            for outer in outer_options:
++                x0, x1 = sorted((outer, inner))
++                w = x1 - x0
++                if not (min_w <= w <= max_w):
++                    continue
++                if side == "left" and x0 > width * SIDE_FRAC:
++                    continue
++                if side == "right" and x1 < width * (1 - SIDE_FRAC):
++                    continue
++                for i, top in enumerate(rows):
++                    for bottom in rows[i + 1:]:
++                        h = bottom - top
++                        if not (min_h <= h <= max_h) or not (MIN_ASPECT <= w / h <= MAX_ASPECT):
++                            continue
++                        top_ok = top <= 1 or _line_strength(horizontal, top, x0, x1, True) >= LINE_COVERAGE
++                        bottom_ok = bottom >= height - 2 or _line_strength(horizontal, bottom, x0, x1, True) >= LINE_COVERAGE
++                        inner_cov = _line_strength(vertical, inner, top, bottom, False)
++                        outer_ok = outer in (0, width - 1) or _line_strength(vertical, outer, top, bottom, False) >= LINE_COVERAGE
++                        if not (top_ok and bottom_ok and outer_ok and inner_cov >= LINE_COVERAGE):
++                            continue
++                        # Prefer the outermost valid window: a static room
++                        # behind the streamer draws persistent lines INSIDE
++                        # the camera too, and those must not become its edge.
++                        score = inner_cov + 4.0 * (w * h) / (width * height)
++                        candidates.append((score, (float(x0), float(top), float(w), float(h)), side))
++    candidates.sort(key=lambda item: item[0], reverse=True)
++    # Near-duplicates (one edge a few pixels off) would crowd the short
++    # list the face check reads; keep only the best of each overlapping set.
++    distinct: List[Tuple[float, Box, str]] = []
++    for candidate in candidates:
++        if all(_iou(candidate[1], kept[1]) < 0.5 for kept in distinct):
++            distinct.append(candidate)
++    return distinct
++
++
++def _iou(a: Box, b: Box) -> float:
++    ax, ay, aw, ah = a
++    bx, by, bw, bh = b
++    ix = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
++    iy = max(0.0, min(ay + ah, by + bh) - max(ay, by))
++    inter = ix * iy
++    union = aw * ah + bw * bh - inter
++    return inter / union if union > 0 else 0.0
++
++
++def _default_detector() -> Optional[Callable[[np.ndarray], List[Box]]]:
++    try:
++        from .face_detection import open_yunet_detector
++
++        detector = open_yunet_detector()
++    except Exception:
++        return None
++    if detector is None:
++        return None
++    return lambda frame: [tuple(map(float, box[:4])) for box in detector.detect(frame)]
++
++
++def _faces_in_crop(
++    frames: Sequence[np.ndarray], rect: Box, detect: Callable[[np.ndarray], List[Box]]
++) -> List[Box]:
++    x, y, w, h = (int(round(v)) for v in rect)
++    found: List[Box] = []
++    for frame in frames:
++        crop = frame[y:y + h, x:x + w]
++        if crop.size == 0:
++            continue
++        scale = max(1.0, 480.0 / max(1, crop.shape[1]))
++        if scale > 1.0:
++            crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
++        faces = [
++            f for f in detect(crop)
++            if f[3] >= crop.shape[0] * MIN_FACE_HEIGHT_FRAC
++            and 0 <= f[0] + f[2] / 2 <= crop.shape[1]
++            and 0 <= f[1] + f[3] / 2 <= crop.shape[0]
++        ]
++        if not faces:
++            continue
++        fx, fy, fw, fh = max(faces, key=lambda f: f[2] * f[3])
++        found.append((x + fx / scale, y + fy / scale, fw / scale, fh / scale))
++    return found
++
++
++def _second_camera(
++    frames: Sequence[np.ndarray], rect: Box, cam_face: Box,
++    detect: Callable[[np.ndarray], List[Box]],
++) -> bool:
++    """True when another camera-sized face sits in one place OUTSIDE the
++    window in nearly every frame.
++
++    That is a video call or an Omegle-style split (each person in a fixed
++    window of similar size), not a facecam over changing content. Measured
++    on real streams: call partners appear in 10/10 samples at 0.9-1.2x the
++    cam face; GTA cutscene faces in 7-8/10 at 1.5-3.5x, so they do not count.
++    """
++    height, width = frames[0].shape[:2]
++    x, y, w, h = rect
++    radius = width * 0.12
++    # Each cluster: [centre_x, centre_y, frame indices, face heights].
++    clusters: List[List[Any]] = []
++    for index, frame in enumerate(frames):
++        for f in detect(frame):
++            cx, cy = f[0] + f[2] / 2, f[1] + f[3] / 2
++            if x <= cx <= x + w and y <= cy <= y + h:
++                continue
++            for cluster in clusters:
++                if abs(cluster[0] - cx) <= radius and abs(cluster[1] - cy) <= radius:
++                    cluster[2].add(index)
++                    cluster[3].append(f[3])
++                    break
++            else:
++                clusters.append([cx, cy, {index}, [f[3]]])
++    for _cx, _cy, seen, heights in clusters:
++        ratio = float(np.median(heights)) / max(1.0, cam_face[3])
++        if len(seen) >= len(frames) * SECOND_CAMERA_PRESENCE and (
++            SECOND_CAMERA_SIZE[0] <= ratio <= SECOND_CAMERA_SIZE[1]
++        ):
++            return True
++    return False
++
++
++def find_facecam_rect(
++    path: Path,
++    width: int,
++    height: int,
++    times: Sequence[float],
++    detect: Optional[Callable[[np.ndarray], List[Box]]] = None,
++) -> Optional[FacecamRect]:
++    """The facecam window of a stream, or None when there is no clear one."""
++    if not facecam_rect_enabled() or width <= 0 or height <= 0:
++        return None
++    frames = [f for f in _read_frames(path, times) if f.shape[:2] == (height, width)]
++    if len(frames) < MIN_FRAMES:
++        return None
++    scale = min(1.0, WORK_WIDTH / float(width))
++    work = [
++        cv2.cvtColor(
++            cv2.resize(f, (int(round(width * scale)), int(round(height * scale))), interpolation=cv2.INTER_AREA)
++            if scale < 1.0 else f,
++            cv2.COLOR_BGR2GRAY,
++        )
++        for f in frames
++    ]
++    horizontal, vertical = persistent_edges(work)
++    candidates = find_rect_candidates(horizontal, vertical)
++    if not candidates:
++        return None
++    detect = detect or _default_detector()
++    if detect is None:
++        return None
++    for _score, box, side in candidates[:6]:
++        rect = tuple(v / scale for v in box)
++        faces = _faces_in_crop(frames, rect, detect)
++        if len(faces) >= max(2, int(np.ceil(len(frames) * FACE_FRACTION))):
++            face = tuple(float(v) for v in np.median(np.asarray(faces), axis=0))
++            if _second_camera(frames, rect, face, detect):
++                logger.info(
++                    "Camera window at %s is one of several fixed camera "
++                    "windows (a call layout), not a facecam",
++                    tuple(round(v) for v in rect),
++                )
++                return None
++            logger.info(
++                "Facecam window found: %s side, rect %s, face in %d/%d frames",
++                side, tuple(round(v) for v in rect), len(faces), len(frames),
++            )
++            return FacecamRect(rect, face, side, len(faces), len(frames))
++    return None
++
++
++def probe_times(ranges: Sequence[Tuple[float, float]], count: int = 10) -> List[float]:
++    """``count`` source times spread evenly over the kept ranges."""
++    total = sum(max(0.0, end - start) for start, end in ranges)
++    times: List[float] = []
++    if total <= 0:
++        return times
++    for index in range(count):
++        position = (index + 0.5) / count * total
++        for start, end in ranges:
++            span = end - start
++            if position <= span:
++                times.append(start + position)
++                break
++            position -= span
++    return times
+diff --git a/backend/src/media/gaming_templates.py b/backend/src/media/gaming_templates.py
+new file mode 100644
+index 0000000..7e3f06a
+--- /dev/null
++++ b/backend/src/media/gaming_templates.py
+@@ -0,0 +1,176 @@
++"""Layout templates for streamer clips: "Face on top, game below".
++
++The look short-form gaming pages use for streamer reactions (Luffy's
++reference reel, 2026-11-17): the streamer's facecam, cropped tight, fills
++the top of the 9:16 frame; the gameplay, cropped to fill, sits below; a
++thin coloured divider marks the seam and the captions sit on that seam,
++one to three punchy words at a time; a small "credit @creator" line at the
++bottom. Two styles, matching the two reference cards:
++
++- ``facecam_red``  — red divider, white condensed captions with a red
++  outline (the iShowSpeed card).
++- ``facecam_gold`` — gold divider, white condensed captions with a black
++  outline and the active word in yellow (the Techno Gamerz card).
++
++A task chooses one with ``layout_template``; ``None`` keeps the automatic
++layout. The template only applies when the clip has a facecam (found by
++``reaction_layout.find_reactor_face`` + inset, or ``facecam_rect``); other
++clips keep the normal planner and just get the template's caption style.
++"""
++
++from __future__ import annotations
++
++import os
++import tempfile
++import threading
++from pathlib import Path
++from typing import Any, Dict, Optional, Tuple
++
++from .ffmpeg import clamp_even, ffmpeg_escape_filter_path, round_to_even
++
++Box = Tuple[float, float, float, float]
++
++OUT_W, OUT_H = 1080, 1920
++FACE_PANEL_H = 864            # 45 % of the frame, like the reference cards
++GAME_PANEL_H = OUT_H - FACE_PANEL_H
++DIVIDER_H = 8
++CREDIT_MAX_CHARS = 40
++
++LAYOUT_TEMPLATES: Dict[str, Dict[str, Any]] = {
++    "facecam_red": {
++        "name": "Face on top — red",
++        "divider_color": "0xE5262B",
++        "caption_template": "seam_red",
++    },
++    "facecam_gold": {
++        "name": "Face on top — gold",
++        "divider_color": "0xF5B700",
++        "caption_template": "seam_gold",
++    },
++}
++
++
++def validate_layout_template(value: object) -> Optional[str]:
++    """Normalise a create-form template choice; None when absent or "auto"."""
++    if value is None:
++        return None
++    if not isinstance(value, str):
++        raise ValueError("Invalid layout_template")
++    cleaned = value.strip().lower()
++    if cleaned in ("", "auto", "none"):
++        return None
++    if cleaned not in LAYOUT_TEMPLATES:
++        raise ValueError(
++            "Invalid layout_template: expected auto or one of "
++            + ", ".join(LAYOUT_TEMPLATES)
++        )
++    return cleaned
++
++
++def clean_layout_credit(value: object) -> Optional[str]:
++    """The credit line text ("@iShowSpeed" -> "credit @iShowSpeed")."""
++    if not isinstance(value, str):
++        return None
++    text = " ".join(value.split())[:CREDIT_MAX_CHARS]
++    if not text:
++        return None
++    return text if text.lower().startswith("credit") else f"credit {text}"
++
++
++def caption_template_for(layout_template: Optional[str]) -> Optional[str]:
++    spec = LAYOUT_TEMPLATES.get(layout_template or "")
++    return spec["caption_template"] if spec else None
++
++
++def _face_crop(face: Box, inset: Box, width: int, height: int) -> Tuple[int, int, int, int]:
++    """Tight crop of the camera window around the face, at the panel aspect."""
++    ix, iy, iw, ih = inset
++    fx, fy, fw, fh = face
++    aspect = OUT_W / FACE_PANEL_H
++    ch = min(ih, max(fh * 3.0, ih * 0.6))
++    cw = ch * aspect
++    if cw > iw:
++        cw = iw
++        ch = cw / aspect
++    cw, ch = round_to_even(int(cw)), round_to_even(int(ch))
++    cx = fx + fw / 2
++    cy = fy + fh * 0.55
++    x = clamp_even(int(cx - cw / 2), int(ix), max(int(ix), int(ix + iw - cw)))
++    y = clamp_even(int(cy - ch * 0.45), int(iy), max(int(iy), int(iy + ih - ch)))
++    x = min(max(0, x), max(0, width - cw))
++    y = min(max(0, y), max(0, height - ch))
++    return cw, ch, x, y
++
++
++def _game_crop(inset: Box, width: int, height: int) -> Tuple[int, int, int, int]:
++    """Full-height gameplay crop at the panel aspect, kept clear of the camera."""
++    ix, _iy, iw, _ih = inset
++    aspect = OUT_W / GAME_PANEL_H
++    ch = round_to_even(height)
++    cw = round_to_even(int(ch * aspect))
++    if cw > width:
++        cw = round_to_even(width)
++        ch = round_to_even(int(cw / aspect))
++    x = int((width - cw) / 2)
++    if ix + iw / 2 < width / 2:          # camera on the left
++        x = max(x, int(ix + iw))
++    else:                                # camera on the right
++        x = min(x, int(ix) - cw)
++    x = clamp_even(x, 0, max(0, width - cw))
++    y = clamp_even(int((height - ch) / 2), 0, max(0, height - ch))
++    return cw, ch, x, y
++
++
++def _credit_filter(credit: str) -> str:
++    """drawtext reading a textfile (user text never enters the graph)."""
++    fd, name = tempfile.mkstemp(prefix="credit_", suffix=".txt")
++    path = Path(name)
++    with os.fdopen(fd, "w", encoding="utf-8") as handle:
++        handle.write(credit.replace("%", r"\%"))
++    threading.Timer(3600.0, lambda: path.unlink(missing_ok=True)).start()
++    font = Path(__file__).resolve().parents[2] / "fonts" / "Montserrat-ExtraBold.ttf"
++    font_arg = f":fontfile='{ffmpeg_escape_filter_path(font)}'" if font.exists() else ""
++    return (
++        f"drawtext=textfile='{ffmpeg_escape_filter_path(path)}'{font_arg}"
++        ":fontsize=30:fontcolor=white@0.85:borderw=2:bordercolor=black@0.6"
++        f":x=(w-text_w)/2:y=h-{GAME_PANEL_H // 14}"
++    )
++
++
++def build_facecam_stack_layout(
++    width: int,
++    height: int,
++    duration: float,
++    face: Box,
++    inset: Box,
++    template: str,
++    credit: Optional[str] = None,
++) -> Dict[str, Any]:
++    """The "face on top, game below" vertical graph for one facecam clip."""
++    spec = LAYOUT_TEMPLATES[template]
++    fw_, fh_, fx_, fy_ = _face_crop(face, inset, width, height)
++    gw, gh, gx, gy = _game_crop(inset, width, height)
++    seam = FACE_PANEL_H - DIVIDER_H // 2
++    game_chain = (
++        f"[game_src]crop={gw}:{gh}:{gx}:{gy},scale={OUT_W}:{GAME_PANEL_H}:flags=lanczos,setsar=1"
++    )
++    if credit:
++        game_chain += "," + _credit_filter(credit)
++    graph = [
++        "[0:v]split=2[face_src][game_src]",
++        f"[face_src]crop={fw_}:{fh_}:{fx_}:{fy_},scale={OUT_W}:{FACE_PANEL_H}:flags=lanczos,"
++        "unsharp=5:5:0.6:5:5:0.0,setsar=1[face]",
++        game_chain + "[game]",
++        "[face][game]vstack=inputs=2,"
++        f"drawbox=x=0:y={seam}:w={OUT_W}:h={DIVIDER_H}:color={spec['divider_color']}:t=fill,"
++        "format=yuv420p[vout]",
++    ]
++    return {
++        "kind": "reaction",
++        "template": template,
++        "video_filter": ";".join(graph),
++        "caption_y": FACE_PANEL_H / OUT_H,
++        "inset": inset,
++        "face_crop": (fw_, fh_, fx_, fy_),
++        "game_crop": (gw, gh, gx, gy),
++    }
+diff --git a/backend/src/media/reaction_layout.py b/backend/src/media/reaction_layout.py
+index bc94507..b2d926e 100644
+--- a/backend/src/media/reaction_layout.py
++++ b/backend/src/media/reaction_layout.py
+@@ -149,7 +149,11 @@ def build_reaction_layout(
+     The source never includes the original inset a second time.
+     """
+     ix, iy, iw, ih = inset
+-    source_samples = [(t, [f for f in faces if not _inside(f, inset)]) for t, faces in samples]
++    # The camera's lower edge. Insets measured by measure_reaction_inset start
++    # at the top (iy == 0, so this is ih); a facecam window found by
++    # facecam_rect can float half-way down a side.
++    inset_bottom = iy + ih
++    source_samples =[(t, [f for f in faces if not _inside(f, inset)]) for t, faces in samples]
+     # A closeup is large enough to crop independently. Sparse/absent face
+     # detections in a wide shot must not pull the crop onto the plant or inset.
+     observations = []
+@@ -198,7 +202,7 @@ def build_reaction_layout(
+         '[0:v]split=3[reactor_src][source_bg][source_src]',
+         f'[reactor_src]crop={rw}:{rh}:{rx}:{ry},scale=1080:{REACTOR_HEIGHT}:flags=lanczos,'
+         f'{UPSCALE_SHARPEN_FILTER},setsar=1[reactor]',
+-        f'[source_bg]drawbox=x={int(ix)}:y=0:w={int(iw)}:h={int(ih)}:color=black:t=fill,'
++        f'[source_bg]drawbox=x={int(ix)}:y={int(iy)}:w={int(iw)}:h={int(ih)}:color=black:t=fill,'
+         'scale=540:640:force_original_aspect_ratio=increase,crop=540:640,'
+         f'gblur=sigma=18:steps=2,scale=1080:{SOURCE_HEIGHT},setsar=1[base0]',
+         '[source_src]split=' + str(len(runs)) + ''.join(f'[part{i}]' for i in range(len(runs))),
+@@ -208,12 +212,12 @@ def build_reaction_layout(
+     for i, (start, end, mode, faces) in enumerate(runs):
+         pair = _source_pair(faces, width) if mode == 'wide' else None
+         guest_crops = []
+-        if pair and all(f[1] >= ih for f in pair):
++        if pair and all(f[1] >= inset_bottom for f in pair):
+             # A 9:8 panel wider than the frame cannot be placed. Two copies of
+             # the full frame are not a split; the wide crop below shows both.
+-            y_min = round_to_even(int(ih))
++            y_min = round_to_even(int(inset_bottom))
+             for guest in pair:
+-                gh = round_to_even(int(min(max(0, height-ih), max(guest[3]*3.2, guest[2]*3*640/1080))))
++                gh = round_to_even(int(min(max(0, height-inset_bottom), max(guest[3]*3.2, guest[2]*3*640/1080))))
+                 gw = round_to_even(int(gh * 1080/640))
+                 if gw > width or y_min + gh > height:
+                     guest_crops = []
+@@ -245,7 +249,7 @@ def build_reaction_layout(
+                 # reactor. Crop below the camera rather than to an empty wall.
+                 # Tall sources make the 9:16 window wider than the frame;
+                 # shrink it instead of handing ffmpeg a crop past the edge.
+-                y = round_to_even(int(ih))
++                y = round_to_even(int(inset_bottom))
+                 ch = round_to_even(max(0, height-y))
+                 cw = round_to_even(int(ch * 1080 / SOURCE_HEIGHT))
+                 if cw > width:
+@@ -255,19 +259,19 @@ def build_reaction_layout(
+             if _crop_inside(cw, ch, x, y, width, height):
+                 crop = f'crop={cw}:{ch}:{x}:{y},scale=1080:{SOURCE_HEIGHT}:flags=lanczos'
+             else:
+-                y = min(round_to_even(int(max(ih, 0))), round_to_even(max(0, height - 2)))
++                y = min(round_to_even(int(max(inset_bottom, 0))), round_to_even(max(0, height - 2)))
+                 crop = (
+                     f'crop={round_to_even(width)}:{round_to_even(height - y)}:0:{y},'
+                     f'scale=1080:{SOURCE_HEIGHT}:force_original_aspect_ratio=decrease:flags=lanczos'
+                 )
+-        elif mode == 'wide' and all(f[1] >= ih for f in faces):
++        elif mode == 'wide' and all(f[1] >= inset_bottom for f in faces):
+             # Both guests in a wide shot sit below the upper-corner camera.
+-            y = round_to_even(int(ih))
++            y = round_to_even(int(inset_bottom))
+             crop = f'crop={round_to_even(width)}:{round_to_even(height-y)}:0:{y},scale=1080:{SOURCE_HEIGHT}:force_original_aspect_ratio=decrease:flags=lanczos'
+         else:
+             # Keep source text and slides in full. The webcam already covers
+             # this rectangle in the original; mask it instead of duplicating it.
+-            crop = (f'format=rgba,drawbox=x={int(ix)}:y=0:w={int(iw)}:h={int(ih)}:color=black@0:t=fill:replace=1,'
++            crop = (f'format=rgba,drawbox=x={int(ix)}:y={int(iy)}:w={int(iw)}:h={int(ih)}:color=black@0:t=fill:replace=1,'
+                     f'scale=1080:{SOURCE_HEIGHT}:force_original_aspect_ratio=decrease:flags=lanczos')
+         graph.append(f'[part{i}]{crop},setsar=1[p{i}]')
+         enable = f'gte(t\\,{start:.3f})*lt(t\\,{end:.3f})'
+@@ -280,11 +284,35 @@ def build_reaction_layout(
+ def choose_reaction_layout(
+     path: Path, width: int, height: int, duration: float, samples: Sequence[FaceFrame],
+     scene_cuts: Sequence[float] = (),
++    layout_template: Optional[str] = None,
++    layout_credit: Optional[str] = None,
+ ) -> Optional[Dict[str, Any]]:
++    """The reaction layout for a clip with a facecam, or None.
++
++    ``layout_template`` (``media.gaming_templates``: ``facecam_red`` /
++    ``facecam_gold``) swaps the default reactor-above-source layout for the
++    "face on top, game below" stack with its divider and credit line.
++    """
+     face = find_reactor_face(width, height, samples)
+-    if face is None:
+-        return None
+-    inset = measure_reaction_inset(path, width, height, duration, face)
+-    if inset is None:
+-        return None
++    inset = (
++        measure_reaction_inset(path, width, height, duration, face)
++        if face is not None else None
++    )
++    if face is None or inset is None:
++        # Face-first check missed (small facecam face, a camera half-way
++        # down a side, no faces in the gameplay): look for the camera
++        # window itself (FACECAM_RECT_DETECT, default on).
++        from .facecam_rect import find_facecam_rect, probe_times
++
++        found = find_facecam_rect(path, width, height, probe_times([(0.0, duration)]))
++        if found is None:
++            return None
++        face, inset = found.face, found.rect
++    if layout_template:
++        from .gaming_templates import LAYOUT_TEMPLATES, build_facecam_stack_layout
++
++        if layout_template in LAYOUT_TEMPLATES:
++            return build_facecam_stack_layout(
++                width, height, duration, face, inset, layout_template, layout_credit
++            )
+     return build_reaction_layout(width, height, duration, face, inset, samples, scene_cuts)
+diff --git a/backend/src/media/reframe_plan.py b/backend/src/media/reframe_plan.py
+index 5efed17..4a193f0 100644
+--- a/backend/src/media/reframe_plan.py
++++ b/backend/src/media/reframe_plan.py
+@@ -1211,19 +1211,9 @@ def _inset_probe_times(
+     ranges: Sequence[Tuple[float, float]], count: int = 6
+ ) -> List[float]:
+     """``count`` source times spread evenly over the kept ranges."""
+-    total = sum(end - start for start, end in ranges)
+-    times: List[float] = []
+-    if total <= 0:
+-        return times
+-    for index in range(count):
+-        position = (index + 0.5) / count * total
+-        for start, end in ranges:
+-            span = end - start
+-            if position <= span:
+-                times.append(start + position)
+-                break
+-            position -= span
+-    return times
++    from .facecam_rect import probe_times
++
++    return probe_times(ranges, count)
+ 
+ 
+ def _reactor_inset_measurable(
+@@ -1313,6 +1303,25 @@ def build_reframe_plan(
+         except Exception as exc:
+             logger.debug("Reactor check unavailable: %s", exc)
+ 
++    # A facecam the face-first check cannot see (small face after the
++    # analysis downscale, a camera half-way down a side, gameplay with no
++    # faces): find the camera window itself on the source, inside this
++    # clip's ranges. The plain path's reaction layout composes it.
++    if source_path is not None:
++        try:
++            from .facecam_rect import facecam_rect_enabled, find_facecam_rect, probe_times
++
++            if facecam_rect_enabled() and find_facecam_rect(
++                source_path, width, height, probe_times(ranges)
++            ) is not None:
++                logger.info(
++                    "Reframe plan: facecam window found; delegating this "
++                    "clip to the plain layout path"
++                )
++                return {"delegate": "plain", "shots": []}
++        except Exception as exc:
++            logger.debug("Reactor check unavailable: %s", exc)
++
+     # Map evidence to the compacted timeline for the layout planner.
+     compact_context: List[SceneEvidence] = []
+     for evidence in context:
+diff --git a/backend/tests/unit/test_facecam_rect.py b/backend/tests/unit/test_facecam_rect.py
+new file mode 100644
+index 0000000..8e6cbda
+--- /dev/null
++++ b/backend/tests/unit/test_facecam_rect.py
+@@ -0,0 +1,199 @@
++"""Facecam window detection (media/facecam_rect.py) and its layout wiring.
++
++Synthetic streams: changing noise as "gameplay" (no persistent edges) with a
++bordered camera window on one side. Face detection is injected so the tests
++need no real face: the fake reports a face inside any crop it is given and
++(optionally) a fixed outside face on full frames.
++"""
++
++from __future__ import annotations
++
++import json
++import shutil
++import subprocess
++from pathlib import Path
++
++import numpy as np
++import pytest
++
++from src.media import facecam_rect, reaction_layout, reframe_plan, reframing
++
++W, H = 640, 360
++CAM = (0, 120, 170, 100)  # x, y, w, h: left side, half-way down
++
++needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
++
++
++@pytest.fixture(autouse=True)
++def _switch_on(monkeypatch):
++    monkeypatch.delenv("FACECAM_RECT_DETECT", raising=False)
++    monkeypatch.delenv("REFRAME_REACTOR_NEEDS_INSET", raising=False)
++
++
++def _render(path: Path, cam=CAM, border=True, duration=8):
++    # "Gameplay": a smooth background with shapes moving at different speeds,
++    # so no edge stays put across the sampled frames (as in a real game).
++    # Per-pixel noise would not do: it puts a strong edge on every pixel of
++    # every frame, which no real gameplay does.
++    graph = f"color=0x406080:size={W}x{H}:rate=10:duration={duration}"
++    for index, (speed, top, size, colour) in enumerate((
++        (173, 30, 70, "yellow"), (97, 150, 90, "red"), (211, 260, 60, "green"),
++        (131, 90, 50, "white"), (59, 300, 40, "orange"),
++    )):
++        graph += (
++            f",drawbox=x='mod(t*{speed}+{index * 97}\\,{W})':y='{top}+20*sin(t*{index + 1})'"
++            f":w={size}:h={size}:color={colour}:t=fill"
++        )
++    if cam is not None:
++        x, y, w, h = cam
++        graph += f",drawbox=x={x}:y={y}:w={w}:h={h}:color=0x303030:t=fill"
++        if border:
++            graph += f",drawbox=x={x}:y={y}:w={w}:h={h}:color=white:t=3"
++    subprocess.run(
++        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", graph,
++         "-f", "lavfi", "-i", f"sine=frequency=440:duration={duration}",
++         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(path)],
++        check=True, capture_output=True,
++    )
++
++
++def _fake_detector(outside_face=None):
++    def detect(image):
++        h, w = image.shape[:2]
++        if (w, h) == (W, H):
++            return [outside_face] if outside_face else []
++        # A crop (upscaled to >= 480 px wide): one centred face.
++        return [(w * 0.35, h * 0.2, w * 0.3, h * 0.5)]
++    return detect
++
++
++TIMES = facecam_rect.probe_times([(0.5, 7.5)], 10)
++
++
++@needs_ffmpeg
++def test_finds_a_side_window_half_way_down(tmp_path):
++    source = tmp_path / "stream.mp4"
++    _render(source)
++    found = facecam_rect.find_facecam_rect(source, W, H, TIMES, detect=_fake_detector())
++    assert found is not None
++    assert found.side == "left"
++    assert np.allclose(found.rect, CAM, atol=5)
++    assert found.face_frames == found.frames == 10
++
++
++@needs_ffmpeg
++def test_finds_a_right_side_window(tmp_path):
++    cam = (W - 160, 30, 160, 110)
++    source = tmp_path / "right.mp4"
++    _render(source, cam=cam)
++    found = facecam_rect.find_facecam_rect(source, W, H, TIMES, detect=_fake_detector())
++    assert found is not None and found.side == "right"
++    assert np.allclose(found.rect, cam, atol=5)
++
++
++@needs_ffmpeg
++def test_no_window_means_no_facecam(tmp_path):
++    source = tmp_path / "gameplay.mp4"
++    _render(source, cam=None)
++    assert facecam_rect.find_facecam_rect(source, W, H, TIMES, detect=_fake_detector()) is None
++
++
++@needs_ffmpeg
++def test_window_without_a_face_is_not_a_facecam(tmp_path):
++    source = tmp_path / "hud.mp4"
++    _render(source)
++    assert facecam_rect.find_facecam_rect(source, W, H, TIMES, detect=lambda _img: []) is None
++
++
++@needs_ffmpeg
++def test_a_second_fixed_camera_means_a_call_layout(tmp_path):
++    source = tmp_path / "call.mp4"
++    _render(source)
++    # Crop faces come back at 0.5 x crop height; the crop is 100 px tall in
++    # the source, so the cam face is ~50 px. A same-size face fixed at the
++    # right in every frame is another camera window.
++    outside = (450.0, 200.0, 40.0, 50.0)
++    detect = _fake_detector(outside_face=outside)
++    assert facecam_rect.find_facecam_rect(source, W, H, TIMES, detect=detect) is None
++
++
++@needs_ffmpeg
++def test_off_switch(tmp_path, monkeypatch):
++    source = tmp_path / "stream.mp4"
++    _render(source)
++    monkeypatch.setenv("FACECAM_RECT_DETECT", "0")
++    assert facecam_rect.find_facecam_rect(source, W, H, TIMES, detect=_fake_detector()) is None
++
++
++def test_probe_times_cover_every_range():
++    assert facecam_rect.probe_times([(10.0, 12.0), (20.0, 24.0)], 6) == pytest.approx(
++        [10.5, 11.5, 20.5, 21.5, 22.5, 23.5]
++    )
++    assert facecam_rect.probe_times([]) == []
++
++
++def test_overlapping_candidates_are_collapsed():
++    assert facecam_rect._iou((0, 0, 10, 10), (0, 0, 10, 10)) == pytest.approx(1.0)
++    assert facecam_rect._iou((0, 0, 10, 10), (20, 20, 5, 5)) == 0.0
++
++
++# --- Wiring ----------------------------------------------------------------------
++
++
++def _analysis(count=24):
++    # The face-first check sees nothing (as on real streams after downscaling).
++    return {"width": W, "height": H, "samples": [(i / 3.0, []) for i in range(count)],
++            "cuts": [], "context": []}
++
++
++@needs_ffmpeg
++def test_edl_planner_delegates_a_found_facecam(tmp_path, monkeypatch):
++    source = tmp_path / "stream.mp4"
++    _render(source)
++    monkeypatch.setattr(facecam_rect, "_default_detector", lambda: _fake_detector())
++    plan = reframe_plan.build_reframe_plan(_analysis(), [(0.5, 7.5)], 7.0, source_path=source)
++    assert plan == {"delegate": "plain", "shots": []}
++
++    monkeypatch.setenv("FACECAM_RECT_DETECT", "off")
++    plan = reframe_plan.build_reframe_plan(_analysis(), [(0.5, 7.5)], 7.0, source_path=source)
++    assert plan is None or plan.get("delegate") is None
++
++
++@needs_ffmpeg
++def test_plain_path_composes_a_mid_side_facecam(tmp_path, monkeypatch):
++    source = tmp_path / "stream.mp4"
++    _render(source)
++    monkeypatch.setattr(facecam_rect, "_default_detector", lambda: _fake_detector())
++    samples = [(t, []) for t in np.arange(0, 8, 1 / 3)]
++    layout = reaction_layout.choose_reaction_layout(source, W, H, 8.0, samples)
++    assert layout is not None and layout["kind"] == "reaction"
++    x, y, w, h = layout["inset"]
++    assert y > 100  # the window floats half-way down, not at the top
++    # The camera's own rectangle is masked out of the source, at its real y.
++    assert f"drawbox=x={int(x)}:y={int(y)}:w={int(w)}:h={int(h)}" in layout["video_filter"]
++
++    output = tmp_path / "vertical.mp4"
++    ok, out_w, out_h = reframing.render_reframed_clip_ffmpeg(
++        source, output, "vertical", vertical_plan=(layout["video_filter"], "complex")
++    )
++    assert ok and (out_w, out_h) == (1080, 1920)
++    probe = json.loads(subprocess.check_output(
++        ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(output)]
++    ))
++    assert {s["codec_type"] for s in probe["streams"]} == {"video", "audio"}
++    raw = subprocess.check_output(
++        ["ffmpeg", "-v", "error", "-ss", "1", "-i", str(output), "-frames:v", "1",
++         "-pix_fmt", "gray", "-f", "rawvideo", "-"]
++    )
++    frame = np.frombuffer(raw, dtype=np.uint8).reshape(1920, 1080)
++    # Top panel = the dark camera interior (0x30), not the noisy gameplay.
++    assert frame[200:440, 200:880].mean() < 90
++
++
++def test_top_anchored_inset_graph_is_unchanged():
++    # iy == 0: inset_bottom == ih, so the existing reaction layout is identical.
++    layout = reaction_layout.build_reaction_layout(
++        640, 360, 6, (536.0, 25.0, 32.0, 42.0), (480.0, 0.0, 160.0, 120.0),
++        [(i / 3, [(536.0, 25.0, 32.0, 42.0)]) for i in range(18)],
++    )
++    assert "drawbox=x=480:y=0:w=160:h=120" in layout["video_filter"]
+diff --git a/tools/phase2/run_all.py b/tools/phase2/run_all.py
+index 4af484c..cadd432 100644
+--- a/tools/phase2/run_all.py
++++ b/tools/phase2/run_all.py
+@@ -25,6 +25,7 @@ NICHES = [
+     ("Comedy", "meme_comedy", "test-footage/phase2_src/dwZK6iQlyEw.mp4", "Problems of an only child (stand-up), YouTube dwZK6iQlyEw, CC BY"),
+     ("Education", "education_tutorial", "test-footage/phase2_src/-m-gudHhLxc.mp4", "PHO103 Speech Anatomy lecture, YouTube -m-gudHhLxc, CC BY"),
+     ("Gaming / streamer", "gaming", "test-footage/real_more/kai_sa_20000.mp4", "Kai Cenat GTA San Andreas stream sample (Twitch), private test use only"),
++    ("Gaming HD", "gaming", "test-footage/real_hd/kai_sa_20000_hd.mp4", "Same Kai Cenat section at 1080p60 (Twitch VOD 2922436506, 20000-20300 s), private test use only"),
+ ]
+ 
+ 
+-- 
+2.56.0.windows.2
+

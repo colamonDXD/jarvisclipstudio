@@ -1,0 +1,61 @@
+From b0965c8833eea1d447d3b9e3bd4d13e696b7395f Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 18:57:54 +0530
+Subject: [PATCH] test(export): scope two pins to what they were written for
+
+The "three presets encode differently" pin now checks the three 9:16
+presets (defect D4); the new wide and square profiles share YouTube's
+1080p row on purpose. The pre-stage CPU-leg test assumed no GPU; the
+probe now works on GPU hosts, so the test takes NVENC away with
+disable_nvenc() like production does after a failed encode.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/tests/unit/test_export_presets.py | 11 +++++++++--
+ backend/tests/unit/test_prestage_nvenc.py |  7 +++++--
+ 2 files changed, 14 insertions(+), 4 deletions(-)
+
+diff --git a/backend/tests/unit/test_export_presets.py b/backend/tests/unit/test_export_presets.py
+index 77bdd5a..29d34a1 100644
+--- a/backend/tests/unit/test_export_presets.py
++++ b/backend/tests/unit/test_export_presets.py
+@@ -31,9 +31,16 @@ def test_preset_rates_match_the_platform_tables():
+     assert preset_rates("shorts", None) == ("8M", "384k")
+ 
+ 
++VERTICAL_PRESETS = ("tiktok", "reels", "shorts")
++
++
+ def test_the_three_presets_encode_differently_at_30_fps():
+-    rates = {preset_rates(name, 30) for name in EXPORT_PRESETS}
+-    assert len(rates) == len(EXPORT_PRESETS) == 3
++    # Defect D4 was about the three 9:16 presets. youtube_landscape and
++    # square (added later) deliberately reuse YouTube's 1080p row, so they
++    # are not part of the "all different" set.
++    assert set(VERTICAL_PRESETS) <= set(EXPORT_PRESETS)
++    rates = {preset_rates(name, 30) for name in VERTICAL_PRESETS}
++    assert len(rates) == len(VERTICAL_PRESETS) == 3
+ 
+ 
+ def _export_command(monkeypatch, tmp_path, fps, preset):
+diff --git a/backend/tests/unit/test_prestage_nvenc.py b/backend/tests/unit/test_prestage_nvenc.py
+index c052a26..35f269a 100644
+--- a/backend/tests/unit/test_prestage_nvenc.py
++++ b/backend/tests/unit/test_prestage_nvenc.py
+@@ -327,8 +327,11 @@ def test_prestage_cpu_leg_renders_real_source(tmp_path):
+     _make_real_source(source)
+     output = tmp_path / "prestage.mp4"
+ 
+-    # The probe is unhealthy in this sandbox (no libcuda); the stitch
+-    # must therefore take the CPU fallback, not fail.
++    # The stitch must take the CPU fallback, not fail, when NVENC is not
++    # healthy. The probe now works on GPU hosts (the -filter_complex_script
++    # fix), so take NVENC away the way production does after a failed
++    # encode; the autouse fixture restores the probe state afterwards.
++    ffmpeg_module.disable_nvenc("test: simulate a host without healthy NVENC")
+     assert ffmpeg_module.check_nvenc_available() is False
+     assert render_source_ranges_ffmpeg(source, [(0.5, 2.5), (3.0, 5.0)], output)
+     assert output.exists()
+-- 
+2.56.0.windows.2
+

@@ -1,0 +1,26 @@
+[
+  {
+    "file": "clip_001.mp4",
+    "file_duration_s": 53.8,
+    "motion_first2": 4.28,
+    "cuts_per_min": 0.0,
+    "hits_per_min": 8.9,
+    "cuts_first6": 0
+  },
+  {
+    "file": "clip_002.mp4",
+    "file_duration_s": 52.466667,
+    "motion_first2": 3.62,
+    "cuts_per_min": 0.0,
+    "hits_per_min": 6.9,
+    "cuts_first6": 0
+  },
+  {
+    "file": "clip_003.mp4",
+    "file_duration_s": 58.1,
+    "motion_first2": 8.12,
+    "cuts_per_min": 0.0,
+    "hits_per_min": 5.2,
+    "cuts_first6": 0
+  }
+]

@@ -1,0 +1,326 @@
+{
+ "id": "japan_plan",
+ "kind": "plan",
+ "niche": "travel_vlog",
+ "profile": {
+  "niche": "travel_vlog",
+  "pacing": {
+   "target_cuts_per_min": [
+    12,
+    20
+   ],
+   "silence_trim_aggressive": false,
+   "min_shot_sec": 3.0,
+   "max_shot_sec": 5.0
+  },
+  "transitions": {
+   "default": "wipe",
+   "duration_sec": 0.4,
+   "on_topic_change": "wipe",
+   "on_punchline": "wipe",
+   "signature": {
+    "name": "wipe",
+    "duration_sec": 0.4
+   }
+  },
+  "zooms": {
+   "punch_in_scale": 1.08,
+   "punch_in_trigger": "scenic_reveal",
+   "ken_burns": true
+  },
+  "captions": {
+   "preset_id": "classic_box",
+   "words_per_line": 4,
+   "position": "bottom"
+  },
+  "overlays": {
+   "info_cards": false,
+   "lower_thirds": false,
+   "reference_images": "off",
+   "ref_image_at_entity_mentions": false
+  },
+  "broll": {
+   "enabled": true,
+   "source": "pexels",
+   "density_per_min": 2.0,
+   "max_coverage": 0.4
+  },
+  "audio": {
+   "music_mood": "calm",
+   "music_volume_0_to_1": 0.25,
+   "ducking_db": -12.0,
+   "sfx_from_user_library": false
+  },
+  "color": {
+   "lut": "warm_soft"
+  },
+  "hook": {
+   "title_style": "question",
+   "title_seconds": 3.0
+  },
+  "scene_rules": {
+   "establishing_shot_sec": 3.0,
+   "bold_claim_opener": {
+    "enabled": true,
+    "min_score": 2,
+    "window_sec": 25.0
+   }
+  }
+ },
+ "duration": 20.0,
+ "text": "That's pretty good avocado. Wow. That's pretty solid. That's perfect. Oh, you know, it's crazy about that avocado. So that was from an avocado tree that was 700 years old. No What's our there? It's ass? It's not a good chicken. You want to try the fish?",
+ "words": [
+  {
+   "word": "That's",
+   "start": 0.0,
+   "end": 0.48
+  },
+  {
+   "word": "pretty",
+   "start": 0.48,
+   "end": 0.6
+  },
+  {
+   "word": "good",
+   "start": 0.6,
+   "end": 0.74
+  },
+  {
+   "word": "avocado.",
+   "start": 0.74,
+   "end": 1.02
+  },
+  {
+   "word": "Wow.",
+   "start": 1.18,
+   "end": 1.48
+  },
+  {
+   "word": "That's",
+   "start": 1.9,
+   "end": 2.3
+  },
+  {
+   "word": "pretty",
+   "start": 2.3,
+   "end": 2.42
+  },
+  {
+   "word": "solid.",
+   "start": 2.42,
+   "end": 2.68
+  },
+  {
+   "word": "That's",
+   "start": 2.92,
+   "end": 3.08
+  },
+  {
+   "word": "perfect.",
+   "start": 3.08,
+   "end": 3.34
+  },
+  {
+   "word": "Oh,",
+   "start": 3.5,
+   "end": 3.56
+  },
+  {
+   "word": "you",
+   "start": 3.7,
+   "end": 4.06
+  },
+  {
+   "word": "know,",
+   "start": 4.06,
+   "end": 4.22
+  },
+  {
+   "word": "it's",
+   "start": 4.26,
+   "end": 4.32
+  },
+  {
+   "word": "crazy",
+   "start": 4.32,
+   "end": 4.48
+  },
+  {
+   "word": "about",
+   "start": 4.48,
+   "end": 4.68
+  },
+  {
+   "word": "that",
+   "start": 4.68,
+   "end": 4.8
+  },
+  {
+   "word": "avocado.",
+   "start": 4.8,
+   "end": 5.06
+  },
+  {
+   "word": "So",
+   "start": 5.34,
+   "end": 5.44
+  },
+  {
+   "word": "that",
+   "start": 5.44,
+   "end": 5.56
+  },
+  {
+   "word": "was",
+   "start": 5.56,
+   "end": 5.66
+  },
+  {
+   "word": "from",
+   "start": 5.66,
+   "end": 5.8
+  },
+  {
+   "word": "an",
+   "start": 5.8,
+   "end": 5.94
+  },
+  {
+   "word": "avocado",
+   "start": 5.94,
+   "end": 6.3
+  },
+  {
+   "word": "tree",
+   "start": 6.3,
+   "end": 7.54
+  },
+  {
+   "word": "that",
+   "start": 8.48,
+   "end": 8.88
+  },
+  {
+   "word": "was",
+   "start": 8.88,
+   "end": 9.28
+  },
+  {
+   "word": "700",
+   "start": 10.12,
+   "end": 10.52
+  },
+  {
+   "word": "years",
+   "start": 10.52,
+   "end": 10.92
+  },
+  {
+   "word": "old.",
+   "start": 10.92,
+   "end": 11.22
+  },
+  {
+   "word": "No",
+   "start": 11.56,
+   "end": 11.56
+  },
+  {
+   "word": "What's",
+   "start": 14.02,
+   "end": 14.42
+  },
+  {
+   "word": "our",
+   "start": 14.42,
+   "end": 14.82
+  },
+  {
+   "word": "there?",
+   "start": 14.82,
+   "end": 15.0
+  },
+  {
+   "word": "It's",
+   "start": 15.36,
+   "end": 15.44
+  },
+  {
+   "word": "ass?",
+   "start": 15.44,
+   "end": 15.96
+  },
+  {
+   "word": "It's",
+   "start": 18.14,
+   "end": 18.54
+  },
+  {
+   "word": "not",
+   "start": 18.54,
+   "end": 18.66
+  },
+  {
+   "word": "a",
+   "start": 18.66,
+   "end": 18.86
+  },
+  {
+   "word": "good",
+   "start": 18.86,
+   "end": 18.96
+  },
+  {
+   "word": "chicken.",
+   "start": 18.96,
+   "end": 19.34
+  },
+  {
+   "word": "You",
+   "start": 19.54,
+   "end": 19.6
+  },
+  {
+   "word": "want",
+   "start": 19.6,
+   "end": 19.72
+  },
+  {
+   "word": "to",
+   "start": 19.72,
+   "end": 19.74
+  },
+  {
+   "word": "try",
+   "start": 19.74,
+   "end": 19.84
+  },
+  {
+   "word": "the",
+   "start": 19.84,
+   "end": 19.94
+  },
+  {
+   "word": "fish?",
+   "start": 19.94,
+   "end": 19.98
+  }
+ ],
+ "audio_features": {
+  "energy_peaks": [
+   3.2,
+   12.7
+  ],
+  "pauses": [
+   {
+    "start": 9.8,
+    "end": 10.4
+   }
+  ]
+ },
+ "selection_scores": {
+  "relevance_score": 0.92,
+  "total_score": 92
+ },
+ "notes": "The g1 gold segment (avocado / 700-year-old tree), the run's TOP PICK. Word timings are the real cached faster-whisper words rebased to clip start; audio features are fixture stand-ins (peaks/pauses are not cached in-tree) and are identical for every model."
+}

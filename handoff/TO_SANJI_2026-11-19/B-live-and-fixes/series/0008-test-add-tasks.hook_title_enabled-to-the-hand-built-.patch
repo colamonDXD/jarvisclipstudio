@@ -1,0 +1,110 @@
+From 7f5d0e86cf1758f6aec018d1ff7e3426467cf271 Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 16:00:34 +0530
+Subject: [PATCH 08/13] test: add tasks.hook_title_enabled to the hand-built
+ task tables (same as layout_credit)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/tests/unit/test_billing_allowance.py         | 3 ++-
+ backend/tests/unit/test_broll_toggle.py              | 2 +-
+ backend/tests/unit/test_framing_mode.py              | 2 +-
+ backend/tests/unit/test_recipe_create_wiring.py      | 1 +
+ backend/tests/unit/test_settings_integrity_matrix.py | 2 +-
+ backend/tests/unit/test_task_insert_columns.py       | 1 +
+ backend/tests/unit/test_task_settings_readback.py    | 2 +-
+ 7 files changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/backend/tests/unit/test_billing_allowance.py b/backend/tests/unit/test_billing_allowance.py
+index 38fa085..0df04a9 100644
+--- a/backend/tests/unit/test_billing_allowance.py
++++ b/backend/tests/unit/test_billing_allowance.py
+@@ -55,7 +55,8 @@ def allowance_db():
+                 brand_kit_id TEXT, intro_asset TEXT, outro_asset TEXT,
+                 creation_mode TEXT, manual_ranges_json TEXT,
+                 framing_mode VARCHAR(10),
+-                layout_template VARCHAR(20), layout_credit VARCHAR(48)
++                layout_template VARCHAR(20), layout_credit VARCHAR(48),
++                hook_title_enabled BOOLEAN
+             )
+         """))
+         connection.execute(text("CREATE TABLE sources (id TEXT PRIMARY KEY, url TEXT)"))
+diff --git a/backend/tests/unit/test_broll_toggle.py b/backend/tests/unit/test_broll_toggle.py
+index 9a27937..e64378b 100644
+--- a/backend/tests/unit/test_broll_toggle.py
++++ b/backend/tests/unit/test_broll_toggle.py
+@@ -240,7 +240,7 @@ CREATE TABLE tasks (
+     font_family TEXT, font_size INTEGER, font_color TEXT,
+     caption_template TEXT, include_broll INTEGER, processing_mode TEXT,
+     niche_override TEXT, music_override TEXT, music_mode TEXT,
+-    template_mode TEXT, framing_mode TEXT, layout_template TEXT, layout_credit TEXT, broll_enabled INTEGER, separation_opt_in INTEGER,
++    template_mode TEXT, framing_mode TEXT, layout_template TEXT, layout_credit TEXT, hook_title_enabled INTEGER, broll_enabled INTEGER, separation_opt_in INTEGER,
+     target_clip_count INTEGER, source_duration_seconds INTEGER,
+     content_brief TEXT, campaign_id TEXT, brand_kit_id TEXT,
+     intro_asset TEXT, outro_asset TEXT, creation_mode TEXT,
+diff --git a/backend/tests/unit/test_framing_mode.py b/backend/tests/unit/test_framing_mode.py
+index 55ec125..3abf52b 100644
+--- a/backend/tests/unit/test_framing_mode.py
++++ b/backend/tests/unit/test_framing_mode.py
+@@ -111,7 +111,7 @@ CREATE TABLE tasks (
+     font_family TEXT, font_size INTEGER, font_color TEXT,
+     caption_template TEXT, include_broll INTEGER, processing_mode TEXT,
+     niche_override TEXT, music_override TEXT, music_mode TEXT,
+-    template_mode TEXT, framing_mode TEXT, layout_template TEXT, layout_credit TEXT, broll_enabled INTEGER,
++    template_mode TEXT, framing_mode TEXT, layout_template TEXT, layout_credit TEXT, hook_title_enabled INTEGER, broll_enabled INTEGER,
+     separation_opt_in INTEGER,
+     target_clip_count INTEGER, source_duration_seconds INTEGER,
+     content_brief TEXT, campaign_id TEXT, brand_kit_id TEXT,
+diff --git a/backend/tests/unit/test_recipe_create_wiring.py b/backend/tests/unit/test_recipe_create_wiring.py
+index 82b66f1..39e19b1 100644
+--- a/backend/tests/unit/test_recipe_create_wiring.py
++++ b/backend/tests/unit/test_recipe_create_wiring.py
+@@ -268,6 +268,7 @@ def _bare_create_kwargs():
+         "framing_mode": None,
+         "layout_template": None,
+         "layout_credit": None,
++        "hook_title_enabled": None,
+         "broll_enabled": None,
+         "separation_opt_in": False,
+         "target_clip_count": None,
+diff --git a/backend/tests/unit/test_settings_integrity_matrix.py b/backend/tests/unit/test_settings_integrity_matrix.py
+index 3eb825d..849358c 100644
+--- a/backend/tests/unit/test_settings_integrity_matrix.py
++++ b/backend/tests/unit/test_settings_integrity_matrix.py
+@@ -53,7 +53,7 @@ CREATE TABLE tasks (
+     font_family TEXT, font_size INTEGER, font_color TEXT,
+     caption_template TEXT, include_broll INTEGER, processing_mode TEXT,
+     niche_override TEXT, music_override TEXT, music_mode TEXT,
+-    template_mode TEXT, framing_mode TEXT, layout_template TEXT, layout_credit TEXT, broll_enabled INTEGER, separation_opt_in INTEGER,
++    template_mode TEXT, framing_mode TEXT, layout_template TEXT, layout_credit TEXT, hook_title_enabled INTEGER, broll_enabled INTEGER, separation_opt_in INTEGER,
+     target_clip_count INTEGER, source_duration_seconds INTEGER,
+     content_brief TEXT, campaign_id TEXT, brand_kit_id TEXT,
+     intro_asset TEXT, outro_asset TEXT, creation_mode TEXT,
+diff --git a/backend/tests/unit/test_task_insert_columns.py b/backend/tests/unit/test_task_insert_columns.py
+index 3f45c14..d66066d 100644
+--- a/backend/tests/unit/test_task_insert_columns.py
++++ b/backend/tests/unit/test_task_insert_columns.py
+@@ -66,6 +66,7 @@ def test_tasks_insert_executes_against_a_real_engine():
+         "framing_mode": None,
+         "layout_template": None,
+         "layout_credit": None,
++        "hook_title_enabled": None,
+         "broll_enabled": 1,
+         "separation_opt_in": 0,
+         "target_clip_count": 10,
+diff --git a/backend/tests/unit/test_task_settings_readback.py b/backend/tests/unit/test_task_settings_readback.py
+index c00bd41..20c608d 100644
+--- a/backend/tests/unit/test_task_settings_readback.py
++++ b/backend/tests/unit/test_task_settings_readback.py
+@@ -52,7 +52,7 @@ CREATE TABLE tasks (
+     font_family TEXT, font_size INTEGER, font_color TEXT,
+     caption_template TEXT, include_broll INTEGER, processing_mode TEXT,
+     niche_override TEXT, music_override TEXT, music_mode TEXT,
+-    template_mode TEXT, framing_mode TEXT, layout_template TEXT, layout_credit TEXT, broll_enabled INTEGER, separation_opt_in INTEGER,
++    template_mode TEXT, framing_mode TEXT, layout_template TEXT, layout_credit TEXT, hook_title_enabled INTEGER, broll_enabled INTEGER, separation_opt_in INTEGER,
+     target_clip_count INTEGER, source_duration_seconds INTEGER,
+     content_brief TEXT, campaign_id TEXT, brand_kit_id TEXT,
+     intro_asset TEXT, outro_asset TEXT, creation_mode TEXT,
+-- 
+2.56.0.windows.2
+

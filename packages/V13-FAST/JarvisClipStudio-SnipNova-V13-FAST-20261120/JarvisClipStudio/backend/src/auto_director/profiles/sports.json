@@ -1,0 +1,64 @@
+{
+  "niche": "sports",
+  "pacing": {
+    "target_cuts_per_min": [12, 20],
+    "silence_trim_aggressive": false,
+    "min_shot_sec": 3.0,
+    "max_shot_sec": 5.0
+  },
+  "transitions": {
+    "default": "cut",
+    "duration_sec": 0.05,
+    "on_topic_change": "cut",
+    "on_punchline": "cut",
+    "signature": {"name": "slide", "duration_sec": 0.3}
+  },
+  "zooms": {
+    "punch_in_scale": 1.2,
+    "punch_in_trigger": "energy_peak",
+    "ken_burns": false
+  },
+  "captions": {
+    "preset_id": "bold_uppercase",
+    "words_per_line": 3,
+    "position": "center"
+  },
+  "overlays": {
+    "info_cards": true,
+    "lower_thirds": false,
+    "reference_images": "off",
+    "ref_image_at_entity_mentions": false
+  },
+  "broll": {
+    "enabled": false,
+    "source": "off",
+    "density_per_min": 0.0
+  },
+  "audio": {
+    "music_mood": "energetic",
+    "music_volume_0_to_1": 0.2,
+    "ducking_db": -10.0,
+    "sfx_from_user_library": true
+  },
+  "color": {
+    "lut": "punchy"
+  },
+  "hook": {
+    "title_style": "statistic",
+    "title_seconds": 3.0
+  },
+  "beat_grid": {
+    "enabled": true,
+    "source": "music",
+    "drop_anchor": false,
+    "snap_tolerance_sec": 0.12,
+    "silence_tighten": true,
+    "rehook_interval_sec": 12
+  },
+  "effects": {
+    "audio_flashes": {
+      "enabled": true,
+      "intensity": 0.5
+    }
+  }
+}

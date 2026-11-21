@@ -1,0 +1,497 @@
+From 3f72d3019ed7d214de65f45b2557c4bcde143b44 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 15:36:19 +0530
+Subject: [PATCH 9/9] chore(fonts): drop THEBOLDFONT (licence unverifiable);
+ alias it to Montserrat-Black
+
+Sanji's ruling 2026-11-18: THEBOLDFONT.ttf is UNVERIFIED in FONT_MANIFEST
+(no provable licence), so it ships in nothing.
+
+- backend/fonts/THEBOLDFONT.ttf removed, and its manifest entry; check_fonts
+  now passes on the real folder (34 fonts, all OFL-1.1 / Apache-2.0).
+- font_registry.FONT_ALIASES: the name THEBOLDFONT resolves to
+  Montserrat-Black (OFL, verified, closest heavy geometric face already
+  bundled), so stored editor drafts (CaptionStyle.font Literal unchanged),
+  AI-edit plans and old templates still render.
+- The four templates that named it (mrbeast, neon, large_centre_pop,
+  bold_uppercase) now name Montserrat-Black directly.
+- fetch_fonts.py no longer lists it among existing fonts.
+
+Test pins updated (deliberate product change, reasons inline):
+- test_font_manifest: 34 entries, no UNVERIFIED, check_fonts clean; /fonts >= 34.
+- test_caption_glyph_fallback: the fallback tests simulate the dropped
+  font's ASCII-only coverage for the aliased file; fallback text keeps its
+  own case (the caps-only rule belonged to the dropped file); the cmap test
+  uses Bangers (no Cyrillic); new test: the dropped name resolves.
+- test_video_utils_effects: internal-family example is TikTokSans-Bold.
+Verified: those files + font_registry/fontsdir/font deletion + transition
+API: 33 passed, 1 skipped (fontconfig absent on Windows). Pre-existing on
+e632d3e too: test_caption_width x3, test_reference_style_look_stage2 x1,
+test_burn_ass_subtitles_passes_selected_fonts_dir (Windows libass/paths).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                                  |   1 +
+ backend/fonts/FONT_MANIFEST.json              |   8 ---
+ backend/fonts/THEBOLDFONT.ttf                 | Bin 15448 -> 0 bytes
+ backend/src/caption_templates.py              |   8 +--
+ backend/src/font_registry.py                  |  21 ++++++++
+ .../tests/unit/test_caption_glyph_fallback.py |  50 +++++++++++++++---
+ backend/tests/unit/test_font_manifest.py      |  12 +++--
+ .../tests/unit/test_video_utils_effects.py    |  10 +++-
+ tools/assets/fetch_fonts.py                   |   1 -
+ 9 files changed, 83 insertions(+), 28 deletions(-)
+ delete mode 100644 backend/fonts/THEBOLDFONT.ttf
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 6e86548..0977167 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -16,6 +16,7 @@ Add a line here when a pull request changes something a user can see. Use **New*
+ - **Improved:** A clip now keeps one look from start to finish. Before, the picture could jump between a zoomed-in face crop and the whole frame with blurred bars every second or two. The app now picks whichever look covers most of the clip and uses it throughout. Two-person podcast splits and streamer facecam layouts are unchanged. Set `REFRAME_CONSISTENT=0` for the old shot-by-shot behaviour. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **New:** Clips now get background music. Seven free tracks cover the moods the styles ask for: comedy, energetic, upbeat, corporate, calm, funk, and a drum-and-bass stand-in for phonk. All are public domain (CC0, from the FreePD catalogue), so there are no copyright claims. Meme & comedy clips now play a playful comedy bed under the voices. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **New:** Sound effects now actually play. The whoosh, pop, riser, ding, impact ("boom") and sting cues the editor places were silent before, because no sounds were bundled. The six bundled sounds are our own originals. You can still upload your own effects to your SFX library. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
++- **Changed:** The "The Bold Font" caption face is no longer bundled because its licence could not be verified. The MrBeast, Neon, Large Centre Pop and Bold Uppercase caption styles now use Montserrat Black, and drafts or styles that named the old font render in Montserrat Black automatically. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Under the hood:** The extended transition library now has a public catalogue with family filters and cached 1.2-second preview clips, controlled by `TRANSITION_LIBRARY_API`; rendering is unchanged until the editor adopts it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **New:** The bundled caption font library now includes ten short-form display fonts -- Luckiest Guy, Lilita One, Titan One, Bungee, Permanent Marker, Paytone One, Passion One, Rubik Mono One, Chewy and Fredoka -- all taken from the official Google Fonts repository under OFL-1.1 or Apache-2.0, with a manifest and checker that verify every bundled font. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ 
+diff --git a/backend/fonts/FONT_MANIFEST.json b/backend/fonts/FONT_MANIFEST.json
+index 49b76fa..bf8f712 100644
+--- a/backend/fonts/FONT_MANIFEST.json
++++ b/backend/fonts/FONT_MANIFEST.json
+@@ -233,14 +233,6 @@
+       "source_url": "https://github.com/google/fonts/tree/main/ofl/sora",
+       "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/sora/OFL.txt"
+     },
+-    {
+-      "file": "THEBOLDFONT.ttf",
+-      "sha256": "5751022bdfe00903cf6ec5d4a8d23920952ecc213169bbaf19f28d8dedc54339",
+-      "family": "THE BOLD FONT",
+-      "license": "UNVERIFIED",
+-      "source_url": "",
+-      "license_url": ""
+-    },
+     {
+       "file": "TikTokSans-Bold.ttf",
+       "sha256": "04c5f110157c1f8a84319d850b6c1ae0ea95798ea2a8b1326262d06e68d00064",
+diff --git a/backend/fonts/THEBOLDFONT.ttf b/backend/fonts/THEBOLDFONT.ttf
+deleted file mode 100644
+index e790788d68d32db53f06a52f2185284b258db76c..0000000000000000000000000000000000000000
+GIT binary patch
+literal 0
+HcmV?d00001
+
+literal 15448
+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
+
+diff --git a/backend/src/caption_templates.py b/backend/src/caption_templates.py
+index d2c09d6..b544c00 100644
+--- a/backend/src/caption_templates.py
++++ b/backend/src/caption_templates.py
+@@ -68,7 +68,7 @@ CAPTION_TEMPLATES: Dict[str, Dict[str, Any]] = {
+     "mrbeast": {
+         "name": "MrBeast",
+         "description": "Large yellow text with red pop highlights and emojis",
+-        "font_family": "THEBOLDFONT",
++        "font_family": "Montserrat-Black",
+         "font_size": 34,
+         "font_color": "#FFFF00",  # Yellow
+         "highlight_color": "#FF2D2D",  # Red
+@@ -137,7 +137,7 @@ CAPTION_TEMPLATES: Dict[str, Dict[str, Any]] = {
+     "neon": {
+         "name": "Neon",
+         "description": "Glowing neon text with magenta highlights",
+-        "font_family": "THEBOLDFONT",
++        "font_family": "Montserrat-Black",
+         "font_size": 30,
+         "font_color": "#00FFFF",  # Cyan
+         "highlight_color": "#FF00FF",  # Magenta
+@@ -183,7 +183,7 @@ CAPTION_TEMPLATES: Dict[str, Dict[str, Any]] = {
+     "large_centre_pop": {
+         "name": "Large Centre Pop",
+         "description": "Oversized captions dead centre that pop word by word (the meme/comedy profile's preset)",
+-        "font_family": "THEBOLDFONT",
++        "font_family": "Montserrat-Black",
+         "font_size": 40,
+         "font_color": "#FFFFFF",
+         "highlight_color": "#FFE000",  # Bright yellow for the active word
+@@ -206,7 +206,7 @@ CAPTION_TEMPLATES: Dict[str, Dict[str, Any]] = {
+     "bold_uppercase": {
+         "name": "Bold Uppercase",
+         "description": "Big bold uppercase captions, centre-anchored (the sports/football profiles' preset)",
+-        "font_family": "THEBOLDFONT",
++        "font_family": "Montserrat-Black",
+         "font_size": 36,
+         "font_color": "#FFFFFF",
+         "highlight_color": "#FFE000",
+diff --git a/backend/src/font_registry.py b/backend/src/font_registry.py
+index a0b1f5f..9e90d07 100644
+--- a/backend/src/font_registry.py
++++ b/backend/src/font_registry.py
+@@ -117,10 +117,31 @@ def get_available_fonts(user_id: str | None = None) -> list[dict[str, Any]]:
+     return sorted(fonts, key=lambda font: font["display_name"])
+ 
+ 
++# Fonts that were dropped from the bundle keep resolving, so stored editor
++# drafts, templates and AI-edit plans that name them still render.
++# THEBOLDFONT: licence unverifiable (FONT_MANIFEST "UNVERIFIED"), dropped
++# from everything shipped (Sanji, 2026-11-18); Montserrat-Black (OFL-1.1,
++# verified) is the closest heavy geometric display face already bundled.
++FONT_ALIASES = {"THEBOLDFONT": "Montserrat-Black"}
++
++
+ def find_font_path(
+     font_name: str,
+     user_id: str | None = None,
+     allow_all_user_fonts: bool = False,
++) -> Path | None:
++    found = _find_font_path_direct(font_name, user_id, allow_all_user_fonts)
++    if found is None:
++        alias = FONT_ALIASES.get((font_name or "").strip())
++        if alias:
++            found = _find_font_path_direct(alias, user_id, allow_all_user_fonts)
++    return found
++
++
++def _find_font_path_direct(
++    font_name: str,
++    user_id: str | None = None,
++    allow_all_user_fonts: bool = False,
+ ) -> Path | None:
+     requested = font_name.strip()
+     if not requested:
+diff --git a/backend/tests/unit/test_caption_glyph_fallback.py b/backend/tests/unit/test_caption_glyph_fallback.py
+index 5fd826f..1d0a32c 100644
+--- a/backend/tests/unit/test_caption_glyph_fallback.py
++++ b/backend/tests/unit/test_caption_glyph_fallback.py
+@@ -1,8 +1,29 @@
+ from src.caption_templates import CAPTION_TEMPLATES
+-from src.font_registry import FONTS_DIR, get_font_codepoints
++from src.font_registry import FONTS_DIR, find_font_path, get_font_codepoints
+ from src.media import captions
+ 
+ 
++def _caps_only_coverage(monkeypatch):
++    """Make the bundled font named THEBOLDFONT behave like the dropped file.
++
++    THEBOLDFONT.ttf (licence unverifiable) left the bundle on 2026-11-18 and
++    the name now resolves to Montserrat-Black (font_registry.FONT_ALIASES).
++    The fallback machinery these tests pin still needs a font that lacks
++    accented glyphs, so the coverage lookup for that one file reports what
++    the dropped font covered: ASCII only. Every assertion is unchanged.
++    """
++    real = captions.get_font_codepoints
++    target = find_font_path("THEBOLDFONT")
++    ascii_only = frozenset(range(0x20, 0x7F))
++
++    def coverage(path):
++        if target is not None and str(path) == str(target):
++            return ascii_only
++        return real(path)
++
++    monkeypatch.setattr(captions, "get_font_codepoints", coverage)
++
++
+ def _pin_default_template_font(monkeypatch, font_family):
+     # The fallback tests below exercise the swap machinery with a font
+     # that genuinely lacks glyphs (THEBOLDFONT). Since the D13 adoption
+@@ -32,29 +53,41 @@ def _build(tmp_path, monkeypatch, hook_title, words=None):
+ 
+ 
+ def test_get_font_codepoints_reads_the_cmap():
+-    bold = get_font_codepoints(FONTS_DIR / "THEBOLDFONT.ttf")
++    # THEBOLDFONT.ttf (the bundled font WITHOUT accents) was dropped on
++    # 2026-11-18; the cmap reader is now pinned on a real bundled font that
++    # lacks a known block (Bangers: no Cyrillic) next to the full fallback.
++    display = get_font_codepoints(FONTS_DIR / "Bangers-Regular.ttf")
+     fallback = get_font_codepoints(FONTS_DIR / f"{captions.GLYPH_FALLBACK_FONT}.ttf")
+ 
+-    assert ord("A") in bold and ord("a") in bold
+-    assert ord("ú") not in bold and ord("Ñ") not in bold
++    assert ord("A") in display and ord("a") in display
++    assert ord("Ж") not in display
+     assert {ord(ch) for ch in "áéíóúÁÉÍÓÚñÑüÜ"} <= fallback
+ 
+ 
++def test_dropped_font_name_still_resolves_to_a_licensed_font():
++    assert not (FONTS_DIR / "THEBOLDFONT.ttf").exists()
++    assert find_font_path("THEBOLDFONT") == FONTS_DIR / "Montserrat-Black.ttf"
++
++
+ def test_accented_hook_title_switches_to_a_font_that_has_the_glyphs(
+     tmp_path, monkeypatch
+ ):
++    _caps_only_coverage(monkeypatch)
+     _pin_default_template_font(monkeypatch, "THEBOLDFONT")
+     content = _build(tmp_path, monkeypatch, "Claude ahora actúa sin que le pidas")
+     fallback = captions.ass_font_name(captions.GLYPH_FALLBACK_FONT)
+ 
+     assert f"Style: Hook,{fallback}," in content
+     assert f"Style: Default,{fallback}," in content
+-    # THEBOLDFONT only draws capitals, so the fallback keeps the all-caps look.
+-    assert "ACTÚA" in content
+-    assert "actúa" not in content
++    # The dropped THEBOLDFONT.ttf only drew capitals, so its fallback was
++    # forced to all caps (CAPS_ONLY_FONTS keys on the font file). The name
++    # now resolves to Montserrat-Black, which has lowercase: the fallback
++    # keeps the text's own case.
++    assert "actúa" in content
+ 
+ 
+ def test_accented_caption_words_also_trigger_the_fallback(tmp_path, monkeypatch):
++    _caps_only_coverage(monkeypatch)
+     _pin_default_template_font(monkeypatch, "THEBOLDFONT")
+     words = [
+         {"text": "Publicá", "start": 0.2, "end": 0.6},
+@@ -64,10 +97,11 @@ def test_accented_caption_words_also_trigger_the_fallback(tmp_path, monkeypatch)
+     content = _build(tmp_path, monkeypatch, None, words)
+ 
+     assert f"\\fn{captions.ass_font_name(captions.GLYPH_FALLBACK_FONT)}" in content
+-    assert "DÍAS" in content
++    assert "días" in content  # own case: see the note in the hook-title test
+ 
+ 
+ def test_plain_ascii_text_keeps_the_template_font(tmp_path, monkeypatch):
++    _caps_only_coverage(monkeypatch)
+     _pin_default_template_font(monkeypatch, "THEBOLDFONT")
+     content = _build(tmp_path, monkeypatch, "Claude acts before you ask")
+     template_font = captions.ass_font_name("THEBOLDFONT")
+diff --git a/backend/tests/unit/test_font_manifest.py b/backend/tests/unit/test_font_manifest.py
+index c9cd998..58ac615 100644
+--- a/backend/tests/unit/test_font_manifest.py
++++ b/backend/tests/unit/test_font_manifest.py
+@@ -137,18 +137,20 @@ def test_bundled_manifest_covers_every_font_and_flags_only_the_known_gap():
+     }
+ 
+     assert {entry["file"] for entry in entries} == bundled
+-    assert len(entries) == 35
++    # 35 before THEBOLDFONT.ttf was dropped (licence UNVERIFIED, Sanji
++    # 2026-11-18): every bundled font is now provably OFL or Apache.
++    assert len(entries) == 34
+ 
+     unverified = {
+         entry["file"]
+         for entry in entries
+         if entry["license"] not in {"OFL-1.1", "Apache-2.0"}
+     }
+-    assert unverified == {"THEBOLDFONT.ttf"}
++    assert unverified == set()
++    assert "THEBOLDFONT.ttf" not in bundled
+ 
+     problems = check_fonts_module.check_fonts(FONTS_DIR, MANIFEST_PATH)
+-    assert problems
+-    assert all("THEBOLDFONT.ttf" in problem for problem in problems)
++    assert problems == []
+ 
+ 
+ async def test_get_fonts_lists_every_new_display_font(
+@@ -161,4 +163,4 @@ async def test_get_fonts_lists_every_new_display_font(
+     assert response.status_code == 200
+     names = {font["name"] for font in response.json()["fonts"]}
+     assert NEW_FONT_STEMS <= names
+-    assert len(names) >= 35
++    assert len(names) >= 34  # 35 before THEBOLDFONT.ttf was dropped (licence UNVERIFIED)
+diff --git a/backend/tests/unit/test_video_utils_effects.py b/backend/tests/unit/test_video_utils_effects.py
+index 9a4273a..149ae00 100644
+--- a/backend/tests/unit/test_video_utils_effects.py
++++ b/backend/tests/unit/test_video_utils_effects.py
+@@ -186,7 +186,10 @@ def test_build_assemblyai_ass_subtitles_uses_cached_word_timings(tmp_path):
+ 
+ 
+ def test_ass_font_name_uses_internal_font_family():
+-    assert video_utils.ass_font_name("THEBOLDFONT") == "THE BOLD FONT FREE VERSION"
++    # Pinned on THEBOLDFONT ("THE BOLD FONT FREE VERSION") until that file
++    # was dropped (licence UNVERIFIED, 2026-11-18); TikTokSans-Bold has the
++    # same property: its internal family differs from its file name.
++    assert video_utils.ass_font_name("TikTokSans-Bold") == "TikTok Sans"
+ 
+ 
+ def test_extend_keep_ranges_finishes_nearby_sentence(tmp_path):
+@@ -250,7 +253,10 @@ def test_burn_ass_subtitles_passes_fontsdir_to_ffmpeg(tmp_path):
+ 
+ 
+ def test_ass_font_name_uses_internal_font_family_for_libass():
+-    assert video_utils.ass_font_name("THEBOLDFONT") == "THE BOLD FONT FREE VERSION"
++    # See test_ass_font_name_uses_internal_font_family: the dropped name now
++    # resolves to Montserrat-Black, whose internal family libass gets.
++    assert video_utils.ass_font_name("TikTokSans-Bold") == "TikTok Sans"
++    assert video_utils.ass_font_name("THEBOLDFONT") == "Montserrat Black"
+ 
+ 
+ def test_burn_ass_subtitles_passes_selected_fonts_dir(tmp_path):
+diff --git a/tools/assets/fetch_fonts.py b/tools/assets/fetch_fonts.py
+index 55ed763..f5de45a 100644
+--- a/tools/assets/fetch_fonts.py
++++ b/tools/assets/fetch_fonts.py
+@@ -135,7 +135,6 @@ EXISTING_FONTS = {
+     "Roboto.ttf": ("Roboto", "ofl/roboto"),
+     "Rubik.ttf": ("Rubik", "ofl/rubik"),
+     "Sora.ttf": ("Sora", "ofl/sora"),
+-    "THEBOLDFONT.ttf": ("THE BOLD FONT", None),
+     "TikTokSans-Bold.ttf": ("TikTok Sans", "ofl/tiktoksans"),
+     "TikTokSans-Regular.ttf": ("TikTok Sans", "ofl/tiktoksans"),
+     "Urbanist.ttf": ("Urbanist", "ofl/urbanist"),
+-- 
+2.56.0.windows.2
+

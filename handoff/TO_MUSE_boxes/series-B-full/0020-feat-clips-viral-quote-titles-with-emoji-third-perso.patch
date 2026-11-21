@@ -1,0 +1,294 @@
+From 1c5106c65df974c91b738828c48cfbca2e51d42c Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 20:09:14 +0530
+Subject: [PATCH 20/27] feat(clips): viral quote titles with emoji (third
+ person, never I/me) + payoff cold open for long-stream clips
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/live/finisher.py        |  5 +-
+ backend/src/live/vod.py             | 55 ++++++++++++++++---
+ backend/src/media/hook_finish.py    | 83 +++++++++++++++++++++++++++--
+ backend/tests/unit/test_live_vod.py |  2 +-
+ 4 files changed, 134 insertions(+), 11 deletions(-)
+
+diff --git a/backend/src/live/finisher.py b/backend/src/live/finisher.py
+index 5541b9b..7230f3f 100644
+--- a/backend/src/live/finisher.py
++++ b/backend/src/live/finisher.py
+@@ -32,7 +32,8 @@ def _duration(path: Path) -> float:
+ 
+ def render_live_clip(window: Path, out_path: Path, *, niche: str = "gaming", layout_template: Optional[str] = "facecam_red",
+                      credit: Optional[str] = None, hook_title: Optional[str] = None,
+-                     streamer_words_only: bool = True, voice_fx: Optional[str] = None) -> Dict[str, Any]:
++                     streamer_words_only: bool = True, voice_fx: Optional[str] = None,
++                     quote_title: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+     """Render ``window`` into ``out_path``; returns ``{ok, duration, words, error}``."""
+     from ..auto_director import edl as E
+     from ..media.gaming_templates import clean_layout_credit
+@@ -70,6 +71,8 @@ def render_live_clip(window: Path, out_path: Path, *, niche: str = "gaming", lay
+     clip_info = {"id": out_path.stem, "start": 0.0, "end": total, "duration": total}
+     edl = E.build_edl(clip_info, words, profile, energy_peaks=[], broll_enabled=False)
+     apply_auto_music_bed(edl, niche)
++    if quote_title:
++        edl["quote_title"] = quote_title  # drawn by media/hook_finish.py
+     attach_reframe_plan(edl, window, [(0.0, total)], False, framing=None)
+     ok = create_optimized_clip(window, 0.0, total, out_path, add_subtitles=True,
+                                caption_template=(profile.get("captions") or {}).get("preset_id") or "default",
+diff --git a/backend/src/live/vod.py b/backend/src/live/vod.py
+index 4b69e7f..d1be8c9 100644
+--- a/backend/src/live/vod.py
++++ b/backend/src/live/vod.py
+@@ -251,10 +251,14 @@ names, and moments that need earlier context.
+ 
+ For each pick give start and end in absolute seconds: start right before the hook (never
+ on silence), end just after the payoff, {min_len:.0f}-{max_len:.0f} seconds long. Give a short
+-punchy title (3-8 words, no emojis) and one line why.
++punchy title (3-8 words, no emojis) and one line why. Also write "quote": the on-screen
++caption in the style of viral streamer clips, an ironic one-liner about what happens, e.g.
++"Lacy swore he never crashes" or "Speed thought this was easy". ALWAYS third person with the
++streamer's name ({creator}); NEVER "I", "me", "my", "we". At most 8 words, no emojis in it.
++And "emojis": 1-3 emojis that mock or react to it, chosen ONLY from: {emoji_set}
+ 
+ {request_rule}Answer with ONLY a JSON array:
+-[{{"id": <candidate id>, "start": <sec>, "end": <sec>, "title": "...", "why": "...", "virality": <0-100>}}]
++[{{"id": <candidate id>, "start": <sec>, "end": <sec>, "title": "...", "quote": "...", "emojis": ["...", "..."], "why": "...", "virality": <0-100>}}]
+ 
+ Candidates:
+ {candidates}"""
+@@ -301,8 +305,18 @@ fewer than {count} if fewer match, or an empty array if none does.
+ """
+ 
+ 
++def _emoji_set() -> List[str]:
++    try:
++        from ..media.edl_render import ASSETS_DIR
++
++        data = json.loads((Path(ASSETS_DIR) / "stickers" / "STICKERS_MANIFEST.json").read_text(encoding="utf-8"))
++        return [e["emoji"] for e in data if e.get("emoji")]
++    except Exception:
++        return []
++
++
+ def llm_pick(candidates: List[Dict[str, Any]], count: int,
+-             request: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
++             request: Optional[str] = None, creator: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+     """The model's picks; None when the model is unavailable (the caller then
+     ranks by signals). With a ``request`` an empty list means nothing matched."""
+     blocks = []
+@@ -312,8 +326,10 @@ def llm_pick(candidates: List[Dict[str, Any]], count: int,
+                       f"heat {c.get('heat', 0):.2f}\n"
+                       f"{_transcript_lines(c.get('words') or [])}")
+     rule = REQUEST_RULE.format(request=request.replace('"', "'"), count=count) if request else ""
++    emojis = _emoji_set()
+     prompt = PICK_PROMPT.format(count=count, min_len=MIN_LEN, max_len=MAX_LEN, candidates="\n\n".join(blocks),
+-                                request_rule=rule)
++                                request_rule=rule, creator=creator or "the streamer",
++                                emoji_set=" ".join(emojis) or "😭 💀 🔥 😂")
+     text = _chat(prompt)
+     if text is None:
+         return None
+@@ -337,7 +353,9 @@ def llm_pick(candidates: List[Dict[str, Any]], count: int,
+         start = max(lo, min(start, c["onset"]))
+         end = min(hi, max(end, start + MIN_LEN))
+         end = min(end, start + MAX_LEN)
++        picked_emojis = [e for e in (p.get("emojis") or []) if isinstance(e, str) and (not emojis or e in emojis)][:3]
+         out.append({**c, "start": round(start, 2), "end": round(end, 2), "title": str(p.get("title") or "")[:80] or None,
++                    "quote": str(p.get("quote") or "")[:80] or None, "emojis": picked_emojis,
+                     "why": str(p.get("why") or "")[:200], "virality": p.get("virality")})
+     if request:
+         return out[:count]  # [] = nothing matched the request: an honest answer
+@@ -499,6 +517,25 @@ def signal_pick(candidates: List[Dict[str, Any]], voiced: Sequence[float], count
+ # 6. Download only the picked pieces
+ # --------------------------------------------------------------------------
+ 
++def cold_open(section: Path, payoff_at: float, teaser: float = 2.5, min_offset: float = 8.0) -> Optional[Path]:
++    """Start the clip on its payoff, then play it from the top (the viral loop:
++    the reaction first, the build-up after, the payoff again at the end).
++    Only when the payoff is at least ``min_offset`` s in; returns the new file."""
++    if os.getenv("LIVE_COLD_OPEN", "on").strip().lower() in ("off", "0", "false", "no") or payoff_at < min_offset:
++        return None
++    t0 = max(0.0, payoff_at - 0.8)
++    out = section.with_name(section.stem + "_cold.mp4")
++    graph = (f"[0:v]trim={t0:.2f}:{t0 + teaser:.2f},setpts=PTS-STARTPTS[tv];[0:a]atrim={t0:.2f}:{t0 + teaser:.2f},asetpts=PTS-STARTPTS[ta];"
++             f"[0:v]setpts=PTS-STARTPTS[bv];[0:a]asetpts=PTS-STARTPTS[ba];[tv][ta][bv][ba]concat=n=2:v=1:a=1[v][a]")
++    result = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(section), "-filter_complex", graph, "-map", "[v]", "-map", "[a]",
++                             "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-c:a", "aac", "-b:a", "192k", str(out)],
++                            capture_output=True, text=True)
++    if result.returncode != 0 or not out.is_file():
++        logger.warning("Cold open failed; keeping the plain order: %s", (result.stderr or "")[-200:])
++        return None
++    return out
++
++
+ def download_section(url: str, start: float, end: float, out: Path, max_height: int = 1080) -> Optional[Path]:
+     out.parent.mkdir(parents=True, exist_ok=True)
+     fmt = f"bv*[height<={max_height}]+ba/b[height<={max_height}]/b"
+@@ -625,7 +662,8 @@ class VodSession:
+                 candidates[need[j]]["words"] = w
+         self._progress(f'Picking the moments that match "{request}"' if request
+                        else "Picking the clips most likely to go viral", duration)
+-        picks = llm_pick(candidates, want, request=request)
++        creator = (getattr(s, "credit", None) or "").strip().lstrip("@").replace("credit", "").strip() or None
++        picks = llm_pick(candidates, want, request=request, creator=creator)
+         if picks is None:
+             picks = signal_pick(candidates, series.get("voiced_frac") or [], want)
+         if not picks:
+@@ -640,6 +678,8 @@ class VodSession:
+             n = self.moments
+             self._progress(f"Making clip {n}/{len(picks)}", duration)
+             section = download_section(s.url, pick["start"], pick["end"], self.dir / f"window_{n:03d}.mp4")
++            if section is not None:
++                section = cold_open(section, pick["onset"] - pick["start"]) or section
+             stamp = time.strftime("%H:%M:%S", time.gmtime(pick["start"]))
+             label = (pick.get("title") or "Reaction") + (f" - {pick['why']}" if pick.get("why") else "")
+             # Times are positions in the video, not wall-clock: they travel in
+@@ -660,8 +700,11 @@ class VodSession:
+             t = time.time()
+             out = self.dir / f"clip_{n:03d}.mp4"
+             try:
++                quote = ({"text": pick["quote"], "emojis": pick.get("emojis") or [], "creator": creator}
++                         if pick.get("quote") else None)
+                 result = render_live_clip(section, out, niche=s.niche, layout_template=s.layout_template,
+-                                          credit=s.credit, hook_title=s.hook_title if s.hook_title else None,
++                                          credit=s.credit, quote_title=quote,
++                                          hook_title=None if quote else (s.hook_title if s.hook_title else None),
+                                           streamer_words_only=s.streamer_words_only,
+                                           voice_fx=getattr(s, "voice_fx", None))
+             except Exception as exc:
+diff --git a/backend/src/media/hook_finish.py b/backend/src/media/hook_finish.py
+index 5f779d3..55ae729 100644
+--- a/backend/src/media/hook_finish.py
++++ b/backend/src/media/hook_finish.py
+@@ -90,6 +90,45 @@ def punch_filter(width: int, height: int, at: float, seconds: float, zoom: float
+             f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2")
+ 
+ 
++QUOTE_Y_FRAC = 0.16          # top safe area, like the hook title
++EMOJI_PX = 84
++
++
++def emoji_file(char: str) -> Optional[Path]:
++    """The Noto emoji PNG for ``char`` (assets/stickers, Apache-2.0), or None."""
++    import json
++
++    from .edl_render import ASSETS_DIR
++
++    manifest = Path(ASSETS_DIR) / "stickers" / "STICKERS_MANIFEST.json"
++    try:
++        entries = json.loads(manifest.read_text(encoding="utf-8"))
++    except (OSError, ValueError):
++        return None
++    for entry in entries if isinstance(entries, list) else []:
++        if (entry.get("emoji") or "").replace("️", "") == (char or "").replace("️", ""):
++            path = Path(ASSETS_DIR).parent / entry["file"] if not Path(entry["file"]).is_absolute() else Path(entry["file"])
++            if not path.is_file():
++                path = Path(ASSETS_DIR) / "stickers" / "emoji" / Path(entry["file"]).name
++            return path if path.is_file() else None
++    return None
++
++
++def quote_title_text(text: str, creator: Optional[str]) -> Optional[str]:
++    """Third person, masked, short: never "I/me/my" (owner rule 2026-11-19)."""
++    from ..auto_director.title_person import ensure_third_person_title
++    from .profanity import mask_profanity
++
++    text = " ".join(str(text or "").split()).strip().strip('"').strip()
++    if not text:
++        return None
++    text = ensure_third_person_title(text, creator_name=creator, fallback_text=text) or text
++    words = text.split()
++    if len(words) > 9:
++        text = " ".join(words[:9])
++    return mask_profanity(text)
++
++
+ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str = "") -> bool:
+     """Apply the hook finish to ``clip_path`` in place. True when applied."""
+     if not hook_finish_enabled():
+@@ -111,6 +150,29 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+     filters.append(punch_filter(info["width"], info["height"], at, seconds, zoom))
+     video_chain = ",".join(filters)
+ 
++    # Quote title with emoji ("Lacy swore he never crashes" 😭✌️🥀): the text
++    # via drawtext (Anton, white, black outline), the emoji as PNGs on a row
++    # under it - the container has no emoji font, so they cannot be text.
++    quote = (edl or {}).get("quote_title") or {}
++    quote_text = quote_title_text(quote.get("text"), quote.get("creator")) if quote else None
++    emoji_paths = [p for p in (emoji_file(e) for e in (quote.get("emojis") or [])[:3]) if p is not None]
++    text_file = None
++    if quote_text:
++        import tempfile
++
++        from .ffmpeg import ffmpeg_escape_filter_path
++
++        font = Path(__file__).resolve().parents[2] / "fonts" / "Anton-Regular.ttf"
++        handle = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8")
++        handle.write(f"\u201c{quote_text}\u201d" if False else f'"{quote_text}"')
++        handle.close()
++        text_file = Path(handle.name)
++        size = max(36, int(info["width"] * 0.062))
++        y = int(info["height"] * QUOTE_Y_FRAC)
++        video_chain += (f",drawtext=fontfile={ffmpeg_escape_filter_path(font)}:textfile={ffmpeg_escape_filter_path(text_file)}"
++                        f":fontsize={size}:fontcolor=white:borderw={max(3, size // 12)}:bordercolor=black"
++                        f":x=(w-text_w)/2:y={y}")
++
+     whoosh = None
+     try:
+         from .asset_library import pick_variant
+@@ -132,14 +194,27 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+         if not any(a == "-c:v" for a in encoder_args):
+             encoder_args = ["-c:v", "libx264", *encoder_args]
+         cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(clip_path)]
++        graph = f"[0:v]{video_chain}[v0]"
++        last = "v0"
++        if emoji_paths and quote_text:
++            size = max(36, int(info["width"] * 0.062))
++            row_y = int(info["height"] * QUOTE_Y_FRAC) + int(size * 1.25)
++            row_w = len(emoji_paths) * EMOJI_PX + (len(emoji_paths) - 1) * 10
++            x0 = (info["width"] - row_w) // 2
++            for i, path in enumerate(emoji_paths):
++                cmd += ["-i", str(path)]
++                idx = 1 + i
++                graph += f";[{idx}:v]scale={EMOJI_PX}:{EMOJI_PX}[e{i}];[{last}][e{i}]overlay=x={x0 + i * (EMOJI_PX + 10)}:y={row_y}[v{i + 1}]"
++                last = f"v{i + 1}"
++        audio_index = 1 + (len(emoji_paths) if (emoji_paths and quote_text) else 0)
+         if whoosh is not None and info["audio"]:
+             delay_ms = max(0, int((at - 0.15) * 1000))
+             cmd += ["-i", str(whoosh), "-filter_complex",
+-                    f"[0:v]{video_chain}[v];[1:a]adelay={delay_ms}|{delay_ms},volume=0.55[s];"
++                    f"{graph};[{audio_index}:a]adelay={delay_ms}|{delay_ms},volume=0.55[s];"
+                     f"[0:a][s]amix=inputs=2:duration=first:normalize=0[a]",
+-                    "-map", "[v]", "-map", "[a]", "-c:a", "aac", "-b:a", "192k"]
++                    "-map", f"[{last}]", "-map", "[a]", "-c:a", "aac", "-b:a", "192k"]
+         else:
+-            cmd += ["-filter_complex", f"[0:v]{video_chain}[v]", "-map", "[v]", "-map", "0:a?", "-c:a", "copy"]
++            cmd += ["-filter_complex", graph, "-map", f"[{last}]", "-map", "0:a?", "-c:a", "copy"]
+         return cmd + [*encoder_args, "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)]
+ 
+     encoder, encoder_args = get_video_encoder(True)
+@@ -148,6 +223,8 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+         # NVENC refused (no GPU in this container): one CPU retry.
+         cpu_args = build_final_video_encode_args(crf=CPU_FALLBACK_CRF, preset=CPU_FALLBACK_PRESET)
+         result = subprocess.run(command(cpu_args), capture_output=True, text=True)
++    if text_file is not None:
++        text_file.unlink(missing_ok=True)
+     if result.returncode != 0 or not out.is_file() or out.stat().st_size == 0:
+         logger.warning("Hook finish failed; keeping the clip as rendered: %s", (result.stderr or "")[-300:])
+         out.unlink(missing_ok=True)
+diff --git a/backend/tests/unit/test_live_vod.py b/backend/tests/unit/test_live_vod.py
+index e4aba01..3cc8690 100644
+--- a/backend/tests/unit/test_live_vod.py
++++ b/backend/tests/unit/test_live_vod.py
+@@ -81,7 +81,7 @@ def test_session_runs_audio_first_and_downloads_only_the_picks(monkeypatch, tmp_
+     monkeypatch.setattr(V, "download_audio", fake_audio)
+     monkeypatch.setattr(V, "scan_audio", lambda a, d, workers=4, progress=None: _series(3600, [600, 1800]))
+     monkeypatch.setattr(V, "transcribe_window", lambda a, s, e: [{"text": "bro", "start": s + 1, "end": s + 2}])
+-    monkeypatch.setattr(V, "llm_pick", lambda c, n, request=None: None)
++    monkeypatch.setattr(V, "llm_pick", lambda c, n, request=None, creator=None: None)
+ 
+     def fake_section(url, s, e, out, max_height=1080):
+         calls["sections"].append((round(s), round(e)))
+-- 
+2.56.0.windows.2
+

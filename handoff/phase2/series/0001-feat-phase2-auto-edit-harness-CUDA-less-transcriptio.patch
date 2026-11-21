@@ -1,0 +1,694 @@
+From 545ce3953b03f09ee7ceb3caee670e01a81421c9 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 18:43:10 +0530
+Subject: [PATCH 01/22] feat(phase2): auto-edit harness, CUDA-less
+ transcription fallback, loudness + boundary QC (WIP)
+
+Phase 2 work in progress, committed at a safe checkpoint.
+- media/transcription.py: missing CUDA libraries (cuBLAS/cuDNN) on a GPU
+  host now fall back to CPU int8 once and are remembered for the process
+  (previously: crash, then a hang in the batched retry ladder).
+  WHISPER_DEVICE=cpu|cuda override.
+- media/clip_qc.py: opt-in warn-only checks: loudness vs a LUFS target,
+  complete-thought boundaries (opens/ends mid-sentence, cuts a word).
+  Skipped when inputs are absent, so existing reports are unchanged.
+- tools/phase2/auto_edit.py + run_all.py: drive the real stages per niche
+  (transcribe, AI select or fixed windows, build_edl, attach_reframe_plan,
+  stock resolve with keys, create_optimized_clip, QC, report).
+Tests: test_broll_v3_cadence 28 (incl. 2 CUDA cases), test_clip_qc_phase2 5,
+test_clip_qc_pipeline 8, test_separation_transcription 8 pass.
+test_clip_qc and test_faster_whisper_transcription time out on Windows on
+the untouched baseline too.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                                |   2 +
+ backend/src/media/clip_qc.py                |  94 +++++++
+ backend/src/media/transcription.py          |  50 +++-
+ backend/tests/unit/test_broll_v3_cadence.py |  21 ++
+ backend/tests/unit/test_clip_qc_phase2.py   |  40 +++
+ tools/phase2/auto_edit.py                   | 259 ++++++++++++++++++++
+ tools/phase2/run_all.py                     |  68 +++++
+ 7 files changed, 528 insertions(+), 6 deletions(-)
+ create mode 100644 backend/tests/unit/test_clip_qc_phase2.py
+ create mode 100644 tools/phase2/auto_edit.py
+ create mode 100644 tools/phase2/run_all.py
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index eabd77e..cb367da 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,8 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-17
++- **Fixed:** On a computer with an NVIDIA graphics card but without the CUDA libraries installed (common outside the Docker image), transcription crashed or hung. It now switches to the processor once and remembers that for the rest of the run. `WHISPER_DEVICE=cpu` forces the processor.
++- **Improved:** Clip quality checks can now flag a clip that is far from the -14 LUFS loudness short-form platforms use, and a clip that opens or ends mid-sentence or cuts a word. Both are warnings only and run when the pipeline supplies the loudness target and transcript.
+ - **Improved:** Talking videos now get roughly twice the stock B-roll, placed where it helps. Finance, podcast, education, vlog, travel and true-crime clips plan cutaways at 3–4.5 per minute instead of about one per clip, and each cutaway is chosen from what the speaker is actually saying ("interest rates" shows a central bank, not a random building). Words used as names ("Tim Cook", "Steve Jobs") and passing mentions no longer trigger footage. While the speaker says "look at this" the original picture stays on screen, and during a live reaction (laughing, "wow!") the stock shot appears as a framed picture-in-picture so the face stays visible. A stock search that fails because of a rejected key is now recorded as a provider error instead of "nothing found". Set `BROLL_CADENCE=legacy` to keep the previous behaviour.
+ - **Improved:** Streamer reaction picking now also reads what the streamer says — exclamations like "no, no, no", "what!" or "bro" in English, Spanish and romanised Hindi — and checks the facecam mouth so in-game character dialogue is less likely to be mistaken for the streamer. Words alone never make a clip: they must line up with a facecam or voice reaction.
+ - **Fixed:** The second NVIDIA fallback for AI clip selection pointed at DeepSeek V4.1 Flash, which NVIDIA has retired (a live check on 17 November got "gone"), so that fallback step always failed. It now uses Nemotron 3.5 Super, which the same check confirmed working on the free NVIDIA tier. The fallback order is unchanged and no paid model was added.
+diff --git a/backend/src/media/clip_qc.py b/backend/src/media/clip_qc.py
+index be114d3..5454d38 100644
+--- a/backend/src/media/clip_qc.py
++++ b/backend/src/media/clip_qc.py
+@@ -131,6 +131,14 @@ class ClipQcContext:
+     rendered_segment_count: Optional[int] = None
+     caption_timings: Optional[Sequence[dict[str, Any]]] = None
+     caption_hold_cap_seconds: Optional[float] = None
++    # Phase 2 checks (optional; skipped when absent, so older reports are
++    # unchanged): the platform loudness target the finished clip should
++    # meet (short-form platforms normalise to about -14 LUFS), and the
++    # source transcript words (seconds, {"text","start","end"}) used with
++    # source_start/source_end to judge whether the clip starts and ends on
++    # a complete thought.
++    loudness_target_lufs: Optional[float] = None
++    transcript_words: Optional[Sequence[dict[str, Any]]] = None
+ 
+ 
+ def _check(name: str, status: str, detail: str, **evidence: Any) -> dict[str, Any]:
+@@ -804,6 +812,82 @@ def _sha256(path: Path) -> str:
+     return digest.hexdigest()
+ 
+ 
++LOUDNESS_TOLERANCE_LU = 2.0
++_SENTENCE_END = (".", "?", "!")
++_THOUGHT_PAUSE_SEC = 0.5
++
++
++def measure_integrated_lufs(path: Path) -> Optional[float]:
++    """EBU R128 integrated loudness of the whole file (ffmpeg ebur128)."""
++    import re as _re
++
++    try:
++        result = subprocess.run(
++            ["ffmpeg", "-hide_banner", "-nostats", "-i", str(path), "-af", "ebur128=framelog=quiet", "-f", "null", "-"],
++            capture_output=True, text=True, timeout=180,
++        )
++    except Exception:
++        return None
++    found = _re.findall(r"I:\s+(-?[\d.]+) LUFS", result.stderr or "")
++    return float(found[-1]) if found else None
++
++
++def check_loudness(path: Path, target: float, measured: Optional[float] = None) -> dict[str, Any]:
++    """Warn when the finished clip is far from the platform loudness target."""
++    value = measured if measured is not None else measure_integrated_lufs(path)
++    if value is None:
++        return _check("loudness", "skip", "Integrated loudness could not be measured")
++    off = round(value - target, 1)
++    if abs(off) <= LOUDNESS_TOLERANCE_LU:
++        return _check("loudness", "pass", f"{value:.1f} LUFS (target {target:.0f})", lufs=value, target=target)
++    side = "too quiet" if off < 0 else "too loud"
++    return _check("loudness", "warn", f"{value:.1f} LUFS is {side} for the {target:.0f} LUFS target ({off:+.1f} LU)",
++                  lufs=value, target=target)
++
++
++def check_thought_boundaries(
++    words: Sequence[dict[str, Any]], source_start: float, source_end: float
++) -> dict[str, Any]:
++    """Warn when the clip opens mid-sentence, ends mid-sentence or cuts a word.
++
++    A clip "starts clean" when the word before it ends a sentence or a pause
++    of >= 0.5 s precedes it; it "ends clean" when its last word ends a
++    sentence or a pause follows it. Speech-free clips are skipped.
++    """
++    ordered = sorted(
++        (w for w in words if isinstance(w, dict) and "start" in w and "end" in w),
++        key=lambda w: float(w["start"]),
++    )
++    inside = [w for w in ordered if source_start - 0.05 <= float(w["start"]) < source_end]
++    if not inside:
++        return _check("thought_boundaries", "skip", "No speech inside the clip")
++    first, last = inside[0], inside[-1]
++    before = [w for w in ordered if float(w["start"]) < float(first["start"])]
++    after = [w for w in ordered if float(w["start"]) >= source_end]
++    starts_clean = (
++        not before
++        or str(before[-1].get("text", "")).rstrip().endswith(_SENTENCE_END)
++        or float(first["start"]) - float(before[-1]["end"]) >= _THOUGHT_PAUSE_SEC
++    )
++    ends_clean = (
++        str(last.get("text", "")).rstrip().endswith(_SENTENCE_END)
++        or not after
++        or float(after[0]["start"]) - float(last["end"]) >= _THOUGHT_PAUSE_SEC
++    )
++    cuts_word = any(float(w["start"]) < source_end < float(w["end"]) for w in ordered)
++    evidence = {
++        "starts_on_sentence": starts_clean, "ends_on_sentence": ends_clean, "cuts_a_word": cuts_word,
++        "first_words": " ".join(str(w.get("text", "")) for w in inside[:5]),
++        "last_words": " ".join(str(w.get("text", "")) for w in inside[-5:]),
++    }
++    if starts_clean and ends_clean and not cuts_word:
++        return _check("thought_boundaries", "pass", "Starts and ends on a complete thought", **evidence)
++    problems = [label for label, bad in (("opens mid-sentence", not starts_clean),
++                                         ("ends mid-sentence", not ends_clean),
++                                         ("cuts a word at the end", cuts_word)) if bad]
++    return _check("thought_boundaries", "warn", "Clip " + ", ".join(problems), **evidence)
++
++
+ def run_clip_qc(path: Path, context: ClipQcContext) -> dict[str, Any]:
+     """Run every check over one rendered clip file and build the report.
+ 
+@@ -876,6 +960,16 @@ def run_clip_qc(path: Path, context: ClipQcContext) -> dict[str, Any]:
+     checks.append(check_frozen(path, duration, audio_silent))
+     checks.append(check_duplicate(context, file_sha256))
+     checks.append(check_subject_in_frame(path, duration, context))
++    if context.loudness_target_lufs is not None and audio_stream is not None:
++        checks.append(check_loudness(path, float(context.loudness_target_lufs)))
++    if (
++        context.transcript_words
++        and context.source_start is not None
++        and context.source_end is not None
++    ):
++        checks.append(check_thought_boundaries(
++            context.transcript_words, float(context.source_start), float(context.source_end)
++        ))
+     # Quality Director per-niche compliance: hook window, cut-rate band,
+     # caption presence + pacing. All warn-level — they flag and (for the
+     # mechanically fixable ones) trigger the pipeline's one corrective
+diff --git a/backend/src/media/transcription.py b/backend/src/media/transcription.py
+index c0b2f76..653b91b 100644
+--- a/backend/src/media/transcription.py
++++ b/backend/src/media/transcription.py
+@@ -5,6 +5,7 @@ from typing import Dict
+ from typing import List
+ from typing import Optional
+ import gc
++import os
+ from pathlib import Path
+ import assemblyai as aai
+ from ..config import get_config
+@@ -344,14 +345,44 @@ def _is_cuda_oom_error(error: BaseException) -> bool:
+     return "out of memory" in message or "cuda_error_out_of_memory" in message
+ 
+ 
++_CUDA_UNUSABLE_REASON: Optional[str] = None
++
++
++def _mark_cuda_unusable(error: BaseException) -> None:
++    """Remember for this process that CUDA cannot run faster-whisper."""
++    global _CUDA_UNUSABLE_REASON
++    if _CUDA_UNUSABLE_REASON is None:
++        _CUDA_UNUSABLE_REASON = str(error)[:200]
++        logger.warning("faster-whisper: CUDA unusable on this host (%s); using CPU int8 from now on",
++                       _CUDA_UNUSABLE_REASON)
++
++
++def _is_cuda_unusable_error(error: BaseException) -> bool:
++    """A CUDA failure that a CPU retry fixes: out of memory, or the CUDA
++    runtime libraries missing on this host (a GPU is visible but cuBLAS /
++    cuDNN cannot be loaded — the usual state of a Windows machine running
++    outside the Docker image, which ships those libraries)."""
++    if _is_cuda_oom_error(error):
++        return True
++    message = str(error).lower()
++    return any(marker in message for marker in (
++        "cublas", "cudnn", "cannot be loaded", "libcuda", "cuda driver", "no cuda gpus",
++    ))
++
++
+ def _faster_whisper_device_and_compute_type() -> tuple:
+     """Pick the fastest CTranslate2 execution settings for this machine.
+ 
+     CUDA runs float16; CPU falls back to int8, the fastest CPU compute type
+     with negligible accuracy loss for transcription.
+     """
++    forced = os.environ.get("WHISPER_DEVICE", "").strip().lower()
++    if forced == "cpu" or _CUDA_UNUSABLE_REASON is not None:
++        return "cpu", "int8"
+     try:
+-        if _ctranslate2 is not None and _ctranslate2.get_cuda_device_count() > 0:
++        if forced == "cuda" or (
++            _ctranslate2 is not None and _ctranslate2.get_cuda_device_count() > 0
++        ):
+             return "cuda", "float16"
+     except Exception:  # pragma: no cover - defensive: probe failure means CPU
+         pass
+@@ -488,7 +519,7 @@ def transcribe_with_faster_whisper(
+     try:
+         model = _get_faster_whisper_model(model_name)
+     except Exception as error:
+-        if not _is_cuda_oom_error(error):
++        if not _is_cuda_unusable_error(error):
+             raise
+         # A WhisperModel constructor OOM used to propagate and fail
+         # the whole transcription stage (Wave-4 VRAM scoping, section
+@@ -537,13 +568,19 @@ def transcribe_with_faster_whisper(
+             except Exception as error:
+                 segments = None
+                 info = None
+-                if device != "cuda" or not _is_cuda_oom_error(error):
++                if device != "cuda" or not _is_cuda_unusable_error(error):
+                     logger.warning(
+                         "Batched faster-whisper transcription failed; "
+                         "falling back to sequential transcription",
+                         exc_info=True,
+                     )
+                     break
++                if not _is_cuda_oom_error(error):
++                    # CUDA runtime libraries missing: a smaller batch can
++                    # never help, and a further GPU call after this failure
++                    # can hang. Remember it and go straight to CPU int8.
++                    _mark_cuda_unusable(error)
++                    attempt = max(attempt, 1)
+                 if attempt == 0 and batch_size > 1:
+                     batch_size = max(1, batch_size // 2)
+                     logger.warning(
+@@ -554,8 +591,9 @@ def transcribe_with_faster_whisper(
+                     continue
+                 if attempt <= 1:
+                     logger.warning(
+-                        "Batched faster-whisper transcription still out of GPU "
+-                        "memory at batch_size=%d; falling back to CPU int8",
++                        "Batched faster-whisper transcription cannot use the GPU "
++                        "(%s) at batch_size=%d; falling back to CPU int8",
++                        "out of memory" if _is_cuda_oom_error(error) else "CUDA libraries unavailable",
+                         batch_size,
+                     )
+                     try:
+@@ -589,7 +627,7 @@ def transcribe_with_faster_whisper(
+             )
+             segments = list(raw_segments)
+         except Exception as error:
+-            if not _is_cuda_oom_error(error):
++            if not _is_cuda_unusable_error(error):
+                 raise
+             # The sequential path had no OOM handling at all: the
+             # failure the batched ladder absorbs used to fail the
+diff --git a/backend/tests/unit/test_broll_v3_cadence.py b/backend/tests/unit/test_broll_v3_cadence.py
+index e1e8bae..26a8a0e 100644
+--- a/backend/tests/unit/test_broll_v3_cadence.py
++++ b/backend/tests/unit/test_broll_v3_cadence.py
+@@ -240,3 +240,24 @@ def test_rejected_key_is_stamped_provider_error(monkeypatch, tmp_path):
+                       "end": 5.0, "source": "stock", "local_path": "", "context": "the stock market"}]}
+     pixabay_broll.resolve_edl_broll(edl)
+     assert edl["broll"][0]["not_inserted"]["reason"] == "provider_error"
++
++
++# --- Phase 2 robustness: a GPU without CUDA libraries falls back to CPU -------------
++
++def test_missing_cuda_library_is_a_cpu_fallback_error(monkeypatch):
++    from src.media import transcription as T
++
++    assert T._is_cuda_unusable_error(RuntimeError("Library cublas64_12.dll is not found or cannot be loaded"))
++    assert T._is_cuda_unusable_error(RuntimeError("CUDA failed with error out of memory"))
++    assert not T._is_cuda_unusable_error(RuntimeError("invalid audio file"))
++    monkeypatch.setenv("WHISPER_DEVICE", "cpu")
++    assert T._faster_whisper_device_and_compute_type() == ("cpu", "int8")
++
++
++def test_cuda_unusable_is_remembered_for_the_process(monkeypatch):
++    from src.media import transcription as T
++
++    monkeypatch.setattr(T, "_CUDA_UNUSABLE_REASON", None)
++    monkeypatch.delenv("WHISPER_DEVICE", raising=False)
++    T._mark_cuda_unusable(RuntimeError("Library cublas64_12.dll is not found or cannot be loaded"))
++    assert T._faster_whisper_device_and_compute_type() == ("cpu", "int8")
+diff --git a/backend/tests/unit/test_clip_qc_phase2.py b/backend/tests/unit/test_clip_qc_phase2.py
+new file mode 100644
+index 0000000..659bb79
+--- /dev/null
++++ b/backend/tests/unit/test_clip_qc_phase2.py
+@@ -0,0 +1,40 @@
++"""Phase 2 QC checks: platform loudness and complete-thought boundaries (warn-only, opt-in)."""
++from src.media.clip_qc import check_loudness, check_thought_boundaries
++
++
++def _w(text, start, end):
++    return {"text": text, "start": start, "end": end}
++
++
++WORDS = [
++    _w("Okay.", 0.0, 0.4), _w("Stocks", 1.2, 1.6), _w("are", 1.6, 1.8), _w("ownership.", 1.8, 2.4),
++    _w("When", 2.6, 2.8), _w("you", 2.8, 3.0), _w("own", 3.0, 3.2), _w("stock", 3.2, 3.6), _w("you", 3.7, 3.8),
++    _w("own", 3.8, 4.0), _w("a", 4.0, 4.1), _w("company.", 4.1, 4.7), _w("Bonds", 5.5, 5.9), _w("are", 5.9, 6.1),
++]
++
++
++def test_clean_thought_passes():
++    r = check_thought_boundaries(WORDS, 1.2, 4.8)
++    assert r["status"] == "pass"
++
++
++def test_opening_mid_sentence_warns():
++    r = check_thought_boundaries(WORDS, 2.8, 4.8)
++    assert r["status"] == "warn" and "opens mid-sentence" in r["detail"]
++
++
++def test_ending_mid_sentence_and_cut_word_warn():
++    r = check_thought_boundaries(WORDS, 1.2, 3.5)
++    assert r["status"] == "warn" and "ends mid-sentence" in r["detail"] and "cuts a word" in r["detail"]
++
++
++def test_speech_free_clip_is_skipped():
++    assert check_thought_boundaries(WORDS, 20.0, 30.0)["status"] == "skip"
++
++
++def test_loudness_bands(tmp_path):
++    f = tmp_path / "x.mp4"
++    assert check_loudness(f, -14.0, measured=-14.8)["status"] == "pass"
++    assert check_loudness(f, -14.0, measured=-23.0)["status"] == "warn"
++    assert "too quiet" in check_loudness(f, -14.0, measured=-23.0)["detail"]
++    assert "too loud" in check_loudness(f, -14.0, measured=-9.0)["detail"]
+diff --git a/tools/phase2/auto_edit.py b/tools/phase2/auto_edit.py
+new file mode 100644
+index 0000000..9eee080
+--- /dev/null
++++ b/tools/phase2/auto_edit.py
+@@ -0,0 +1,259 @@
++"""Phase 2 one-click auto-editor harness: drives SnipNova's REAL stages end to end
++on one source video, outside Docker, at zero cost.
++
++  transcribe (faster-whisper, local)  ->  select moments (the app's own selection
++  prompt, local Ollama qwen3:8b)  ->  niche EDL (cuts, zooms, transitions,
++  captions, B-roll v3)  ->  stock B-roll (only with --env-file: Pixabay/Coverr
++  keys read into this process, never printed; SigLIP check on, as in Docker)
++  ->  create_optimized_clip (face-aware 9:16 reframe, word captions, hook
++  title, EDL render)  ->  QC  ->  decision log + report.
++
++Usage (from D:\\SnipNova-Dev\\claude-code):
++  backend\\.venv\\Scripts\\python.exe tools\\phase2\\auto_edit.py --video <file> --niche finance_business --clips 2
++      [--env-file "D:\\EditedTool\\JarvisClipStudio\\.env"]   (adds real stock B-roll)
++Output: test-footage\\phase2\\<video-stem>\\  (clips, frames, report.json, report.md)
++"""
++from __future__ import annotations
++
++import argparse
++import asyncio
++import json
++import os
++import re
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[2]
++STOCK_KEYS = ("PIXABAY_API_KEY", "COVERR_API_KEY")
++LLM_KEYS = ("GROQ_API_KEY",)
++
++
++def _load_stock_keys(env_file: str) -> dict[str, str]:
++    out: dict[str, str] = {}
++    for line in Path(env_file).read_text(encoding="utf-8", errors="ignore").splitlines():
++        m = re.match(r"\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$", line)
++        if m and m.group(1) in STOCK_KEYS + LLM_KEYS and not line.lstrip().startswith("#"):
++            out[m.group(1)] = m.group(2).strip().strip('"').strip("'")
++    return out
++
++
++def _probe(path: Path) -> dict:
++    p = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
++                        "stream=codec_type,codec_name,width,height,r_frame_rate:format=duration",
++                        "-of", "json", str(path)], capture_output=True, text=True)
++    try:
++        return json.loads(p.stdout)
++    except Exception:
++        return {}
++
++
++def _loudness(path: Path) -> float | None:
++    p = subprocess.run(["ffmpeg", "-v", "info", "-i", str(path), "-af", "ebur128=framelog=quiet", "-f", "null", "-"],
++                       capture_output=True, text=True)
++    m = re.findall(r"I:\s+(-?[\d.]+) LUFS", p.stderr)
++    return float(m[-1]) if m else None
++
++
++def _black_seconds(path: Path) -> float:
++    p = subprocess.run(["ffmpeg", "-v", "info", "-i", str(path), "-vf", "blackdetect=d=0.3:pix_th=0.10",
++                        "-an", "-f", "null", "-"], capture_output=True, text=True)
++    return round(sum(float(d) for d in re.findall(r"black_duration:([\d.]+)", p.stderr)), 2)
++
++
++def _sec(label) -> float:
++    if isinstance(label, (int, float)):
++        return float(label)
++    parts = [float(x) for x in str(label).split(":")]
++    total = 0.0
++    for x in parts:
++        total = total * 60 + x
++    return total
++
++
++def boundary_check(words: list[dict], start: float, end: float) -> dict:
++    """Does the clip start and end on a complete thought? (word timings in seconds)."""
++    inside = [w for w in words if start - 0.05 <= w["start"] < end]
++    if not inside:
++        return {"ok": False, "reason": "no speech inside the clip"}
++    first, last = inside[0], inside[-1]
++    before = [w for w in words if w["start"] < first["start"]]
++    starts_clean = not before or str(before[-1]["text"]).rstrip().endswith((".", "?", "!")) or first["start"] - before[-1]["end"] >= 0.5
++    ends_clean = str(last["text"]).rstrip().endswith((".", "?", "!")) or last["end"] <= end - 0.3
++    cut_word = any(w["start"] < end < w["end"] for w in words)
++    return {"ok": bool(starts_clean and ends_clean and not cut_word), "starts_on_sentence": starts_clean,
++            "ends_on_sentence": ends_clean, "cuts_a_word": cut_word,
++            "first_words": " ".join(w["text"] for w in inside[:6]), "last_words": " ".join(w["text"] for w in inside[-6:])}
++
++
++def fixed_windows(words: list[dict], count: int, length: float = 40.0) -> list[dict]:
++    """NOT AI selection: sentence-aligned ~40 s windows at 25% / 60% of the video,
++    used only to exercise the edit/render/QC stages without a model."""
++    if not words:
++        return []
++    total = words[-1]["end"]
++    out = []
++    for frac in (0.25, 0.6, 0.85)[:count]:
++        target = total * frac
++        start = next((w["start"] for p, w in zip(words, words[1:])
++                      if w["start"] >= target and str(p["text"]).rstrip().endswith((".", "?", "!"))), target)
++        end_target = start + length
++        end = next((w["end"] for w in words if w["end"] >= end_target and str(w["text"]).rstrip().endswith((".", "?", "!"))),
++                   min(total, end_target))
++        end = min(end, start + 58.0)
++        out.append({"start_time": round(start, 2), "end_time": round(end, 2), "hook_title": None,
++                    "virality_score": None, "hook_type": "fixed-window",
++                    "reasoning": "Pipeline check only: sentence-aligned window, not an AI selection."})
++    return out
++
++
++async def main_async(a) -> int:
++    video = Path(a.video).resolve()
++    out = ROOT / "test-footage" / "phase2" / video.stem
++    out.mkdir(parents=True, exist_ok=True)
++    work = out / "work"
++    work.mkdir(exist_ok=True)
++    source = work / video.name
++    if not source.exists():
++        source.write_bytes(video.read_bytes())  # never write next to the original
++
++    keys = _load_stock_keys(a.env_file) if a.env_file else {}
++    stock = {k: v for k, v in keys.items() if k in STOCK_KEYS and v}
++    os.environ.update({k: v for k, v in keys.items() if v})
++    if a.llm == "auto":
++        # Free Groq tier (the app's own clip-assured model) when the owner's key is
++        # present; otherwise the local Ollama fallback.
++        a.llm = "groq:openai/gpt-oss-120b" if keys.get("GROQ_API_KEY") else "ollama:qwen3:8b"
++    os.environ.update({
++        "TEMP_DIR": str(out / "temp"), "TRANSCRIPTION_PROVIDER": "faster_whisper",
++        "LLM": a.llm, "OLLAMA_BASE_URL": a.ollama_url, "BROLL_CADENCE": "v3",
++        "BROLL_VISION_VETO_ENABLED": "true",
++    })
++    print("keys:", {k: ("present" if keys.get(k) else "not used") for k in STOCK_KEYS + LLM_KEYS}, "| selection model:", a.llm)
++    sys.path.insert(0, str(ROOT / "backend"))
++    from src.ai import get_most_relevant_parts_by_transcript
++    from src.auto_director import edl as E
++    from src.media.transcription import get_video_transcript, load_cached_transcript_data
++    from src.video_utils import create_optimized_clip
++
++    timings: dict[str, float] = {}
++    t = time.time()
++    transcript = get_video_transcript(source)
++    timings["transcribe_s"] = round(time.time() - t, 1)
++    data = load_cached_transcript_data(source) or {}
++    words = [{"text": str(w.get("text", "")).strip(), "start": float(w.get("start", 0)) / 1000.0, "end": float(w.get("end", 0)) / 1000.0}
++             for w in data.get("words") or []]
++    print(f"transcribed {len(words)} words in {timings['transcribe_s']}s", flush=True)
++
++    t = time.time()
++    if a.select == "fixed":
++        # Pipeline check without an AI model: sentence-aligned windows, clearly labelled.
++        segments = fixed_windows(words, a.clips)
++    else:
++        analysis = await get_most_relevant_parts_by_transcript(transcript, target_clip_count=a.clips)
++        segments = list(analysis.most_relevant_segments or [])[: a.clips]
++    timings["select_s"] = round(time.time() - t, 1)
++    print(f"selected {len(segments)} moments in {timings['select_s']}s", flush=True)
++
++    profile = E.load_profile(a.niche)
++    report = {"video": str(video), "niche": a.niche, "llm": a.llm, "stock_broll": bool(stock), "timings": timings, "clips": []}
++    for i, seg in enumerate(segments):
++        s = seg.model_dump() if hasattr(seg, "model_dump") else dict(seg)
++        start, end = _sec(s["start_time"]), _sec(s["end_time"])
++        dur = end - start
++        rel = [{"word": w["text"], "text": w["text"], "start": round(w["start"] - start, 3), "end": round(w["end"] - start, 3)}
++               for w in words if start <= w["start"] < end]
++        edl = E.build_edl({"start": start, "end": end, "duration": dur}, rel, profile, energy_peaks=[])
++        # Same stage the pipeline runs (services/video_service.py): the
++        # subject-aware reframe plan. Without it the EDL graph centre-crops.
++        from src.media.reframe_plan import attach_reframe_plan
++        reframed = attach_reframe_plan(edl, source, [(start, end)], False, framing="auto")
++        if stock:
++            from src.media.pixabay_broll import resolve_edl_broll
++            resolve_edl_broll(edl)
++        clip_path = out / f"clip{i + 1}.mp4"
++        layout_report: dict = {}
++        t = time.time()
++        ok = create_optimized_clip(source, start, end, clip_path, add_subtitles=True,
++                                   caption_template=(profile.get("captions") or {}).get("preset_id") or "default",
++                                   hook_title=s.get("hook_title"), edl=edl, profile_name=a.niche,
++                                   layout_report=layout_report, framing_mode="auto")
++        render_s = round(time.time() - t, 1)
++        probe = _probe(clip_path) if ok else {}
++        frames = []
++        if ok:
++            out_dur = float((probe.get("format") or {}).get("duration") or 0)
++            for frac in (0.08, 0.5, 0.9):
++                f = out / f"clip{i + 1}_{int(frac * 100)}pct.png"
++                subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{out_dur * frac:.2f}", "-i", str(clip_path),
++                                "-frames:v", "1", "-vf", "scale=360:-2", str(f)])
++                frames.append(f.name)
++        broll = edl.get("broll") or []
++        report["clips"].append({
++            "clip": clip_path.name, "render_ok": ok, "render_s": render_s,
++            "source_start": start, "source_end": end, "duration": round(dur, 1),
++            "selection": {"virality": s.get("virality_score"), "hook_type": s.get("hook_type"),
++                          "hook_title": s.get("hook_title"), "reasoning": s.get("reasoning")},
++            "decisions": {
++                "segments": len(edl.get("segments") or []),
++                "transitions": [x.get("transition_in") for x in edl.get("segments") or [] if x.get("transition_in") not in (None, "none", "cut")],
++                "zooms": len(edl.get("zoom_keyframes") or []),
++                "broll_planned": len(broll),
++                "broll_inserted": sum(1 for b in broll if b.get("local_path")),
++                "broll": [{"at": b.get("start"), "said": b.get("spoken"), "searched": b.get("search_query"),
++                           "layout": b.get("layout"), "inserted": bool(b.get("local_path")),
++                           "why_not": (b.get("not_inserted") or {}).get("reason")} for b in broll],
++                "broll_dropped": [d.get("reason") for d in edl.get("broll_dropped") or []],
++                "music": (edl.get("audio") or {}).get("music_mood"),
++                "captions": (profile.get("captions") or {}).get("preset_id"),
++            },
++            "qc": {
++                "ffprobe": [{k: st.get(k) for k in ("codec_type", "width", "height")} for st in probe.get("streams", [])],
++                "output_seconds": round(float((probe.get("format") or {}).get("duration") or 0), 2),
++                "loudness_lufs": _loudness(clip_path) if ok else None,
++                "black_seconds": _black_seconds(clip_path) if ok else None,
++                "boundary": boundary_check(words, start, end),
++                "layout": {k: layout_report.get(k) for k in ("layout", "broll_applied", "framing") if k in layout_report},
++                "reframe_plan": {"attached": reframed, "delegate": (edl.get("reframe") or {}).get("delegate"),
++                                 "shots": [(sh.get("mode"), sh.get("reason")) for sh in ((edl.get("reframe") or {}).get("shots") or [])][:8]},
++            },
++            "frames": frames,
++        })
++        print(f"clip{i + 1}: {start:.1f}-{end:.1f}s render ok={ok} in {render_s}s", flush=True)
++
++    (out / "report.json").write_text(json.dumps(report, indent=1, default=str), encoding="utf-8")
++    md = [f"# Auto-edit: {video.name} ({a.niche})", "",
++          f"LLM {a.llm} · stock B-roll {'ON' if stock else 'OFF (no keys)'} · transcribe {timings['transcribe_s']}s · select {timings['select_s']}s", ""]
++    for c in report["clips"]:
++        d, q, sel = c["decisions"], c["qc"], c["selection"]
++        md += [f"## {c['clip']} — source {c['source_start']:.1f}–{c['source_end']:.1f}s ({c['duration']}s)",
++               f"* Hook: **{sel['hook_title']}** · virality {sel['virality']} · {sel['hook_type']}",
++               f"* Why: {sel['reasoning']}",
++               f"* Edit: {d['segments']} segments, transitions {d['transitions'] or 'none'}, {d['zooms']} zooms, captions `{d['captions']}`, music `{d['music']}`",
++               f"* B-roll: {d['broll_inserted']}/{d['broll_planned']} inserted — " + "; ".join(
++                   f"{b['at']}s '{b['said']}'→{b['searched']} ({b['layout']}, {'in' if b['inserted'] else b['why_not']})" for b in d["broll"]),
++               f"* QC: {q['output_seconds']}s, {q['ffprobe']}, loudness {q['loudness_lufs']} LUFS, black {q['black_seconds']}s, "
++               f"boundary ok={q['boundary'].get('ok')} (starts on sentence {q['boundary'].get('starts_on_sentence')}, ends {q['boundary'].get('ends_on_sentence')})",
++               f"* Framing: {q['reframe_plan']}",
++               f"* First words: “{q['boundary'].get('first_words')}” … last: “{q['boundary'].get('last_words')}”",
++               f"* Frames: {', '.join(c['frames'])}", ""]
++    (out / "report.md").write_text("\n".join(md), encoding="utf-8")
++    print("done:", out / "report.md")
++    return 0
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--video", required=True)
++    ap.add_argument("--niche", required=True)
++    ap.add_argument("--clips", type=int, default=2)
++    ap.add_argument("--env-file")
++    ap.add_argument("--llm", default="auto")
++    ap.add_argument("--select", choices=("ai", "fixed"), default="ai")
++    ap.add_argument("--ollama-url", default="http://localhost:11434/v1")
++    return asyncio.run(main_async(ap.parse_args()))
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tools/phase2/run_all.py b/tools/phase2/run_all.py
+new file mode 100644
+index 0000000..4af484c
+--- /dev/null
++++ b/tools/phase2/run_all.py
+@@ -0,0 +1,68 @@
++"""Run the Phase 2 auto-editor on every niche test video, one after another.
++
++  backend\\.venv\\Scripts\\python.exe tools\\phase2\\run_all.py [--env-file "<.env>"] [--select ai|fixed]
++
++--env-file reads only GROQ_API_KEY (free-tier AI selection) and the Pixabay/Coverr
++keys (stock B-roll) into the child processes; nothing is printed or saved.
++Writes test-footage\\phase2\\INDEX.md linking every per-video report.
++"""
++from __future__ import annotations
++
++import argparse
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[2]
++PY = ROOT / "backend" / ".venv" / "Scripts" / "python.exe"
++NICHES = [
++    # (niche label, profile, video, source / licence)
++    ("Finance", "finance_business", "test-footage/phase1/wIxRKlb_1uk.mp4", "Investing 101, YouTube wIxRKlb_1uk, CC BY"),
++    ("Podcast", "podcast_news", "test-footage/phase2_src/1oXjtK5Nsjw.mp4", "The Entrepreneur Podcast (first 12 min), YouTube 1oXjtK5Nsjw, CC BY"),
++    ("Talking head", "podcast_news", "test-footage/phase2_src/TkHlhgTutFs.mp4", "Speech for future doctors, YouTube TkHlhgTutFs, marked CC BY by uploader"),
++    ("Vlog", "vlog_lifestyle", "test-footage/phase2_src/D3cAyFmhi_M.mp4", "First time in Mexico City, YouTube D3cAyFmhi_M, CC BY"),
++    ("Comedy", "meme_comedy", "test-footage/phase2_src/dwZK6iQlyEw.mp4", "Problems of an only child (stand-up), YouTube dwZK6iQlyEw, CC BY"),
++    ("Education", "education_tutorial", "test-footage/phase2_src/-m-gudHhLxc.mp4", "PHO103 Speech Anatomy lecture, YouTube -m-gudHhLxc, CC BY"),
++    ("Gaming / streamer", "gaming", "test-footage/real_more/kai_sa_20000.mp4", "Kai Cenat GTA San Andreas stream sample (Twitch), private test use only"),
++]
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--env-file")
++    ap.add_argument("--select", choices=("ai", "fixed"), default="ai")
++    ap.add_argument("--clips", type=int, default=2)
++    ap.add_argument("--only", help="run one niche label only")
++    a = ap.parse_args()
++    rows = []
++    for label, profile, video, source in NICHES:
++        if a.only and a.only.lower() != label.lower():
++            continue
++        path = ROOT / video
++        if not path.exists():
++            rows.append((label, profile, "missing video", ""))
++            continue
++        cmd = [str(PY), str(ROOT / "tools" / "phase2" / "auto_edit.py"), "--video", str(path), "--niche", profile,
++               "--clips", str(a.clips), "--select", a.select]
++        if a.env_file:
++            cmd += ["--env-file", a.env_file]
++        print(f"== {label} ({profile})", flush=True)
++        t = time.time()
++        r = subprocess.run(cmd, cwd=str(ROOT))
++        status = "ok" if r.returncode == 0 else f"FAILED (exit {r.returncode})"
++        rows.append((label, profile, f"{status} in {time.time() - t:.0f}s", f"{path.stem}/report.md"))
++        print(f"   {status}", flush=True)
++    index = ["# Phase 2 auto-edit runs", "", f"Selection: {a.select}", "",
++             "| Niche | Profile | Result | Report |", "|---|---|---|---|"]
++    index += [f"| {l} | `{p}` | {s} | {r} |" for l, p, s, r in rows]
++    index += ["", "Sources: " + "; ".join(f"{l}: {src}" for l, _p, _v, src in NICHES)]
++    out = ROOT / "test-footage" / "phase2" / "INDEX.md"
++    out.parent.mkdir(parents=True, exist_ok=True)
++    out.write_text("\n".join(index), encoding="utf-8")
++    print("done:", out)
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+-- 
+2.56.0.windows.2
+

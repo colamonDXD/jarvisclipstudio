@@ -1,0 +1,14 @@
+[
+  {
+    "source": "window_001.groq",
+    "automatic_title": "Who is the father?"
+  },
+  {
+    "source": "window_002.groq",
+    "automatic_title": "He unlocks another dimension"
+  },
+  {
+    "source": "window_003_cold.groq",
+    "automatic_title": "A scavenger comes into view"
+  }
+]

@@ -1,0 +1,1418 @@
+From c96fd70ab50871572f56c5e9fa3b7fbe3a76c675 Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Fri, 20 Nov 2026 14:29:49 +0530
+Subject: [PATCH 4/7] Verify live edit timelines, add offline GPU captions and
+ connect the AI editor to the free gateway
+
+---
+ .env.example                                 |   5 +
+ CHANGELOG.md                                 |   3 +
+ backend/src/api/routes/live.py               |   5 +-
+ backend/src/live/context_picker.py           |  46 +++++++
+ backend/src/live/context_picker_weights.json |  51 +++++++
+ backend/src/live/finisher.py                 |  76 ++++++++--
+ backend/src/live/library.py                  |  38 +++--
+ backend/src/live/moments.py                  |   4 +
+ backend/src/live/offline_whisper.py          |  46 +++++++
+ backend/src/live/selection.py                |   2 +
+ backend/src/live/session.py                  |  13 +-
+ backend/src/live/vod.py                      | 138 ++++++++++++-------
+ backend/src/media/captions.py                |  13 ++
+ backend/src/media/gaming_templates.py        |   2 +
+ backend/src/media/hook_finish.py             |  19 ++-
+ backend/src/media/yt_captions.py             |  33 ++++-
+ backend/src/services/ai_edit_service.py      |  42 +++++-
+ backend/src/workers/live_worker.py           |   1 +
+ backend/tests/unit/test_ai_edit_ollama.py    |  19 +++
+ backend/tests/unit/test_edl_render_audio.py  |   2 +
+ backend/tests/unit/test_live_api.py          |   1 +
+ backend/tests/unit/test_live_vod.py          |  33 +++++
+ docker-compose.yml                           |   9 ++
+ frontend/src/app/live/page.tsx               |  11 +-
+ tools/live/prepare_offline_whisper.py        |  49 +++++++
+ tools/live/train_context_picker.py           |  69 ++++++++++
+ 26 files changed, 644 insertions(+), 86 deletions(-)
+ create mode 100644 backend/src/live/context_picker.py
+ create mode 100644 backend/src/live/context_picker_weights.json
+ create mode 100644 backend/src/live/offline_whisper.py
+ create mode 100644 tools/live/prepare_offline_whisper.py
+ create mode 100644 tools/live/train_context_picker.py
+
+diff --git a/.env.example b/.env.example
+index b029bf7..d5c1c83 100644
+--- a/.env.example
++++ b/.env.example
+@@ -571,3 +571,8 @@ LIVE_CLIP_LIBRARY=off
+ # Use openai:clip-free with the bundled LiteLLM gateway for NVIDIA,
+ # Groq, OpenRouter free and local Ollama fallback on live/VOD text jobs.
+ LIVE_VOD_LLM=
++# Context-based reranker trained on replay labels. Opt in to compare against the original picker.
++LIVE_CONTEXT_PICKER=off
++# Run tools/live/prepare_offline_whisper.py with a local model before enabling.
++LIVE_OFFLINE_WHISPER=off
++HYPE_WORD_ACCENT=off
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 2265f69..13f0e4e 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,9 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-20
++- **New:** Generate individual live titles, apply one custom title, or leave titles off. Laughter and shouts trigger different edits. ([Live](http://localhost:3107/live))
++- **Improved:** The AI editor supports the free model gateway. Saved live exports retain a separate source for editing, and supported workers can transcribe entirely on the local GPU. ([Clips](http://localhost:3107/clips))
++- **Fixed:** Cold opens verify the full recording survives the edit and repeat captions at the correct time. The live worker checks each finished file against the minimum duration. ([Live](http://localhost:3107/live))
+ - **New:** Live exports can be saved to Clips and opened in the editor. The upload form offers vocal separation on installations that support it. ([Live](http://localhost:3107/live))
+ - **Fixed:** Gaming captions compare spoken phrases with text visible in the game before removing dialogue. Streamer comments can appear while game subtitles are on screen. ([Live](http://localhost:3107/live))
+ - **New:** Clip cards accept selection feedback, and the Live page accepts Kick stream links. Enable `REACTION_PUNCH` to place one eased zoom and a quiet impact at the measured reaction. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+diff --git a/backend/src/api/routes/live.py b/backend/src/api/routes/live.py
+index b281261..81e8f9b 100644
+--- a/backend/src/api/routes/live.py
++++ b/backend/src/api/routes/live.py
+@@ -104,13 +104,16 @@ def validate_settings(data: Dict[str, Any]) -> Dict[str, Any]:
+     except ValueError as exc:
+         raise HTTPException(status_code=422, detail=str(exc)) from None
+     words_only = data.get("streamer_words_only", True)
++    auto_title = data.get("auto_title", True)
++    if not isinstance(auto_title, bool):
++        raise HTTPException(status_code=422, detail="auto_title must be true or false")
+     if not isinstance(words_only, bool):
+         raise HTTPException(status_code=422, detail="streamer_words_only must be true or false")
+     max_clips = data.get("max_clips", 30)
+     if not isinstance(max_clips, int) or isinstance(max_clips, bool) or not 1 <= max_clips <= 60:
+         raise HTTPException(status_code=422, detail="max_clips must be a whole number from 1 to 60")
+     return {"layout_template": layout, "niche": niche, "streamer_words_only": words_only, "max_clips": max_clips,
+-            "credit": _text(data, "credit", 40), "hook_title": _text(data, "hook_title", 80),
++            "credit": _text(data, "credit", 40), "hook_title": _text(data, "hook_title", 80), "auto_title": auto_title,
+             "request": _text(data, "request", 200), "voice_fx": _voice_fx(data.get("voice_fx")),
+             "boxes": _boxes(data.get("boxes"))}
+ 
+diff --git a/backend/src/live/context_picker.py b/backend/src/live/context_picker.py
+new file mode 100644
+index 0000000..fe7acd2
+--- /dev/null
++++ b/backend/src/live/context_picker.py
+@@ -0,0 +1,46 @@
++"""Rerank reaction candidates using the lead-in and the following 30 seconds of audio."""
++import json
++from functools import lru_cache
++from pathlib import Path
++
++import numpy as np
++
++
++def context_features(series, moments):
++    """Normalize within a recording so different microphones share the same scale."""
++    tracks = []
++    for key in ("vocal", "f0", "laugh", "voiced_frac"):
++        raw = np.nan_to_num(np.asarray(series[key], dtype=float))
++        median = np.median(raw)
++        spread = max(0.01, np.percentile(raw, 90) - np.percentile(raw, 10))
++        tracks.append(np.clip((raw - median) / spread, -5, 5))
++    rows = []
++    for m in moments:
++        i = int(m["onset"])
++        row = [np.log1p(max(0, m["score"])), m["talk"], np.log1p(m["end"] - i)]
++        for data in tracks:
++            for lo, hi in ((-15, -4), (-4, 1), (0, 5), (5, 15), (15, 30)):
++                frame = data[max(0, i + lo):max(0, i + hi)]
++                row.extend((frame.mean(), frame.max()) if frame.size else (0, 0))
++        rows.append(row)
++    return np.asarray(rows)
++
++
++@lru_cache(maxsize=1)
++def _model():
++    return json.loads(Path(__file__).with_name("context_picker_weights.json").read_text())
++
++
++def rerank(series, moments, model=None):
++    if len(moments) < 2 or any(not len(series.get(k, [])) for k in ("vocal", "f0", "laugh", "voiced_frac")):
++        return moments
++    model = _model() if model is None else model
++    x = context_features(series, moments)
++    def standardize(a):
++        return (a - a.mean()) / max(0.001, a.std())
++    mix = model["mix"]
++    predicted = (1 - mix) * standardize(x[:, 0]) + mix * standardize(x @ model["weights"])
++    # Preserve the score distribution expected by the downstream replay-heat boost.
++    scores = sorted((m["score"] for m in moments), reverse=True)
++    order = np.argsort(-predicted, kind="stable")
++    return [dict(moments[i], score=score) for i, score in zip(order, scores)]
+diff --git a/backend/src/live/context_picker_weights.json b/backend/src/live/context_picker_weights.json
+new file mode 100644
+index 0000000..0cef34e
+--- /dev/null
++++ b/backend/src/live/context_picker_weights.json
+@@ -0,0 +1,51 @@
++{
++  "version": 1,
++  "training_videos": 12,
++  "validation_videos": 6,
++  "mix": 0.75,
++  "weights": [
++    0.006592316819772377,
++    0.05300236788023227,
++    -0.0036588444908854825,
++    -0.029375465215695794,
++    0.02134349915529941,
++    -0.044807314268162604,
++    0.013694938666411355,
++    -0.009938762466246472,
++    0.029119199497012513,
++    -0.018774943997390922,
++    0.050664504531554265,
++    -0.010353016338348621,
++    0.01421825586885954,
++    0.02415358241054861,
++    0.008146275246516808,
++    0.01917505885237952,
++    -0.005284520942598088,
++    0.039288500065575487,
++    -0.005571785399864613,
++    0.023656219789627647,
++    0.007037545012089102,
++    0.034055876485959806,
++    0.009766752490627311,
++    -0.020533527717264594,
++    0.003708642331194922,
++    -0.007005198056531896,
++    0.015626429094811385,
++    -0.0009138185099947085,
++    0.005626425151321075,
++    0.004639462095355228,
++    0.0035469641983195887,
++    -0.006834427291182507,
++    -0.003329839075670912,
++    0.025040768201395627,
++    -0.0023480168133683367,
++    -0.0021757760564339694,
++    -0.00037417744751643846,
++    0.023014607545984916,
++    -0.00729120483610614,
++    0.025730035847281046,
++    0.013751995216332764,
++    0.055103141343885415,
++    -0.006375597365318943
++  ]
++}
+diff --git a/backend/src/live/finisher.py b/backend/src/live/finisher.py
+index 5bf3b2d..233e3f8 100644
+--- a/backend/src/live/finisher.py
++++ b/backend/src/live/finisher.py
+@@ -11,7 +11,9 @@ from __future__ import annotations
+ 
+ import json
+ import logging
++import os
+ import subprocess
++import tempfile
+ from pathlib import Path
+ from typing import Any, Dict, Optional
+ 
+@@ -22,6 +24,33 @@ logger = logging.getLogger(__name__)
+ LAYOUTS = ("facecam_red", "facecam_gold")
+ 
+ 
++def _raw_transcript(window):
++    path = window.with_suffix(".transcript_cache.full.json")
++    try:
++        if path.stat().st_mtime_ns >= window.stat().st_mtime_ns:
++            data = json.loads(path.read_text(encoding="utf-8"))
++            if isinstance(data, dict) and isinstance(data.get("words"), list) and data["words"]:
++                return data
++    except (OSError, ValueError):
++        pass
++    return None
++
++
++def _write_cache(path, data):
++    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False, encoding="utf-8") as handle:
++        staged = Path(handle.name)
++        try:
++            json.dump(data, handle)
++        except Exception:
++            handle.close()
++            staged.unlink(missing_ok=True)
++            raise
++    try:
++        os.replace(staged, path)
++    finally:
++        staged.unlink(missing_ok=True)
++
++
+ def _duration(path: Path) -> float:
+     out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                           str(path)], capture_output=True, text=True).stdout.strip()
+@@ -37,7 +66,9 @@ def render_live_clip(window: Path, out_path: Path, *, niche: str = "gaming", lay
+                      quote_title: Optional[Dict[str, Any]] = None,
+                      boxes: Optional[Dict[str, Any]] = None,
+                      source_url: Optional[str] = None, source_start: float = 0.0,
+-                     peak_offset: Optional[float] = None) -> Dict[str, Any]:
++                     peak_offset: Optional[float] = None, teaser: Optional[tuple[float, float]] = None,
++                     reaction_signals: Optional[list[str]] = None, auto_headline: bool = False,
++                     minimum_duration: float = 0.0) -> Dict[str, Any]:
+     """Render ``window`` into ``out_path``; returns ``{ok, duration, words, error}``."""
+     from ..auto_director import edl as E
+     from ..media.gaming_templates import clean_layout_credit
+@@ -62,20 +93,31 @@ def render_live_clip(window: Path, out_path: Path, *, niche: str = "gaming", lay
+         # else the local model. Whichever source wins, the words still go
+         # through keep_streamer_words below — YouTube captions carry the
+         # game's dialogue exactly like a speech model's transcript does.
+-        captioned = False
+-        if source_url:
++        raw = _raw_transcript(window)
++        captioned = bool(raw)
++        if raw:
++            _write_cache(window.with_suffix(".transcript_cache.json"), raw)
++        if not captioned and source_url:
+             from ..media.transcription import cache_transcript_data
+-            from ..media.yt_captions import fetch_youtube_captions, slice_result
++            from ..media.yt_captions import edited_captions, fetch_youtube_captions
+ 
+             captions = fetch_youtube_captions(source_url)
+             if captions:
+-                sliced = slice_result(captions, source_start, source_start + total)
++                sliced = edited_captions(captions, source_start, total, teaser)
+                 if sliced:
+                     cache_transcript_data(window, sliced)
+                     captioned = True
+-        if not captioned and not transcribe_with_groq(window):
+-            get_video_transcript(window)
++        if not captioned:
++            from .offline_whisper import transcribe_local_gpu
++            from ..media.transcription import cache_transcript_data
++            local = transcribe_local_gpu(window)
++            if local is not None:
++                cache_transcript_data(window, local)
++            elif not transcribe_with_groq(window):
++                get_video_transcript(window)
+         data = load_cached_transcript_data(window) or {}
++        if data.get("words") and not raw:
++            _write_cache(window.with_suffix(".transcript_cache.full.json"), data)
+     except Exception as exc:  # a clip without captions beats no clip
+         logger.warning("Live clip transcript failed: %s", exc)
+         data = {}
+@@ -157,6 +199,8 @@ def render_live_clip(window: Path, out_path: Path, *, niche: str = "gaming", lay
+     profile = E.load_profile(niche)
+     clip_info = {"id": out_path.stem, "start": 0.0, "end": total, "duration": total}
+     edl = E.build_edl(clip_info, words, profile, energy_peaks=[], broll_enabled=False)
++    if reaction_signals:
++        edl["reaction_signals"] = list(reaction_signals)
+     if peak_offset is not None:
+         # The caller's recorded reaction onset, in this window's own
+         # timeline: view sequencing (VIEW_SEQUENCING) anchors on it via
+@@ -164,6 +208,19 @@ def render_live_clip(window: Path, out_path: Path, *, niche: str = "gaming", lay
+         # falls back to the window's loudest second.
+         edl["peak_energy_timestamp"] = float(peak_offset)
+     apply_auto_music_bed(edl, niche)
++    if hook_title and os.getenv("STYLED_HOOK_TITLE", "off").lower() in {"1", "on", "true"}:
++        quote_title = {"text": hook_title, "creator": credit}
++        hook_title = None
++    elif auto_headline and not quote_title and not hook_title and len(words) >= 5:
++        from .vod import _chat, clean_pick_title
++        dialogue = " ".join(w["text"] for w in words)[:2600]
++        response = _chat("Write one 3–8 word third-person video title. Name the specific action or surprise "
++                         "in the supplied dialogue. Include no emoji or quotation marks. Use only facts in "
++                         "the dialogue. Return just the title, or NONE when the dialogue lacks context. "
++                         f"Creator: {(credit or '').lstrip('@')}. Dialogue: {dialogue}", timeout=30)
++        headline = clean_pick_title(response)
++        if headline:
++            quote_title = {"text": headline, "creator": credit}
+     if quote_title:
+         edl["quote_title"] = quote_title  # drawn by media/hook_finish.py
+     # Comment bait (auto_director/comment_bait.py): with COMMENT_BAIT on,
+@@ -207,7 +264,10 @@ def render_live_clip(window: Path, out_path: Path, *, niche: str = "gaming", lay
+         from ..media.voice_fx import apply_voice_fx
+ 
+         apply_voice_fx(out_path, voice_fx)
+-    result: Dict[str, Any] = {"ok": ok, "duration": round(_duration(out_path), 2) if ok else None,
++    duration = _duration(out_path) if ok else 0.0
++    if ok and duration < minimum_duration:
++        return {"ok": False, "error": f"Export measured {duration:.2f}s, below the {minimum_duration:.0f}s minimum."}
++    result: Dict[str, Any] = {"ok": ok, "duration": round(duration, 2) if ok else None,
+                              "words": len(words), "caption_coverage": coverage,
+                              "beat_density": layout_report.get("beat_density"),
+                              "error": None if ok else "render failed"}
+diff --git a/backend/src/live/library.py b/backend/src/live/library.py
+index 0b51b9b..515916e 100644
+--- a/backend/src/live/library.py
++++ b/backend/src/live/library.py
+@@ -1,5 +1,6 @@
+ """Save a finished live clip as an independently editable library clip."""
+ import os
++import json
+ from pathlib import Path
+ import shutil
+ import tempfile
+@@ -38,30 +39,51 @@ async def save_live_clip(db, user_id: str, clip_id: str):
+         "SELECT g.id FROM generated_clips g JOIN tasks t ON t.id=g.task_id "
+         "WHERE t.id=:task AND t.user_id=:uid AND g.id=:clip"
+     ), {"task": task_id, "uid": user_id, "clip": editor_id})
+-    if existing:
+-        return {"task_id": task_id, "clip_id": editor_id}
+     root = Path(os.getenv("TEMP_DIR") or get_config().temp_dir).resolve()
++    upload = root / "uploads" / (task_id + ".mp4")
++    ids = {"task_id": task_id, "clip_id": editor_id}
++    if existing and upload.is_file():
++        return ids
+     source = Path(row["clip_path"] or "").resolve()
+     if not source.is_relative_to(root / "live" / row["session_id"]) or not source.is_file():
+         return None
+     duration = float(row["duration"] or 0)
+     if duration <= 0:
+         return None
+-    title = f"Live clip {row['n']}"
++    title = (row["reason"] or "").partition("] ")[2].partition(" - ")[0].strip() or f"Live clip {row['n']}"
+     target = root / "clips" / task_id / f"{editor_id}.mp4"
+-    await run_in_thread(_copy_export, source, target)
++    stem = f"window_{row['n']:03d}"
++    raw = next((p for p in (source.with_name(stem + "_cold.mp4"), source.with_name(stem + ".mp4"))
++                if p.is_file() and p.resolve().parent == source.parent), source)
++    await run_in_thread(_copy_export, raw, upload)
++    transcript = ""
++    cache = raw.with_suffix(".transcript_cache.json")
++    if raw != source and cache.is_file():
++        try:
++            cached = json.loads(cache.read_text(encoding="utf-8"))
++            transcript = " ".join(str(w.get("text", "")) for w in cached.get("words", []))
++            await run_in_thread(_copy_export, cache, upload.with_suffix(".transcript_cache.json"))
++        except (ValueError, TypeError, AttributeError):
++            pass
++    if not existing:
++        await run_in_thread(_copy_export, source, target)
+     try:
+         await db.execute(text(
+-            "INSERT INTO sources(id,type,title,url) VALUES (:id,'video_url',:title,:url) ON CONFLICT (id) DO NOTHING"
+-        ), {"id": task_id, "title": title, "url": row["url"]})
++            "INSERT INTO sources(id,type,title,url) VALUES (:id,'video_url',:title,:url) "
++            "ON CONFLICT (id) DO UPDATE SET type=EXCLUDED.type,title=EXCLUDED.title,url=EXCLUDED.url"
++        ), {"id": task_id, "title": title, "url": "upload://" + upload.name})
++        if existing:
++            await db.commit()
++            return ids
+         await db.execute(insert(Task).values(
+             id=task_id, user_id=user_id, source_id=task_id, status="completed", progress=100,
+             completed_at=func.now(), generated_clips_ids=[editor_id],
+-            source_metadata={"live_session_id": row["session_id"], "live_clip_id": clip_id},
++            source_metadata={"live_session_id": row["session_id"], "live_clip_id": clip_id,
++                             "original_url": row["url"], "add_subtitles": bool(transcript)},
+         ))
+         seconds = round(duration)
+         await ClipRepository.create_clip(db, task_id, target.name, str(target), "00:00",
+-                                         f"{seconds // 60:02d}:{seconds % 60:02d}", duration, "", 0,
++                                         f"{seconds // 60:02d}:{seconds % 60:02d}", duration, transcript, 0,
+                                          row["reason"] or "", 1, clip_id=editor_id)
+         await db.commit()
+     except Exception:
+diff --git a/backend/src/live/moments.py b/backend/src/live/moments.py
+index 72836d3..7b3f3fa 100644
+--- a/backend/src/live/moments.py
++++ b/backend/src/live/moments.py
+@@ -23,6 +23,10 @@ from typing import Dict, Optional, Sequence, Tuple
+ logger = logging.getLogger(__name__)
+ 
+ 
++def needs_facecam(layout, boxes):
++    return bool(layout) and (boxes or {}).get("arrange") not in {"blur", "fill", "game"}
++
++
+ def speech_window(voiced: Sequence[float], onset: float, end: float, *, lead_max: float = 6.0,
+                   min_len: float = 12.0, max_len: float = 30.0, talk_frac: float = 0.25,
+                   tail_gap: int = 2) -> Tuple[float, float, float]:
+diff --git a/backend/src/live/offline_whisper.py b/backend/src/live/offline_whisper.py
+new file mode 100644
+index 0000000..65d5d26
+--- /dev/null
++++ b/backend/src/live/offline_whisper.py
+@@ -0,0 +1,46 @@
++"""Run the local speech model in a separate CUDA runtime from the video renderer."""
++import json
++import logging
++import os
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++
++logger = logging.getLogger(__name__)
++RUNTIME = Path("/opt/snipnova-speech")
++
++
++def transcribe_local_gpu(media):
++    if os.getenv("LIVE_OFFLINE_WHISPER", "off").lower() not in {"1", "true", "on"}:
++        return None
++    if not (RUNTIME / "model/model.bin").is_file():
++        return None
++    libs = [str(RUNTIME / "nvidia" / name / "lib") for name in ("cublas", "cudnn", "cuda_runtime")]
++    env = dict(os.environ, LD_LIBRARY_PATH=":".join([*libs, os.getenv("LD_LIBRARY_PATH", "")]),
++               HF_HUB_OFFLINE="1", OMP_NUM_THREADS="2")
++    with tempfile.TemporaryDirectory(prefix="snipnova-speech-") as work:
++        output = Path(work) / "result.json"
++        try:
++            subprocess.run([sys.executable, "-m", __name__, str(media), str(output)],
++                           env=env, check=True, timeout=600, capture_output=True)
++            return json.loads(output.read_text(encoding="utf-8"))
++        except (OSError, ValueError, subprocess.SubprocessError) as exc:
++            logger.warning("Offline GPU transcription unavailable (%s)", type(exc).__name__)
++            return None
++
++
++def main():
++    from faster_whisper import WhisperModel
++    from ..media.transcription import _faster_whisper_result_to_whisper_dict
++
++    model = WhisperModel(str(RUNTIME / "model"), device="cuda", compute_type="int8_float16", local_files_only=True)
++    segments, info = model.transcribe(sys.argv[1], language=os.getenv("TRANSCRIPTION_LANGUAGE") or None,
++                                      word_timestamps=True, vad_filter=True, beam_size=5,
++                                      condition_on_previous_text=False)
++    result = _faster_whisper_result_to_whisper_dict(segments, info)
++    Path(sys.argv[2]).write_text(json.dumps(result), encoding="utf-8")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/backend/src/live/selection.py b/backend/src/live/selection.py
+index d4b4ccf..dfb6261 100644
+--- a/backend/src/live/selection.py
++++ b/backend/src/live/selection.py
+@@ -172,6 +172,8 @@ def rank_moments(series: Dict[str, List[float]], params: Optional[Dict[str, floa
+ 
+ 
+ def spaced(moments: List[Dict[str, Any]], limit: int, min_gap: float) -> List[Dict[str, Any]]:
++    if limit <= 0:
++        return []
+     picked: List[Dict[str, Any]] = []
+     for m in moments:
+         if all(abs(m["onset"] - q["onset"]) >= min_gap for q in picked):
+diff --git a/backend/src/live/session.py b/backend/src/live/session.py
+index a6b9f7b..80fc2b4 100644
+--- a/backend/src/live/session.py
++++ b/backend/src/live/session.py
+@@ -28,7 +28,7 @@ from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Any, Callable, Dict, Optional
+ 
+-from .moments import creator_on_camera, speech_window
++from .moments import creator_on_camera, needs_facecam, speech_window
+ from .preview import render_preview
+ from .recorder import LiveRecorder
+ from .voice_scan import VoiceTrack
+@@ -58,6 +58,7 @@ class LiveSettings:
+     keep_hours: float = 2.0
+     max_height: int = 1080
+     tick: float = 10.0
++    auto_title: bool = True
+ 
+ 
+ class LiveSession:
+@@ -180,7 +181,7 @@ class LiveSession:
+         if cut.returncode != 0 or not window.is_file():
+             self._emit({**moment, "n": n, "status": "rejected", "reason": "window cut failed"})
+             return
+-        if self.settings.layout_template:
++        if needs_facecam(self.settings.layout_template, self.settings.boxes):
+             ok, why = creator_on_camera(window, onset - start, cam_box=(self.settings.boxes or {}).get("cam"))
+             moment["camera"] = why
+             if not ok:
+@@ -190,7 +191,8 @@ class LiveSession:
+                                  self.dir / f"preview_{n:03d}.mp4")
+         self._emit({**moment, "n": n, "status": "queued", "preview_path": str(preview) if preview else None,
+                     "ready_after_s": round(time.time() - onset, 1)})
+-        self._renders.put({"n": n, "window": window, "peak_offset": onset - start})
++        self._renders.put({"n": n, "window": window, "peak_offset": onset - start,
++                           "signals": moment["signals"]})
+ 
+     # -- rendering ---------------------------------------------------------
+     def _render_forever(self) -> None:
+@@ -208,10 +210,11 @@ class LiveSession:
+             try:
+                 result = render_live_clip(job["window"], out, niche=self.settings.niche,
+                                           layout_template=self.settings.layout_template, credit=self.settings.credit,
+-                                          hook_title=self.settings.hook_title,
++                                          hook_title=self.settings.hook_title, auto_headline=self.settings.auto_title,
+                                           streamer_words_only=self.settings.streamer_words_only,
+                                           voice_fx=self.settings.voice_fx, boxes=self.settings.boxes,
+-                                          peak_offset=job.get("peak_offset"))
++                                          peak_offset=job.get("peak_offset"), reaction_signals=job.get("signals"),
++                                          minimum_duration=MIN_LEN)
+             except Exception as exc:
+                 logger.exception("Live clip render failed")
+                 result = {"ok": False, "error": str(exc)[:300]}
+diff --git a/backend/src/live/vod.py b/backend/src/live/vod.py
+index c66624b..20b6732 100644
+--- a/backend/src/live/vod.py
++++ b/backend/src/live/vod.py
+@@ -28,6 +28,7 @@ from __future__ import annotations
+ 
+ import json
+ import logging
++import math
+ import os
+ import re
+ import subprocess
+@@ -40,7 +41,7 @@ from pathlib import Path
+ from typing import Any, Callable, Dict, List, Optional, Sequence
+ 
+ from . import yt_dlp_binary
+-from .moments import creator_on_camera, speech_window
++from .moments import creator_on_camera, needs_facecam, speech_window
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -128,7 +129,8 @@ def heat_at(heatmap: Sequence[Dict[str, float]], t: float) -> float:
+     return 0.0
+ 
+ 
+-def find_candidates(series: Dict[str, List[float]], heatmap: Sequence[Dict[str, float]], limit: int) -> List[Dict[str, Any]]:
++def find_candidates(series: Dict[str, List[float]], heatmap: Sequence[Dict[str, float]], limit: int,
++                    min_onset: float = 0.0) -> List[Dict[str, Any]]:
+     """Reaction moments ranked by ``selection.rank_moments`` (trainable: a
+     trained ``selection_params.json`` takes effect here), then boosted by the
+     "most replayed" heatmap when the video has one, and spaced apart."""
+@@ -136,7 +138,13 @@ def find_candidates(series: Dict[str, List[float]], heatmap: Sequence[Dict[str,
+ 
+     params = load_params()
+     scored = []
+-    for m in rank_moments(series, params):
++    moments = rank_moments(series, params)
++    if os.getenv("LIVE_CONTEXT_PICKER", "off").lower() in {"1", "on", "true"}:
++        from .context_picker import rerank
++        moments = rerank(series, moments)
++    for m in moments:
++        if m["onset"] < min_onset:
++            continue
+         heat = heat_at(heatmap, m["onset"])
+         scored.append({**m, "heat": round(heat, 3), "score": round(m["score"] * (1.0 + 1.5 * heat), 2)})
+     scored.sort(key=lambda f: -f["score"])
+@@ -266,7 +274,10 @@ def _transcribe_windows_with_speech_model(audio: Path, windows: Sequence[tuple])
+         joined = Path(tmp) / "joined.mp3"
+         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
+                         "-ac", "1", "-ar", "16000", "-b:a", "48k", str(joined)], capture_output=True)
+-        result = groq_transcribe_file(joined) if groq_enabled() and joined.is_file() else None
++        from .offline_whisper import transcribe_local_gpu
++        result = transcribe_local_gpu(joined) if joined.is_file() else None
++        if result is None and groq_enabled() and joined.is_file():
++            result = groq_transcribe_file(joined)
+         if result is None:
+             return [transcribe_window(audio, s, e) for s, e in windows]
+     out: List[List[Dict[str, Any]]] = [[] for _ in windows]
+@@ -351,7 +362,6 @@ punchy title (3-8 words, no emojis) and one line why. Also write "quote": the on
+ caption in the style of viral streamer clips, an ironic one-liner about what happens, e.g.
+ "Lacy swore he never crashes" or "Speed thought this was easy". ALWAYS third person with the
+ streamer's name ({creator}); NEVER "I", "me", "my", "we". At most 8 words, no emojis in it.
+-And "emojis": 1-3 emojis that mock or react to it, chosen ONLY from: {emoji_set}
+ 
+ Title rules (the title is burned onto the clip):
+ - 3-8 words, catchy, built from the words the streamer actually said in that moment -
+@@ -360,7 +370,7 @@ Title rules (the title is burned onto the clip):
+ - Never invent a name, game, place or event that is not in the transcript.
+ 
+ {request_rule}Answer with ONLY a JSON array:
+-[{{"id": <candidate id>, "start": <sec>, "end": <sec>, "title": "...", "quote": "...", "emojis": ["...", "..."], "why": "...", "virality": <0-100>}}]
++[{{"id": <candidate id>, "start": <sec>, "end": <sec>, "title": "...", "quote": "...", "why": "...", "virality": <0-100>}}]
+ 
+ Candidates:
+ {candidates}"""
+@@ -383,7 +393,7 @@ def clean_pick_title(raw: Any) -> Optional[str]:
+     """
+     if not isinstance(raw, str):
+         return None
+-    title = raw.strip().strip("`").strip()
++    title = raw.translate(str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"'})).strip().strip("`*").strip()
+     if len(title) >= 2 and title[0] == title[-1] and title[0] in "\"'":
+         title = title[1:-1].strip()
+     title = _EMOJI.sub("", title)
+@@ -391,7 +401,7 @@ def clean_pick_title(raw: Any) -> Optional[str]:
+     words = title.split()
+     if len(words) < 2:
+         return None
+-    if any(word.strip("\"'.,!?").lower() in _FIRST_PERSON for word in words):
++    if set(re.findall(r"[a-z]+(?:'[a-z]+)?", title.lower())) & _FIRST_PERSON:
+         return None
+     return " ".join(words[:8])
+ 
+@@ -481,16 +491,6 @@ def llm_pick_batched(candidates: List[Dict[str, Any]], count: int, request: Opti
+     return picks[:count]
+ 
+ 
+-def _emoji_set() -> List[str]:
+-    try:
+-        from ..media.edl_render import ASSETS_DIR
+-
+-        data = json.loads((Path(ASSETS_DIR) / "stickers" / "STICKERS_MANIFEST.json").read_text(encoding="utf-8"))
+-        return [e["emoji"] for e in data if e.get("emoji")]
+-    except Exception:
+-        return []
+-
+-
+ def llm_pick(candidates: List[Dict[str, Any]], count: int,
+              request: Optional[str] = None, creator: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+     """The model's picks; None when the model is unavailable (the caller then
+@@ -502,10 +502,8 @@ def llm_pick(candidates: List[Dict[str, Any]], count: int,
+                       f"heat {c.get('heat', 0):.2f}\n"
+                       f"{_transcript_lines(c.get('words') or [])}")
+     rule = REQUEST_RULE.format(request=request.replace('"', "'"), count=count) if request else ""
+-    emojis = _emoji_set()
+     prompt = PICK_PROMPT.format(count=count, min_len=MIN_LEN, max_len=MAX_LEN, candidates="\n\n".join(blocks),
+-                                request_rule=rule, creator=creator or "the streamer",
+-                                emoji_set=" ".join(emojis) or "😭 💀 🔥 😂")
++                                request_rule=rule, creator=creator or "the streamer")
+     text = _chat(prompt)
+     if text is None:
+         return None
+@@ -515,22 +513,32 @@ def llm_pick(candidates: List[Dict[str, Any]], count: int,
+         return None
+     by_id = {c["id"]: c for c in candidates}
+     out = []
++    seen_ids = set()
+     for p in picks:
++        if not isinstance(p, dict) or not isinstance(p.get("id"), (int, str)):
++            continue
+         c = by_id.get(p.get("id"))
+-        if c is None:
++        if c is None or c["id"] in seen_ids:
+             continue
+         try:
+             start, end = float(p["start"]), float(p["end"])
+         except (KeyError, TypeError, ValueError):
+             continue
+-        lo, hi = c["onset"] + CANDIDATE_WINDOW[0] - 10, c["onset"] + CANDIDATE_WINDOW[1] + 15
++        if not math.isfinite(start) or not math.isfinite(end):
++            continue
++        lo, hi = max(0, c["onset"] + CANDIDATE_WINDOW[0] - 10), c["onset"] + CANDIDATE_WINDOW[1] + 15
+         start = max(lo, min(start, c["onset"]))
+         end = min(hi, max(end, start + MIN_LEN))
+         end = min(end, start + MAX_LEN)
+-        picked_emojis = [e for e in (p.get("emojis") or []) if isinstance(e, str) and (not emojis or e in emojis)][:3]
++        try:
++            rating = float(p.get("virality"))
++            rating = min(100, max(0, rating)) if math.isfinite(rating) else None
++        except (TypeError, ValueError):
++            rating = None
++        seen_ids.add(c["id"])
+         out.append({**c, "start": round(start, 2), "end": round(end, 2), "title": clean_pick_title(p.get("title")),
+-                    "quote": str(p.get("quote") or "")[:80] or None, "emojis": picked_emojis,
+-                    "why": str(p.get("why") or "")[:200], "virality": p.get("virality")})
++                    "quote": clean_pick_title(p.get("quote")), "emojis": [],
++                    "why": str(p.get("why") or "")[:200], "virality": rating})
+     if request:
+         return out[:count]  # [] = nothing matched the request: an honest answer
+     return out[:count] or None
+@@ -687,6 +695,18 @@ def signal_pick(candidates: List[Dict[str, Any]], voiced: Sequence[float], count
+     return out
+ 
+ 
++def prefer_spoken_candidates(candidates, count):
++    """Prefer reactions with enough identifiable speech to caption a standalone clip."""
++    spoken = []
++    for c in candidates:
++        words = c.get("words") or []
++        tokens = [str(w.get("text", "")).strip().casefold() for w in words]
++        words_with_letters = [t for t in tokens if any(ch.isalpha() for ch in t)]
++        if len(words_with_letters) >= 8 and len(set(words_with_letters)) >= 4:
++            spoken.append(c)
++    return spoken if len(spoken) >= count else candidates
++
++
+ def refine_pick_endings(picks: List[Dict[str, Any]], candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+     """Endings (viral queue #3/#7) for VOD picks: payoff-tight / loop
+     refinement of each pick's end, with the candidate's burst end as the
+@@ -725,15 +745,22 @@ def cold_open(section: Path, payoff_at: float, teaser: float = COLD_OPEN_TEASER_
+     Only when the payoff is at least ``min_offset`` s in; returns the new file."""
+     if os.getenv("LIVE_COLD_OPEN", "on").strip().lower() in ("off", "0", "false", "no") or payoff_at < min_offset:
+         return None
++    from .finisher import _duration
++    source_length = _duration(section)
+     t0 = max(0.0, payoff_at - 0.8)
++    teaser = min(teaser, source_length - t0)
++    if teaser < 0.5:
++        return None
+     out = section.with_name(section.stem + "_cold.mp4")
+-    graph = (f"[0:v]trim={t0:.2f}:{t0 + teaser:.2f},setpts=PTS-STARTPTS[tv];[0:a]atrim={t0:.2f}:{t0 + teaser:.2f},asetpts=PTS-STARTPTS[ta];"
+-             f"[0:v]setpts=PTS-STARTPTS[bv];[0:a]asetpts=PTS-STARTPTS[ba];[tv][ta][bv][ba]concat=n=2:v=1:a=1[v][a]")
+-    result = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(section), "-filter_complex", graph, "-map", "[v]", "-map", "[a]",
++    graph = ("[0:v]setpts=PTS-STARTPTS[tv];[0:a]asetpts=PTS-STARTPTS[ta];"
++             "[1:v]setpts=PTS-STARTPTS[bv];[1:a]asetpts=PTS-STARTPTS[ba];[tv][ta][bv][ba]concat=n=2:v=1:a=1[v][a]")
++    result = subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t0:.3f}", "-t", f"{teaser:.3f}",
++                             "-i", str(section), "-i", str(section), "-filter_complex", graph, "-map", "[v]", "-map", "[a]",
+                              "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-c:a", "aac", "-b:a", "192k", str(out)],
+                             capture_output=True, text=True)
+-    if result.returncode != 0 or not out.is_file():
++    if result.returncode != 0 or not out.is_file() or abs(_duration(out) - source_length - teaser) > 0.25:
+         logger.warning("Cold open failed; keeping the plain order: %s", (result.stderr or "")[-200:])
++        out.unlink(missing_ok=True)
+         return None
+     return out
+ 
+@@ -846,11 +873,11 @@ class VodSession:
+                                             want * VodPlan.candidates_per_clip)
+                 logger.info("VOD search %r: %d segments, %d keywords -> %d candidates",
+                             request, len(segments), len(expansion["keywords"]), len(candidates))
++        skip = max(0.0, float(os.getenv("LIVE_VOD_SKIP_INTRO_SEC", "300"))) if duration > 3600 else 0.0
+         if not candidates:
+             candidates = find_candidates(series, info["heatmap"],
+-                                         want * (VodPlan.candidates_per_clip + (2 if request else 0)))
++                                         want * (VodPlan.candidates_per_clip + (2 if request else 0)), min_onset=skip)
+         # The first minutes of a stream are the intro screen / "starting soon".
+-        skip = float(os.getenv("LIVE_VOD_SKIP_INTRO_SEC", "300")) if duration > 3600 else 0.0
+         candidates = [c for c in candidates if c["onset"] >= skip]
+         if not candidates:
+             raise RuntimeError("no reactions found in the audio")
+@@ -870,36 +897,45 @@ class VodSession:
+         self._progress(f'Picking the moments that match "{request}"' if request
+                        else "Picking the clips most likely to go viral", duration)
+         creator = (getattr(s, "credit", None) or "").strip().lstrip("@").replace("credit", "").strip() or None
+-        picks = llm_pick_batched(candidates, want, request=request, creator=creator)
++        if not request and needs_facecam(s.layout_template, getattr(s, "boxes", None)):
++            candidates = prefer_spoken_candidates(candidates, want)
++        reserve = min(len(candidates), want + min(3, want))
++        picks = llm_pick_batched(candidates, reserve, request=request, creator=creator)
+         if picks is None:
+-            picks = signal_pick(candidates, series.get("voiced_frac") or [], want)
++            picks = signal_pick(candidates, series.get("voiced_frac") or [], reserve)
+         if not picks:
+             self._progress(f'No moment matched "{request}"', duration)
+         picks = refine_pick_endings(picks, candidates)
+         logger.info("VOD %s: %d candidates -> %d picks in %.0fs", s.url, len(candidates), len(picks), time.time() - t0)
+         from .finisher import render_live_clip
+ 
++        completed = 0
+         for pick in sorted(picks, key=lambda p: -(p.get("virality") or p.get("score") or 0)):
++            if completed >= want:
++                break
+             if self._stop.is_set():
+                 return
+             self.moments += 1
+             n = self.moments
+-            self._progress(f"Making clip {n}/{len(picks)}", duration)
++            self._progress(f"Making clip {completed + 1}/{want}", duration)
++            if duration >= MIN_LEN + 1 and pick["end"] - pick["start"] < MIN_LEN + 1:
++                # Reserve a second of source for frame rounding and cleanup.
++                pick["end"] = min(duration, pick["start"] + MIN_LEN + 1)
++                pick["start"] = max(0, pick["end"] - MIN_LEN - 1)
+             section = download_section(s.url, pick["start"], pick["end"], self.dir / f"window_{n:03d}.mp4")
+             # The pick's reaction onset in the rendered file's timeline:
+             # its offset inside the section, shifted by the teaser when
+             # the cold open prepends one. View sequencing anchors on it.
+             peak_offset = float(pick["onset"]) - float(pick["start"])
+-            caption_source_url = s.url
++            teaser = None
+             if section is not None:
+                 cold = cold_open(section, peak_offset)
+                 if cold is not None:
++                    from .finisher import _duration
++                    teaser_length = min(COLD_OPEN_TEASER_S, max(0.0, _duration(cold) - _duration(section)))
++                    teaser = (max(0.0, peak_offset - 0.8), teaser_length)
+                     section = cold
+-                    peak_offset += COLD_OPEN_TEASER_S
+-                    # The teaser jumps ahead, then the body repeats from its
+-                    # original start. Linear source subtitles are now wrong.
+-                    # Transcribe the actual edit with Groq or local Whisper.
+-                    caption_source_url = None
++                    peak_offset += teaser_length
+             stamp = time.strftime("%H:%M:%S", time.gmtime(pick["start"]))
+             label = (pick.get("title") or "Reaction") + (f" - {pick['why']}" if pick.get("why") else "")
+             # Times are positions in the video, not wall-clock: they travel in
+@@ -910,8 +946,8 @@ class VodSession:
+             if section is None:
+                 self._emit({**moment, "status": "rejected", "reason": f"[{stamp}] could not download this part"})
+                 continue
+-            if s.layout_template:
+-                ok, why = creator_on_camera(section, pick["onset"] - pick["start"], min_ratio=0.0,
++            if needs_facecam(s.layout_template, getattr(s, "boxes", None)):
++                ok, why = creator_on_camera(section, peak_offset, min_ratio=0.0,
+                                             cam_box=(s.boxes or {}).get("cam"))
+                 if not ok:  # face-on-top needs the streamer's camera (intro screens, cutscenes)
+                     self._emit({**moment, "status": "rejected", "reason": f"[{stamp}] {why}"})
+@@ -921,17 +957,21 @@ class VodSession:
+             t = time.time()
+             out = self.dir / f"clip_{n:03d}.mp4"
+             try:
+-                quote = ({"text": pick["quote"], "emojis": pick.get("emojis") or [], "creator": creator}
+-                         if pick.get("quote") else None)
++                auto_title = getattr(s, "auto_title", True)
++                headline = (clean_pick_title(pick.get("quote")) or clean_pick_title(pick.get("title"))) if auto_title and not s.hook_title else None
++                quote = {"text": headline, "emojis": [], "creator": creator} if headline else None
+                 result = render_live_clip(section, out, niche=s.niche, layout_template=s.layout_template,
+                                           credit=s.credit, quote_title=quote,
+-                                          hook_title=None if quote else (s.hook_title if s.hook_title else None),
++                                          hook_title=s.hook_title, auto_headline=auto_title,
+                                           streamer_words_only=s.streamer_words_only,
+                                           voice_fx=getattr(s, "voice_fx", None), boxes=getattr(s, "boxes", None),
+-                                          source_url=caption_source_url, source_start=pick["start"],
+-                                          peak_offset=peak_offset)
++                                          source_url=s.url, source_start=pick["start"], teaser=teaser,
++                                          peak_offset=peak_offset, reaction_signals=pick.get("signals"),
++                                          minimum_duration=MIN_LEN)
+             except Exception as exc:
+                 result = {"ok": False, "error": str(exc)[:300]}
++            if result.get("ok"):
++                completed += 1
+             self._emit({"type": "clip", "n": n, "status": "ready" if result.get("ok") else "failed",
+                         "clip_path": str(out) if result.get("ok") else None, "duration": result.get("duration"),
+                         "error": result.get("error"), "render_s": round(time.time() - t, 1),
+@@ -941,4 +981,4 @@ class VodSession:
+             audio.unlink()  # the audio was only needed to find the moments
+         except OSError:
+             pass
+-        self._progress(f"Done: {self.moments} clips in {(time.time() - t0) / 60:.0f} min", duration)
++        self._progress(f"Done: {completed} clips in {(time.time() - t0) / 60:.0f} min", duration)
+diff --git a/backend/src/media/captions.py b/backend/src/media/captions.py
+index 37e109a..59561ff 100644
+--- a/backend/src/media/captions.py
++++ b/backend/src/media/captions.py
+@@ -1,5 +1,7 @@
+ """Captions helpers for the video pipeline."""
+ 
++import os
++import re
+ from typing import Any
+ from typing import Dict
+ from typing import Iterable
+@@ -1339,6 +1341,15 @@ def build_assemblyai_ass_subtitles(
+         for word in (highlight_words or [])
+         if normalize_token(word)
+     }
++    accent_indices = set()
++    if profile_name == "gaming" and os.getenv("HYPE_WORD_ACCENT", "off").lower() in {"1", "true", "on"}:
++        game_terms = {"minecraft", "valorant", "fortnite", "gta", "roblox", "elden", "speedrun",
++                      "clutch", "ace", "ishowspeed", "kaicenat", "xqc"} | requested_highlights
++        for idx, word in enumerate(relevant_words):
++            raw = str(word.get("text", "")).strip(".,!?")
++            if normalize_token(raw) in game_terms or re.fullmatch(r"[$₹]?\d+(?:[.,]\d+)*(?:[%kKmM])?", raw):
++                accent_indices.add(idx)
++    secondary_accent = hex_to_ass_color("#62E69B", "#62E69B")
+     emphasis_idx.update(
+         index
+         for index, word in enumerate(relevant_words)
+@@ -1721,6 +1732,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+ 
+     def idle_span(global_idx: int, disp: str) -> str:
+         color = emphasis_color if (enable_emphasis and global_idx in emphasis_idx) else primary
++        if global_idx in accent_indices:
++            color = secondary_accent
+         tags = f"{font_tag}\\c{color}"
+         if word_box:
+             tags += f"\\3c{outline}\\bord{outline_px}\\shad{shadow_px}"
+diff --git a/backend/src/media/gaming_templates.py b/backend/src/media/gaming_templates.py
+index 836117d..5c67b6d 100644
+--- a/backend/src/media/gaming_templates.py
++++ b/backend/src/media/gaming_templates.py
+@@ -348,6 +348,8 @@ def validate_boxes(value: object) -> Optional[Dict[str, Any]]:
+         if not (0 <= x < 1 and 0 <= y < 1 and 0.03 <= w <= 1 and 0.03 <= h <= 1):
+             raise ValueError(f"boxes.{key} must be inside the frame")
+         w, h = min(w, 1 - x), min(h, 1 - y)
++        if min(round(w, 4), round(h, 4)) < 0.03:
++            raise ValueError(f"boxes.{key} has too little area inside the frame")
+         out[key] = {"x": round(x, 4), "y": round(y, 4), "w": round(w, 4), "h": round(h, 4)}
+     arrange = value.get("arrange") or "top"
+     if arrange not in ARRANGEMENTS:
+diff --git a/backend/src/media/hook_finish.py b/backend/src/media/hook_finish.py
+index b914152..d16b3b8 100644
+--- a/backend/src/media/hook_finish.py
++++ b/backend/src/media/hook_finish.py
+@@ -160,11 +160,11 @@ def punch_filter(width: int, height: int, at, seconds: float, zoom: float) -> st
+             f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2")
+ 
+ 
+-def reaction_punch_filter(width: int, height: int, peak: float) -> str:
++def reaction_punch_filter(width: int, height: int, peak: float, depth: float = 0.10) -> str:
+     """Fast push into the reaction, then a slower release to the original crop."""
+     attack = f"clip((t-{peak - 0.16:.3f})/0.16,0,1)"
+     release = f"clip(({peak + 0.84:.3f}-t)/0.84,0,1)"
+-    zoom = f"(1+0.10*{attack}*{release}*{release})"
++    zoom = f"(1+{depth:.2f}*{attack}*{release}*{release})"
+     return (f"scale=w='2*trunc({width}*{zoom}/2)':h='2*trunc({height}*{zoom}/2)':eval=frame,"
+             f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2,setsar=1")
+ 
+@@ -241,6 +241,9 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+     profile = load_profile()
+     times = punch_times(info["duration"], profile)
+     reaction_edit = os.getenv("REACTION_PUNCH", "off").lower() in ("on", "1", "true", "yes")
++    signals = set((edl or {}).get("reaction_signals") or [])
++    laughter = bool(signals & {"laugh", "sv_laugh"})
++    shout = bool(signals & {"scream", "shout", "sv_cheer"})
+     peak = None
+     if reaction_edit:
+         from .view_sequencing import loudest_reaction_second, peak_from_edl
+@@ -271,7 +274,11 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+         filters.append(lift)
+     if reaction_edit:
+         if peak is not None:
+-            filters.append(reaction_punch_filter(info["width"], info["height"], peak))
++            if laughter and not shout:
++                # A brief straight cut into the closer framing on a laugh.
++                filters.append(punch_filter(info["width"], info["height"], peak, 0.45, 1.06))
++            else:
++                filters.append(reaction_punch_filter(info["width"], info["height"], peak, 0.12 if shout else 0.10))
+     else:
+         filters.append(punch_filter(info["width"], info["height"], times or [at], seconds, zoom))
+         flash = "+".join(f"between(t,{t:.2f},{t + 0.07:.2f})" for t in (times or [at]))
+@@ -314,7 +321,7 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+         from .asset_library import pick_variant
+         from .edl_render import ASSETS_DIR
+ 
+-        cue = "impact" if reaction_edit else "whoosh"
++        cue = ("pop" if laughter and not shout else "impact") if reaction_edit else "whoosh"
+         whoosh = pick_variant(Path(ASSETS_DIR) / "sfx", cue, f"{seed or clip_path.stem}|hook")
+         if whoosh is None:
+             candidate = Path(ASSETS_DIR) / "sfx" / f"{cue}.wav"
+@@ -352,6 +359,10 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+             delayed = ";".join(f"[w{i}]adelay={max(0, int((h - lead) * 1000))}|{max(0, int((h - lead) * 1000))},"
+                                f"volume={gain}[d{i}]" for i, h in enumerate(hits))
+             mix = "[0:a]" + "".join(f"[d{i}]" for i in range(len(hits)))
++            if reaction_edit:
++                # Keep the original voice at unity. Duck only the added cue.
++                delayed += ";[0:a]asplit=2[voice][side];[d0][side]sidechaincompress=threshold=0.05:ratio=5:attack=5:release=120[duck]"
++                mix = "[voice][duck]"
+             cmd += ["-i", str(whoosh), "-filter_complex",
+                     f"{graph};{split};{delayed};{mix}amix=inputs={len(hits) + 1}:duration=first:normalize=0[a]",
+                     "-map", f"[{last}]", "-map", "[a]", "-c:a", "aac", "-b:a", "192k"]
+diff --git a/backend/src/media/yt_captions.py b/backend/src/media/yt_captions.py
+index e236106..b96abbc 100644
+--- a/backend/src/media/yt_captions.py
++++ b/backend/src/media/yt_captions.py
+@@ -169,7 +169,8 @@ def parse_json3_captions(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+ 
+ 
+ def slice_result(
+-    result: Dict[str, Any], start: float, end: float
++    result: Dict[str, Any], start: float, end: float, *, offset: float = 0.0,
++    exact: bool = False,
+ ) -> Optional[Dict[str, Any]]:
+     """The part of ``result`` inside [start, end], times made relative.
+ 
+@@ -183,11 +184,18 @@ def slice_result(
+         words = []
+         for word in segment.get("words") or []:
+             mid = (float(word["start"]) + float(word["end"])) / 2.0
+-            if start - 0.25 <= mid <= end + 0.25:
++            inside = start <= mid < end if exact else start - 0.25 <= mid <= end + 0.25
++            if inside:
++                begin = max(0.0, float(word["start"]) - start)
++                finish = max(0.02, float(word["end"]) - start)
++                if exact:
++                    finish = min(finish, end - start)
++                    if finish <= begin:
++                        continue
+                 words.append({
+                     "word": word["word"],
+-                    "start": round(max(0.0, float(word["start"]) - start), 3),
+-                    "end": round(max(0.02, float(word["end"]) - start), 3),
++                    "start": round(offset + begin, 3),
++                    "end": round(offset + finish, 3),
+                     "probability": float(word.get("probability", 1.0)),
+                 })
+         if words:
+@@ -203,6 +211,23 @@ def slice_result(
+     return {"text": " ".join(text_parts), "language": result.get("language"), "segments": segments}
+ 
+ 
++def edited_captions(result, source_start, duration, teaser):
++    """Place words on both occurrences of a cold-open payoff in playback order."""
++    if teaser is None:
++        return slice_result(result, source_start, source_start + duration)
++    relative_start, length = teaser
++    spans = [(source_start + relative_start, length, 0), (source_start, duration - length, length)]
++    segments = []
++    for start, span, offset in spans:
++        part = slice_result(result, start, start + span, offset=offset, exact=True)
++        if part:
++            segments.extend(part["segments"])
++    if segments:
++        return {"language": result.get("language"), "segments": segments,
++                "text": " ".join(part["text"] for part in segments)}
++    return None
++
++
+ def words_in_window(
+     result: Dict[str, Any], start: float, end: float
+ ) -> List[Dict[str, Any]]:
+diff --git a/backend/src/services/ai_edit_service.py b/backend/src/services/ai_edit_service.py
+index 0e8b84c..6cc493a 100644
+--- a/backend/src/services/ai_edit_service.py
++++ b/backend/src/services/ai_edit_service.py
+@@ -591,9 +591,42 @@ class AIEditError(Exception):
+ 
+ def ai_editing_configured() -> bool:
+     model = os.getenv("AI_EDIT_MODEL", AI_EDIT_MODEL).strip() or AI_EDIT_MODEL
++    if model.startswith("openai:"):
++        return bool(model.removeprefix("openai:") and os.getenv("OPENAI_BASE_URL") and get_config().openai_api_key)
+     return bool(model.removeprefix("ollama:")) if model.startswith("ollama:") else bool(get_config().anthropic_api_key)
+ 
+ 
++def _json_plan_prompt():
++    return (SYSTEM_PROMPT + '\nReturn only the JSON plan. Each set operation value is a JSON string, '
++            'including booleans and numbers. Example: {"type":"set","setting":"audio.volume","value":"0.5"}.'
++            '\nJSON output schema:\n' + json.dumps(EditPlan.model_json_schema(), separators=(",", ":")))
++
++
++async def _plan_edit_gateway(context: str, model: str) -> EditPlan:
++    import httpx
++    if not ai_editing_configured():
++        raise AIEditError("The AI editor gateway needs a model, URL and key.")
++    url = os.environ["OPENAI_BASE_URL"].rstrip("/") + "/chat/completions"
++    try:
++        async with httpx.AsyncClient(timeout=AI_EDIT_TIMEOUT_SECONDS) as client:
++            response = await client.post(url, headers={"Authorization": f"Bearer {get_config().openai_api_key}"},
++                                         json={"model": model, "temperature": 0, "max_tokens": 2200,
++                                               "messages": [{"role": "system", "content": _json_plan_prompt()},
++                                                            {"role": "user", "content": context}]})
++            response.raise_for_status()
++        choice = response.json()["choices"][0]
++        if choice.get("finish_reason") == "length":
++            raise AIEditError("The AI's answer was incomplete. Try a smaller change.")
++        reply = choice["message"]["content"].strip()
++        if reply.startswith("```") and reply.endswith("```"):
++            reply = "\n".join(reply.splitlines()[1:-1])
++        return EditPlan.model_validate_json(reply)
++    except httpx.HTTPError:
++        raise AIEditError("The AI editor gateway is unavailable. Try again shortly.") from None
++    except (IndexError, KeyError, AttributeError, TypeError, ValueError):
++        raise AIEditError("The AI returned an invalid edit plan. Try a smaller change.") from None
++
++
+ async def _plan_edit_ollama(context: str, model: str) -> EditPlan:
+     """Opt-in local planning, with the same typed operations and validation."""
+     import httpx
+@@ -603,10 +636,7 @@ async def _plan_edit_ollama(context: str, model: str) -> EditPlan:
+     if base.endswith("/v1"):
+         base = base[:-3]
+     headers = {"Authorization": f"Bearer {config.ollama_api_key}"} if config.ollama_api_key else {}
+-    local_system = SYSTEM_PROMPT + '\n\nReturn only the JSON plan. Every set operation value is a JSON string, including booleans and numbers. Examples: {"type":"set","setting":"captions.uppercase","value":"true"}, {"type":"set","setting":"audio.volume","value":"0.5"}. Do not put JSON punctuation inside values.'
+-    # Ollama's format constrains the output grammar, but does not teach the
+-    # model the operation catalogue. Supply the same schema in the prompt.
+-    local_system += "\n\nJSON output schema:\n" + json.dumps(EditPlan.model_json_schema(), separators=(",", ":"))
++    local_system = _json_plan_prompt()
+     try:
+         async with httpx.AsyncClient(timeout=AI_EDIT_TIMEOUT_SECONDS) as client:
+             response = await client.post(f"{base}/api/chat", headers=headers, json={
+@@ -638,8 +668,10 @@ async def _plan_edit_ollama(context: str, model: str) -> EditPlan:
+ 
+ 
+ async def plan_edit(context: str) -> EditPlan:
+-    """Use Sonnet by default, or an explicitly configured local Ollama model."""
++    """Resolve the configured editor model and validate its proposed operations."""
+     model = os.getenv("AI_EDIT_MODEL", AI_EDIT_MODEL).strip() or AI_EDIT_MODEL
++    if model.startswith("openai:"):
++        return await _plan_edit_gateway(context, model.removeprefix("openai:"))
+     if model.startswith("ollama:"):
+         if not model.removeprefix("ollama:"):
+             raise AIEditError("Set an Ollama model in AI_EDIT_MODEL.")
+diff --git a/backend/src/workers/live_worker.py b/backend/src/workers/live_worker.py
+index 39c8f71..c4ba435 100644
+--- a/backend/src/workers/live_worker.py
++++ b/backend/src/workers/live_worker.py
+@@ -58,6 +58,7 @@ def settings_from_row(row: Dict[str, Any]) -> LiveSettings:
+     return LiveSettings(
+         url=row["url"], niche=s.get("niche") or "gaming",
+         layout_template=s.get("layout_template"), credit=s.get("credit"), hook_title=s.get("hook_title"),
++        auto_title=s.get("auto_title", s.get("mode") == "vod"),
+         request=s.get("request"), voice_fx=s.get("voice_fx"), boxes=s.get("boxes"),
+         streamer_words_only=bool(s.get("streamer_words_only", True)),
+         max_clips=int(s.get("max_clips") or (10 if s.get("mode") == "vod" else 30)),
+diff --git a/backend/tests/unit/test_ai_edit_ollama.py b/backend/tests/unit/test_ai_edit_ollama.py
+index 23bbfed..4d76e3f 100644
+--- a/backend/tests/unit/test_ai_edit_ollama.py
++++ b/backend/tests/unit/test_ai_edit_ollama.py
+@@ -80,3 +80,22 @@ async def test_missing_local_model_does_not_fall_back_to_hosted(local, monkeypat
+     assert ai.ai_editing_configured() is False
+     with pytest.raises(ai.AIEditError, match="Set an Ollama model"):
+         await ai.plan_edit("context")
++@pytest.mark.parametrize("reply,valid", [
++    ('{"summary":"Quieter","operations":[{"type":"set","setting":"audio.volume","value":"0.5"}]}', True),
++    ('{"summary":"Unexpected","operations":[{"type":"unrecognized"}]}', False),
++])
++async def test_gateway_plans_use_the_existing_editor_schema(monkeypatch, reply, valid):
++    monkeypatch.setenv("AI_EDIT_MODEL", "openai:clip-free")
++    monkeypatch.setenv("OPENAI_BASE_URL", "http://gateway.test/v1")
++    monkeypatch.setattr(ai, "get_config", lambda: __import__("types").SimpleNamespace(openai_api_key="test-only"))
++    original = httpx.AsyncClient
++    def respond(request):
++        assert str(request.url) == "http://gateway.test/v1/chat/completions"
++        assert json.loads(request.content)["model"] == "clip-free"
++        return httpx.Response(200, json={"choices": [{"message": {"content": reply}, "finish_reason": "stop"}]})
++    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(respond), **kwargs))
++    if valid:
++        assert (await ai.plan_edit("Lower the volume")).operations[0].value == "0.5"
++    else:
++        with pytest.raises(ai.AIEditError, match="invalid edit plan"):
++            await ai.plan_edit("Lower the volume")
+diff --git a/backend/tests/unit/test_edl_render_audio.py b/backend/tests/unit/test_edl_render_audio.py
+index d93f4ae..602205c 100644
+--- a/backend/tests/unit/test_edl_render_audio.py
++++ b/backend/tests/unit/test_edl_render_audio.py
+@@ -108,6 +108,8 @@ def test_missing_or_disabled_music_means_no_audio_plan(tmp_path):
+ 
+ 
+ def test_no_audio_fields_render_command_is_the_legacy_command(monkeypatch, tmp_path):
++    # Thread limits follow the host CPU. Isolate the audio command contract.
++    monkeypatch.setattr("src.media.ffmpeg.render_thread_budget", lambda: 4)
+     monkeypatch.setattr(edl_render, "get_video_encoder", _encoder)
+     captured = []
+     monkeypatch.setattr(
+diff --git a/backend/tests/unit/test_live_api.py b/backend/tests/unit/test_live_api.py
+index 23492c8..bfaeca7 100644
+--- a/backend/tests/unit/test_live_api.py
++++ b/backend/tests/unit/test_live_api.py
+@@ -155,6 +155,7 @@ async def test_worker_claim_events_and_files(client, auth_headers, live_on, clea
+     assert (await client.delete(f"/live/sessions/{created['id']}", headers=auth_headers)).status_code == 200
+     assert not Path(tmp_path / "live" / created["id"]).exists()
+     ids = saved.json()
++    assert (tmp_path / "uploads" / (ids["task_id"] + ".mp4")).read_bytes() == bytes(32)
+     library_file = await client.get(
+         f"/tasks/{ids['task_id']}/clips/{ids['clip_id']}/file", headers=auth_headers)
+     assert library_file.status_code == 200 and library_file.content == bytes(32)
+diff --git a/backend/tests/unit/test_live_vod.py b/backend/tests/unit/test_live_vod.py
+index 3c628e5..46b644e 100644
+--- a/backend/tests/unit/test_live_vod.py
++++ b/backend/tests/unit/test_live_vod.py
+@@ -60,6 +60,39 @@ def test_model_picks_are_clamped_to_the_window_and_length(monkeypatch):
+     assert p["start"] == 790 and p["end"] - p["start"] == V.MAX_LEN and p["title"] == "He lost it"
+ 
+ 
++def test_invalid_model_values_and_first_person_quote_cannot_break_a_batch(monkeypatch):
++    candidate = {"id": 1, "onset": 3, "signals": [], "words": []}
++    answer = [None, {"id": [], "start": 0, "end": 40}, {"id": 1, "start": "nan", "end": 40},
++              {"id": 1, "start": -10, "end": 40, "title": "“Kai calls security”",
++               "quote": "I’m calling security", "virality": "loud", "emojis": 1},
++              {"id": 1, "start": 0, "end": 40}]
++    monkeypatch.setattr(V, "_chat", lambda *args: __import__("json").dumps(answer))
++    got = V.llm_pick([candidate], 3)
++    assert len(got) == 1 and got[0]["start"] == 0
++    assert got[0]["title"] == "Kai calls security" and got[0]["quote"] is None
++    assert got[0]["virality"] is None and got[0]["emojis"] == []
++
++
++def test_cold_open_caption_times_follow_each_occurrence_of_the_payoff():
++    from src.media.yt_captions import edited_captions
++    source = {"segments": [{"words": [{"word": w, "start": t, "end": t + 0.4}
++                                      for w, t in [("setup", 10), ("wow", 20), ("after", 23)]]}]}
++    cut = edited_captions(source, 10, 32.5, (10, 2.5))
++    assert [(w["word"], w["start"]) for s in cut["segments"] for w in s["words"]] == [
++        ("wow", 0), ("setup", 2.5), ("wow", 12.5), ("after", 15.5)]
++
++
++def test_cold_open_retains_the_entire_original_video(tmp_path):
++    import subprocess
++    from src.live.finisher import _duration
++    source = tmp_path / "whole.mp4"
++    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=12",
++                    "-f", "lavfi", "-i", "sine=frequency=440", "-t", "31", "-c:v", "libx264", "-c:a", "aac",
++                    str(source)], check=True)
++    cut = V.cold_open(source, 15)
++    assert cut is not None and abs(_duration(cut) - 33.5) <= 0.25
++
++
+ def test_without_a_model_the_strongest_signals_are_used(monkeypatch):
+     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+     assert V.llm_pick([{"id": 1, "onset": 10.0}], 1) is None
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 5dac006..1397d07 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -193,6 +193,9 @@ services:
+       - STYLED_HOOK_TITLE=${STYLED_HOOK_TITLE:-off}
+       - REACTION_PUNCH=${REACTION_PUNCH:-off}
+       - LIVE_CLIP_LIBRARY=${LIVE_CLIP_LIBRARY:-off}
++      - HYPE_WORD_ACCENT=${HYPE_WORD_ACCENT:-off}
++      - LIVE_CONTEXT_PICKER=${LIVE_CONTEXT_PICKER:-off}
++      - LIVE_OFFLINE_WHISPER=${LIVE_OFFLINE_WHISPER:-off}
+       - LIVE_VOD_LLM=${LIVE_VOD_LLM:-}
+       - OPENAI_API_KEY=${OPENAI_API_KEY}
+       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+@@ -395,6 +398,9 @@ services:
+       - STYLED_HOOK_TITLE=${STYLED_HOOK_TITLE:-off}
+       - REACTION_PUNCH=${REACTION_PUNCH:-off}
+       - LIVE_CLIP_LIBRARY=${LIVE_CLIP_LIBRARY:-off}
++      - HYPE_WORD_ACCENT=${HYPE_WORD_ACCENT:-off}
++      - LIVE_CONTEXT_PICKER=${LIVE_CONTEXT_PICKER:-off}
++      - LIVE_OFFLINE_WHISPER=${LIVE_OFFLINE_WHISPER:-off}
+       - LIVE_VOD_LLM=${LIVE_VOD_LLM:-}
+       - OPENAI_API_KEY=${OPENAI_API_KEY}
+       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+@@ -521,6 +527,7 @@ services:
+     platform: "${BACKEND_PLATFORM:-linux/amd64}"
+     command: [".venv/bin/python", "-m", "src.workers.live_worker"]
+     volumes:
++      - speech_runtime:/opt/snipnova-speech:ro
+       - ./backend/src:/app/src
+       - uploads:/app/uploads
+       - ./backend/fonts:/app/fonts
+@@ -610,6 +617,8 @@ services:
+       retries: 3
+ 
+ volumes:
++  speech_runtime:
++    driver: local
+   uploads:
+     driver: local
+   clips:
+diff --git a/frontend/src/app/live/page.tsx b/frontend/src/app/live/page.tsx
+index 018adf2..a0c9893 100644
+--- a/frontend/src/app/live/page.tsx
++++ b/frontend/src/app/live/page.tsx
+@@ -176,6 +176,7 @@ export default function LivePage() {
+   const [layout, setLayout] = useState("facecam_red");
+   const [credit, setCredit] = useState("");
+   const [title, setTitle] = useState("");
++  const [autoTitle, setAutoTitle] = useState(true);
+   const [clipCount, setClipCount] = useState("10");
+   const [request, setRequest] = useState("");
+   const [voiceFx, setVoiceFx] = useState("");
+@@ -236,6 +237,7 @@ export default function LivePage() {
+           layout_template: layout || null,
+           credit: credit.trim() || null,
+           hook_title: title.trim() || null,
++          auto_title: autoTitle,
+           max_clips: Math.max(1, Math.min(30, parseInt(clipCount, 10) || 10)),
+           request: request.trim() || null,
+           voice_fx: voiceFx || null,
+@@ -359,9 +361,14 @@ export default function LivePage() {
+             onChange={(e) => setClipCount(e.target.value)} className="mt-1.5" />
+         </div>
+         <div>
+-          <Label htmlFor="live-title">Title on every clip (optional, leave empty for none)</Label>
++            <Label htmlFor="live-title">Use the same title on every clip</Label>
+           <Input id="live-title" value={title} maxLength={80} onChange={(e) => setTitle(e.target.value)}
+-            placeholder="GTA 6 LIVE" className="mt-1.5" />
++              placeholder="Optional title override" className="mt-1.5" />
++            <label className="mt-2 flex items-center gap-2 text-sm">
++              <input type="checkbox" checked={autoTitle} disabled={Boolean(title.trim())}
++                onChange={(event) => setAutoTitle(event.target.checked)} />
++              Generate a title for each clip
++            </label>
+         </div>
+         {layout && <BoxDraw url={url} layout={layout} onChange={setBoxes} />}
+         <div className="sm:col-span-2">
+diff --git a/tools/live/prepare_offline_whisper.py b/tools/live/prepare_offline_whisper.py
+new file mode 100644
+index 0000000..067f6d1
+--- /dev/null
++++ b/tools/live/prepare_offline_whisper.py
+@@ -0,0 +1,49 @@
++"""Install a local faster-whisper snapshot and CUDA 12 libraries in the live worker's speech volume."""
++import argparse
++from pathlib import Path
++import subprocess
++import tempfile
++
++
++def run(*args):
++    subprocess.run(["docker", *map(str, args)], check=True)
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("model", type=Path, help="Local CTranslate2 Whisper snapshot with model.bin and tokenizer.json")
++    parser.add_argument("--project", default="jarvisclipstudio")
++    args = parser.parse_args()
++    model = args.model.resolve(strict=True)
++    required = ["model.bin", "tokenizer.json", "config.json"]
++    if not all((model / name).is_file() for name in required):
++        parser.error("The selected snapshot lacks a required Whisper file.")
++    volume = args.project + "_speech_runtime"
++    image = "snipnova-whisper-cu12-runtime"
++    with tempfile.TemporaryDirectory() as directory:
++        recipe = Path(directory) / "Dockerfile"
++        recipe.write_text("ARG BASE=jarvisclipstudio-backend\nFROM ${BASE}\nRUN uv pip install --target /opt/whisper-cu12 --no-deps "
++                          "nvidia-cublas-cu12==12.9.3.13 nvidia-cudnn-cu12==9.10.2.21 "
++                          "nvidia-cuda-runtime-cu12==12.9.79\n")
++        run("build", "--build-arg", "BASE=" + args.project + "-backend", "-t", image, directory)
++    run("volume", "create", "--label", "com.docker.compose.project=" + args.project,
++        "--label", "com.docker.compose.volume=speech_runtime", volume)
++    # Bind each resolved snapshot file separately because Hugging Face may
++    # store the actual contents in a sibling blob directory.
++    mounts = []
++    for name in [*required, "preprocessor_config.json", "vocabulary.json", "vocabulary.txt"]:
++        if (model / name).is_file():
++            mounts.extend(["--mount", f"type=bind,source={(model / name).resolve()},target=/model/{name},readonly"])
++    copy = ("set -eu; if [ -f /runtime/model/model.bin ]; then "
++            "for f in /model/*; do cmp -s \"$f\" \"/runtime/model/${f##*/}\" || "
++            "{ echo 'The existing speech volume contains another snapshot.' >&2; exit 1; }; done; "
++            "test -d /runtime/nvidia/cublas/lib && test -d /runtime/nvidia/cudnn/lib && exit 0; fi; mkdir -p /runtime/model; "
++            "cp -a /opt/whisper-cu12/nvidia /runtime/; "
++            "for f in /model/*; do if [ \"$f\" != /model/model.bin ]; then cp \"$f\" /runtime/model/; fi; done; "
++            "cp /model/model.bin /runtime/model/weights.partial; mv /runtime/model/weights.partial /runtime/model/model.bin")
++    run("run", "--rm", "--network", "none", "--mount", f"type=volume,source={volume},target=/runtime",
++        *mounts, "--entrypoint", "/bin/sh", image, "-c", copy)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tools/live/train_context_picker.py b/tools/live/train_context_picker.py
+new file mode 100644
+index 0000000..d8408a8
+--- /dev/null
++++ b/tools/live/train_context_picker.py
+@@ -0,0 +1,69 @@
++"""Fit a supervised acoustic reranker using disjoint source-video groups."""
++import argparse
++import json
++import sys
++from pathlib import Path
++
++import numpy as np
++
++import train_selection as t
++from src.live.selection import load_params, rank_moments, spaced
++
++
++from src.live.context_picker import context_features
++
++
++def prepare(v, params):
++    moments = rank_moments(v["series"], params)
++    y = np.array([np.mean([t._rank_at(v["buckets"], m["onset"] + d) for d in (0, 10, 20)]) for m in moments])
++    x = context_features(v["series"], moments)
++    return dict(video=v, moments=moments, y=y, x=x)
++
++
++def metric(group, weights, mix, gap):
++    result = {}
++    for item in group:
++        x, y = item["x"], item["y"]
++        def scale(a):
++            return (a - a.mean()) / max(0.001, a.std())
++        predicted = (1 - mix) * scale(x[:, 0]) + mix * scale(x @ weights)
++        ranked = [dict(item["moments"][i], label=y[i]) for i in np.argsort(-predicted, kind="stable")]
++        v = item["video"]
++        picks = spaced(ranked, v["k"], gap)
++        result[v["id"]] = sum(p["label"] for p in picks) / v["k"]
++    return result
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--data", required=True, type=Path)
++    parser.add_argument("--split", required=True, type=Path)
++    parser.add_argument("--out", required=True, type=Path)
++    args = parser.parse_args()
++    params = load_params()
++    split = json.loads(args.split.read_text())
++    items = {v["id"]: prepare(v, params) for v in t.load(args.data)}
++    train = [items[k] for k in split["train_videos"]]
++    valid = [items[k] for k in split["heldout_videos"]]
++    test = [v for k, v in items.items() if k not in split["train_videos"] + split["heldout_videos"]]
++    # Center each stream's targets and give each stream equal training weight.
++    x = np.concatenate([(i["x"] - i["x"].mean(axis=0)) / np.sqrt(len(i["x"])) for i in train])
++    y = np.concatenate([(i["y"] - i["y"].mean()) / np.sqrt(len(i["y"])) for i in train])
++    gap = params["min_gap"]
++    options = []
++    for ridge in (0.03, 0.3, 3, 30):
++        w = np.linalg.solve(x.T @ x + ridge * np.eye(x.shape[1]), x.T @ y)
++        for mix in (0.25, 0.5, 0.75, 1):
++            values = metric(valid, w, mix, gap)
++            options.append((np.mean(list(values.values())), ridge, mix, w))
++    _, ridge, mix, w = max(options, key=lambda row: row[0])
++    out = {"ridge": ridge, "mix": mix, "weights": w.tolist(), "groups": {}}
++    for name, group in (("train", train), ("validation", valid), ("unseen", test)):
++        old, new = metric(group, w, 0, gap), metric(group, w, mix, gap)
++        out["groups"][name] = {"installed": old, "candidate": new}
++        print(name, len(old), round(np.mean(list(old.values())), 4), round(np.mean(list(new.values())), 4))
++    args.out.write_text(json.dumps(out, indent=2))
++
++
++if __name__ == "__main__":
++    main()

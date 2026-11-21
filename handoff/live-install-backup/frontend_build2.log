@@ -1,0 +1,326 @@
+time="2026-11-19T15:46:48+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a blank string."
+time="2026-11-19T15:46:48+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a blank string."
+time="2026-11-19T15:46:48+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a blank string."
+time="2026-11-19T15:46:48+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a blank string."
+ Image jarvisclipstudio-frontend Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 2.15kB 0.0s done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile
+#2 transferring dockerfile: 30B 0.1s
+#2 transferring dockerfile: 5.92kB 0.2s done
+#2 DONE 0.3s
+
+#3 resolve image config for docker-image://docker.io/docker/dockerfile:1.7
+#3 ...
+
+#4 [auth] docker/dockerfile:pull token for registry-1.docker.io
+#4 DONE 0.0s
+
+#3 resolve image config for docker-image://docker.io/docker/dockerfile:1.7
+#3 DONE 11.4s
+
+#5 docker-image://docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+#5 resolve docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e 0.1s done
+#5 DONE 0.1s
+
+#5 docker-image://docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+#5 CACHED
+
+#6 [internal] load metadata for docker.io/library/node:22.23.4-bookworm-slim
+#6 ...
+
+#7 [auth] library/node:pull token for registry-1.docker.io
+#7 DONE 0.0s
+
+#6 [internal] load metadata for docker.io/library/node:22.23.4-bookworm-slim
+#6 DONE 1.7s
+
+#8 [internal] load .dockerignore
+#8 transferring context: 425B 0.1s done
+#8 DONE 0.1s
+
+#9 [runner  1/12] FROM docker.io/library/node:22.23.4-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d
+#9 resolve docker.io/library/node:22.23.4-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d 0.0s done
+#9 DONE 0.1s
+
+#10 [internal] load build context
+#10 transferring context: 144.49kB 0.4s done
+#10 DONE 0.4s
+
+#11 [deps 3/4] COPY frontend/package.json frontend/pnpm-lock.yaml ./
+#11 CACHED
+
+#12 [deps 4/4] RUN --mount=type=cache,id=pnpm,target=/pnpm/store     pnpm install --frozen-lockfile --ignore-scripts --store-dir /pnpm/store
+#12 CACHED
+
+#13 [deps 1/4] WORKDIR /app
+#13 CACHED
+
+#14 [builder 2/7] RUN apt-get update && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+#14 CACHED
+
+#15 [base 2/2] RUN npm install -g pnpm@10.27.0
+#15 CACHED
+
+#16 [deps 2/4] RUN apt-get update && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
+#16 CACHED
+
+#17 [builder 3/7] COPY --from=deps /app/node_modules ./node_modules
+#17 CACHED
+
+#18 [builder 4/7] COPY frontend/ .
+#18 DONE 2.4s
+
+#19 [builder 5/7] COPY CHANGELOG.md ./CHANGELOG.md
+#19 DONE 0.3s
+
+#20 [builder 6/7] RUN pnpm exec prisma generate
+#20 7.042 Prisma schema loaded from prisma/schema.prisma
+#20 9.216 
+#20 9.216 ✔ Generated Prisma Client (v6.19.3) to ./src/generated/prisma in 455ms
+#20 9.216 
+#20 9.216 Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
+#20 9.216 
+#20 9.216 Tip: Want to turn off tips and other hints? https://pris.ly/tip-4-nohints
+#20 9.216 
+#20 DONE 9.3s
+
+#21 [builder 7/7] RUN pnpm run build
+#21 0.964 
+#21 0.964 > frontend@0.1.0 build /app
+#21 0.964 > prisma generate && next build
+#21 0.964 
+#21 2.565 Prisma schema loaded from prisma/schema.prisma
+#21 3.414 ┌─────────────────────────────────────────────────────────┐
+#21 3.414 │  Update available 6.19.3 -> 8.0.0-rc.34                 │
+#21 3.414 │                                                         │
+#21 3.414 │  This is a major update - please follow the guide at    │
+#21 3.414 │  https://pris.ly/d/major-version-upgrade                │
+#21 3.414 │                                                         │
+#21 3.414 │  Run the following to update                            │
+#21 3.414 │    npm i --save-dev prisma@latest                       │
+#21 3.414 │    npm i @prisma/client@latest                          │
+#21 3.414 └─────────────────────────────────────────────────────────┘
+#21 3.414 
+#21 3.414 ✔ Generated Prisma Client (v6.19.3) to ./src/generated/prisma in 400ms
+#21 3.414 
+#21 3.414 Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
+#21 3.414 
+#21 3.414 Tip: Want to turn off tips and other hints? https://pris.ly/tip-4-nohints
+#21 3.414 
+#21 5.891    ▲ Next.js 15.5.28
+#21 5.891 
+#21 6.004    Creating an optimized production build ...
+#21 123.5  ✓ Compiled successfully in 117s
+#21 123.5    Linting and checking validity of types ...
+#21 178.0    Collecting page data ...
+#21 180.0 2026-11-19T10:20:17.835Z WARN [Better Auth]: [better-auth] Base URL is not set. Set the baseURL option or BETTER_AUTH_URL env, or use a dynamic baseURL with allowedHosts for multi-host setups. Without it the origin is derived from the incoming request, and callbacks and redirects may not work correctly.
+#21 180.0 2026-11-19T10:20:17.829Z WARN [Better Auth]: [better-auth] Base URL is not set. Set the baseURL option or BETTER_AUTH_URL env, or use a dynamic baseURL with allowedHosts for multi-host setups. Without it the origin is derived from the incoming request, and callbacks and redirects may not work correctly.
+#21 180.0 [Error [BetterAuthError]: You are using the default secret. Please set `BETTER_AUTH_SECRET` in your environment variables or pass `secret` in your auth config.]
+#21 180.0 [Error [BetterAuthError]: You are using the default secret. Please set `BETTER_AUTH_SECRET` in your environment variables or pass `secret` in your auth config.]
+#21 180.0 2026-11-19T10:20:17.854Z WARN [Better Auth]: [better-auth] Base URL is not set. Set the baseURL option or BETTER_AUTH_URL env, or use a dynamic baseURL with allowedHosts for multi-host setups. Without it the origin is derived from the incoming request, and callbacks and redirects may not work correctly.
+#21 180.0 [Error [BetterAuthError]: You are using the default secret. Please set `BETTER_AUTH_SECRET` in your environment variables or pass `secret` in your auth config.]
+#21 180.0 2026-11-19T10:20:17.926Z WARN [Better Auth]: [better-auth] Base URL is not set. Set the baseURL option or BETTER_AUTH_URL env, or use a dynamic baseURL with allowedHosts for multi-host setups. Without it the origin is derived from the incoming request, and callbacks and redirects may not work correctly.
+#21 180.0 [Error [BetterAuthError]: You are using the default secret. Please set `BETTER_AUTH_SECRET` in your environment variables or pass `secret` in your auth config.]
+#21 180.1 2026-11-19T10:20:17.947Z WARN [Better Auth]: [better-auth] Base URL is not set. Set the baseURL option or BETTER_AUTH_URL env, or use a dynamic baseURL with allowedHosts for multi-host setups. Without it the origin is derived from the incoming request, and callbacks and redirects may not work correctly.
+#21 180.1 2026-11-19T10:20:17.948Z WARN [Better Auth]: [better-auth] Base URL is not set. Set the baseURL option or BETTER_AUTH_URL env, or use a dynamic baseURL with allowedHosts for multi-host setups. Without it the origin is derived from the incoming request, and callbacks and redirects may not work correctly.
+#21 180.1 [Error [BetterAuthError]: You are using the default secret. Please set `BETTER_AUTH_SECRET` in your environment variables or pass `secret` in your auth config.]
+#21 180.1 2026-11-19T10:20:17.964Z WARN [Better Auth]: [better-auth] Base URL is not set. Set the baseURL option or BETTER_AUTH_URL env, or use a dynamic baseURL with allowedHosts for multi-host setups. Without it the origin is derived from the incoming request, and callbacks and redirects may not work correctly.
+#21 180.1 [Error [BetterAuthError]: You are using the default secret. Please set `BETTER_AUTH_SECRET` in your environment variables or pass `secret` in your auth config.]
+#21 180.1 [Error [BetterAuthError]: You are using the default secret. Please set `BETTER_AUTH_SECRET` in your environment variables or pass `secret` in your auth config.]
+#21 180.1 2026-11-19T10:20:18.008Z WARN [Better Auth]: [better-auth] Base URL is not set. Set the baseURL option or BETTER_AUTH_URL env, or use a dynamic baseURL with allowedHosts for multi-host setups. Without it the origin is derived from the incoming request, and callbacks and redirects may not work correctly.
+#21 180.1 [Error [BetterAuthError]: You are using the default secret. Please set `BETTER_AUTH_SECRET` in your environment variables or pass `secret` in your auth config.]
+#21 180.2 2026-11-19T10:20:18.048Z WARN [Better Auth]: [better-auth] Base URL is not set. Set the baseURL option or BETTER_AUTH_URL env, or use a dynamic baseURL with allowedHosts for multi-host setups. Without it the origin is derived from the incoming request, and callbacks and redirects may not work correctly.
+#21 180.2 [Error [BetterAuthError]: You are using the default secret. Please set `BETTER_AUTH_SECRET` in your environment variables or pass `secret` in your auth config.]
+#21 180.3 2026-11-19T10:20:18.180Z WARN [Better Auth]: [better-auth] Base URL is not set. Set the baseURL option or BETTER_AUTH_URL env, or use a dynamic baseURL with allowedHosts for multi-host setups. Without it the origin is derived from the incoming request, and callbacks and redirects may not work correctly.
+#21 180.3 [Error [BetterAuthError]: You are using the default secret. Please set `BETTER_AUTH_SECRET` in your environment variables or pass `secret` in your auth config.]
+#21 180.4  ⚠ Using edge runtime on a page currently disables static generation for that page
+#21 180.4 2026-11-19T10:20:18.299Z WARN [Better Auth]: [better-auth] Base URL is not set. Set the baseURL option or BETTER_AUTH_URL env, or use a dynamic baseURL with allowedHosts for multi-host setups. Without it the origin is derived from the incoming request, and callbacks and redirects may not work correctly.
+#21 180.4 [Error [BetterAuthError]: You are using the default secret. Please set `BETTER_AUTH_SECRET` in your environment variables or pass `secret` in your auth config.]
+#21 188.0    Generating static pages (0/76) ...
+#21 189.2 2026-11-19T10:20:26.959Z WARN [Better Auth]: [better-auth] Base URL is not set. Set the baseURL option or BETTER_AUTH_URL env, or use a dynamic baseURL with allowedHosts for multi-host setups. Without it the origin is derived from the incoming request, and callbacks and redirects may not work correctly.
+#21 189.2 [Error [BetterAuthError]: You are using the default secret. Please set `BETTER_AUTH_SECRET` in your environment variables or pass `secret` in your auth config.]
+#21 189.3    Generating static pages (19/76) 
+#21 189.3 2026-11-19T10:20:27.065Z WARN [Better Auth]: [better-auth] Base URL is not set. Set the baseURL option or BETTER_AUTH_URL env, or use a dynamic baseURL with allowedHosts for multi-host setups. Without it the origin is derived from the incoming request, and callbacks and redirects may not work correctly.
+#21 189.3 [Error [BetterAuthError]: You are using the default secret. Please set `BETTER_AUTH_SECRET` in your environment variables or pass `secret` in your auth config.]
+#21 189.3 2026-11-19T10:20:27.079Z WARN [Better Auth]: [better-auth] Base URL is not set. Set the baseURL option or BETTER_AUTH_URL env, or use a dynamic baseURL with allowedHosts for multi-host setups. Without it the origin is derived from the incoming request, and callbacks and redirects may not work correctly.
+#21 189.3 [Error [BetterAuthError]: You are using the default secret. Please set `BETTER_AUTH_SECRET` in your environment variables or pass `secret` in your auth config.]
+#21 189.5    Generating static pages (38/76) 
+#21 189.5    Generating static pages (57/76) 
+#21 189.5 2026-11-19T10:20:27.261Z WARN [Better Auth]: [better-auth] Base URL is not set. Set the baseURL option or BETTER_AUTH_URL env, or use a dynamic baseURL with allowedHosts for multi-host setups. Without it the origin is derived from the incoming request, and callbacks and redirects may not work correctly.
+#21 189.5 [Error [BetterAuthError]: You are using the default secret. Please set `BETTER_AUTH_SECRET` in your environment variables or pass `secret` in your auth config.]
+#21 189.7  ✓ Generating static pages (76/76)
+#21 192.7    Finalizing page optimization ...
+#21 192.7    Collecting build traces ...
+#21 271.6 
+#21 271.6 Route (app)                                          Size  First Load JS
+#21 271.6 ┌ ƒ /                                             34.4 kB         406 kB
+#21 271.6 ├ ƒ /_not-found                                     308 B         207 kB
+#21 271.6 ├ ● /[slug]                                         202 B         232 kB
+#21 271.6 ├   ├ /ai-video-clipper
+#21 271.6 ├   ├ /open-source-video-clipper
+#21 271.6 ├   └ /youtube-shorts-clipper
+#21 271.6 ├ ƒ /admin                                        6.75 kB         240 kB
+#21 271.6 ├ ƒ /admin/announcements                          3.71 kB         247 kB
+#21 271.6 ├ ƒ /affiliate                                      139 B         231 kB
+#21 271.6 ├ ƒ /analytics                                    12.7 kB         258 kB
+#21 271.6 ├ ƒ /api/admin/affiliates/[id]                      308 B         207 kB
+#21 271.6 ├ ƒ /api/admin/announcements                        308 B         207 kB
+#21 271.6 ├ ƒ /api/admin/announcements/[id]                   308 B         207 kB
+#21 271.6 ├ ƒ /api/admin/feature-flags/[key]                  308 B         207 kB
+#21 271.6 ├ ƒ /api/admin/runtime-settings                     308 B         207 kB
+#21 271.6 ├ ƒ /api/admin/users/[id]/admin                     308 B         207 kB
+#21 271.6 ├ ƒ /api/admin/users/[id]/legacy-hd                 308 B         207 kB
+#21 271.6 ├ ƒ /api/affiliates                                 308 B         207 kB
+#21 271.6 ├ ƒ /api/affiliates/offer                           308 B         207 kB
+#21 271.6 ├ ƒ /api/affiliates/slug                            308 B         207 kB
+#21 271.6 ├ ƒ /api/announcements                              308 B         207 kB
+#21 271.6 ├ ƒ /api/api-keys                                   308 B         207 kB
+#21 271.6 ├ ƒ /api/api-keys/[id]                              308 B         207 kB
+#21 271.6 ├ ƒ /api/attribution                                308 B         207 kB
+#21 271.6 ├ ƒ /api/attribution/clip-export                    308 B         207 kB
+#21 271.6 ├ ƒ /api/auth/[...all]                              308 B         207 kB
+#21 271.6 ├ ƒ /api/billing/checkout                           308 B         207 kB
+#21 271.6 ├ ƒ /api/billing/portal                             308 B         207 kB
+#21 271.6 ├ ƒ /api/billing/resume                             308 B         207 kB
+#21 271.6 ├ ƒ /api/billing/revenuecat-webhook                 308 B         207 kB
+#21 271.6 ├ ƒ /api/billing/webhook                            308 B         207 kB
+#21 271.6 ├ ƒ /api/brand-kits                                 308 B         207 kB
+#21 271.6 ├ ƒ /api/brand-kits/[...path]                       308 B         207 kB
+#21 271.6 ├ ƒ /api/briefs/[...path]                           308 B         207 kB
+#21 271.6 ├ ƒ /api/broll/status                               308 B         207 kB
+#21 271.6 ├ ƒ /api/caption-templates                          308 B         207 kB
+#21 271.6 ├ ƒ /api/channel-monitors                           308 B         207 kB
+#21 271.6 ├ ƒ /api/channel-monitors/[id]                      308 B         207 kB
+#21 271.6 ├ ƒ /api/channel-monitors/settings                  308 B         207 kB
+#21 271.6 ├ ƒ /api/channel-monitors/videos/[videoId]/retry    308 B         207 kB
+#21 271.6 ├ ƒ /api/feature-flags                              308 B         207 kB
+#21 271.6 ├ ƒ /api/feedback                                   308 B         207 kB
+#21 271.6 ├ ƒ /api/fonts                                      308 B         207 kB
+#21 271.6 ├ ƒ /api/fonts/[fontName]                           308 B         207 kB
+#21 271.6 ├ ƒ /api/fonts/upload                               308 B         207 kB
+#21 271.6 ├ ƒ /api/learning/[...path]                         308 B         207 kB
+#21 271.6 ├ ƒ /api/live/[...path]                             308 B         207 kB
+#21 271.6 ├ ƒ /api/luts/[...path]                             308 B         207 kB
+#21 271.6 ├ ƒ /api/music/[...path]                            308 B         207 kB
+#21 271.6 ├ ƒ /api/preferences                                308 B         207 kB
+#21 271.6 ├ ƒ /api/publishing/[...path]                       308 B         207 kB
+#21 271.6 ├ ƒ /api/recipes                                    308 B         207 kB
+#21 271.6 ├ ƒ /api/recipes/[...path]                          308 B         207 kB
+#21 271.6 ├ ƒ /api/reference-styles                           308 B         207 kB
+#21 271.6 ├ ƒ /api/reference-styles/[...path]                 308 B         207 kB
+#21 271.6 ├ ƒ /api/service-status/video-downloads             308 B         207 kB
+#21 271.6 ├ ƒ /api/sfx/[...path]                              308 B         207 kB
+#21 271.6 ├ ƒ /api/share/[...path]                            308 B         207 kB
+#21 271.6 ├ ƒ /api/social/[...path]                           308 B         207 kB
+#21 271.6 ├ ƒ /api/social/callback/[provider]                 308 B         207 kB
+#21 271.6 ├ ƒ /api/social/connect/[provider]                  308 B         207 kB
+#21 271.6 ├ ƒ /api/social/media/[token]                       308 B         207 kB
+#21 271.6 ├ ƒ /api/tasks                                      308 B         207 kB
+#21 271.6 ├ ƒ /api/tasks/[...path]                            308 B         207 kB
+#21 271.6 ├ ƒ /api/tasks/billing-summary                      308 B         207 kB
+#21 271.6 ├ ƒ /api/tasks/create                               308 B         207 kB
+#21 271.6 ├ ƒ /api/upload                                     308 B         207 kB
+#21 271.6 ├ ƒ /api/upload/[action]                            308 B         207 kB
+#21 271.6 ├ ƒ /api/upload/authorization                       308 B         207 kB
+#21 271.6 ├ ƒ /api/watch-folder                               308 B         207 kB
+#21 271.6 ├ ƒ /api/watch-folder/settings                      308 B         207 kB
+#21 271.6 ├ ƒ /blog                                           139 B         231 kB
+#21 271.6 ├ ● /blog/[slug]                                  1.76 kB         242 kB
+#21 271.6 ├   ├ /blog/tiktok-publishing-is-live
+#21 271.6 ├   ├ /blog/podcast-to-shorts
+#21 271.6 ├   ├ /blog/find-best-moments-in-video
+#21 271.6 ├   └ [+9 more paths]
+#21 271.6 ├ ƒ /changelog                                      139 B         231 kB
+#21 271.6 ├ ƒ /demo                                           200 B         232 kB
+#21 271.6 ├ ƒ /email/product-updates/unsubscribe              308 B         207 kB
+#21 271.6 ├ ƒ /faq                                          5.16 kB         241 kB
+#21 271.6 ├ ƒ /forgot-password                               3.4 kB         297 kB
+#21 271.6 ├ ○ /icon.png                                         0 B            0 B
+#21 271.6 ├ ○ /icon.svg                                         0 B            0 B
+#21 271.6 ├ ƒ /list                                         16.7 kB         284 kB
+#21 271.6 ├ ƒ /live                                         7.05 kB         232 kB
+#21 271.6 ├ ƒ /opengraph-image                                308 B         207 kB
+#21 271.6 ├ ƒ /privacy                                        185 B         216 kB
+#21 271.6 ├ ƒ /publishing                                   9.96 kB         237 kB
+#21 271.6 ├ ƒ /reset-password                               3.67 kB         297 kB
+#21 271.6 ├ ○ /robots.txt                                     308 B         207 kB
+#21 271.6 ├ ƒ /settings                                     13.7 kB         363 kB
+#21 271.6 ├ ƒ /settings/api-keys                            7.06 kB         260 kB
+#21 271.6 ├ ƒ /settings/autopilot                           10.5 kB         270 kB
+#21 271.6 ├ ƒ /settings/brand-kit                            7.7 kB         255 kB
+#21 271.6 ├ ƒ /settings/creator-program                     9.52 kB         291 kB
+#21 271.6 ├ ƒ /settings/social                              10.8 kB         296 kB
+#21 271.6 ├ ƒ /share/[token]                                  10 kB         288 kB
+#21 271.6 ├ ƒ /sign-in                                         4 kB         297 kB
+#21 271.6 ├ ƒ /sign-up                                      5.05 kB         298 kB
+#21 271.6 ├ ○ /sitemap.xml                                    308 B         207 kB
+#21 271.6 ├ ƒ /status                                         307 B         228 kB
+#21 271.6 ├ ƒ /tasks/[id]                                   33.4 kB         413 kB
+#21 271.6 ├ ƒ /tasks/[id]/edit                              55.6 kB         355 kB
+#21 271.6 ├ ƒ /terms                                          185 B         216 kB
+#21 271.6 └ ƒ /twitter-image                                  308 B         207 kB
+#21 271.6 + First Load JS shared by all                      207 kB
+#21 271.6   ├ chunks/8606-f973c96c7ecef6ab.js               45.9 kB
+#21 271.6   ├ chunks/8e7f45f8-1de8fe372ec61124.js            104 kB
+#21 271.6   ├ chunks/a76d7c43-0edd055d0739ce9d.js           54.2 kB
+#21 271.6   └ other shared chunks (total)                   3.14 kB
+#21 271.6 
+#21 271.6 
+#21 271.6 ○  (Static)   prerendered as static content
+#21 271.6 ●  (SSG)      prerendered as static HTML (uses generateStaticParams)
+#21 271.6 ƒ  (Dynamic)  server-rendered on demand
+#21 271.6 
+#21 DONE 273.3s
+
+#22 [runner  5/12] RUN useradd --system --uid 1001 --gid nodejs nextjs
+#22 CACHED
+
+#23 [runner  2/12] WORKDIR /app
+#23 CACHED
+
+#24 [runner  4/12] RUN groupadd --system --gid 1001 nodejs
+#24 CACHED
+
+#25 [runner  3/12] RUN apt-get update && apt-get install -y openssl curl && rm -rf /var/lib/apt/lists/*
+#25 CACHED
+
+#26 [runner  6/12] COPY --from=builder /app/public ./public
+#26 CACHED
+
+#27 [runner  7/12] COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+#27 DONE 2.3s
+
+#28 [runner  8/12] COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+#28 DONE 0.3s
+
+#29 [runner  9/12] COPY --from=builder --chown=nextjs:nodejs /app/CHANGELOG.md ./CHANGELOG.md
+#29 DONE 0.1s
+
+#30 [runner 10/12] COPY --from=builder --chown=nextjs:nodejs /app/src/generated/prisma ./src/generated/prisma
+#30 DONE 0.2s
+
+#31 [runner 11/12] COPY --from=builder /app/prisma ./prisma
+#31 DONE 0.1s
+
+#32 [runner 12/12] COPY --from=builder --chown=nextjs:nodejs     /app/src/generated/prisma/libquery_engine-debian-openssl-3.0.x.so.node     /app/prisma-engine/libquery_engine-debian-openssl-3.0.x.so.node
+#32 DONE 0.5s
+
+#33 exporting to image
+#33 exporting layers
+#33 exporting layers 11.9s done
+#33 exporting manifest sha256:15d4b41f5bc79eb301f81d2f53702c4a64f640b258bfac3a51bd3f2738080c8b 0.0s done
+#33 exporting config sha256:bc5b447dc57e3df0b7dad479c60da9301d0d0073a6fb92eb4771ca6b646e3c5e 0.0s done
+#33 exporting attestation manifest sha256:4c572278fd0d51206cf66c59d965f005d6c3c64be60279f168c0bf0e6773e39f 0.0s done
+#33 exporting manifest list sha256:3fa9b0ce71b0a2edd200ab4ecc8c7fde32eefab92d04b4b4e65b1294a0482b40 0.0s done
+#33 naming to docker.io/library/jarvisclipstudio-frontend:latest done
+#33 unpacking to docker.io/library/jarvisclipstudio-frontend:latest
+#33 unpacking to docker.io/library/jarvisclipstudio-frontend:latest 5.2s done
+#33 DONE 17.3s
+
+#34 resolving provenance for metadata file
+#34 DONE 0.1s
+ Image jarvisclipstudio-frontend Built 
+BUILD EXIT 0

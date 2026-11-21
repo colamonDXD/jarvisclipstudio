@@ -1,0 +1,358 @@
+diff --git a/backend/src/api/routes/tasks.py b/backend/src/api/routes/tasks.py
+index 452eaa2..3217606 100644
+--- a/backend/src/api/routes/tasks.py
++++ b/backend/src/api/routes/tasks.py
+@@ -706,6 +706,9 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
+         layout_credit = (
+             clean_layout_credit(data.get("layout_credit")) if layout_template else None
+         )
++        hook_title_enabled = data.get("hook_title_enabled")
++        if hook_title_enabled is not None and not isinstance(hook_title_enabled, bool):
++            raise ValueError("hook_title_enabled must be true or false")
+         broll_enabled = validate_broll_enabled(data.get("broll_enabled"))
+         separation_opt_in = validate_separation_opt_in(
+             data.get("separation_opt_in")
+@@ -786,6 +789,7 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
+             "framing_mode": framing_mode,
+             "layout_template": layout_template,
+             "layout_credit": layout_credit,
++            "hook_title_enabled": hook_title_enabled,
+             "broll_enabled": broll_enabled,
+             "separation_opt_in": separation_opt_in,
+             "target_clip_count": target_clip_count,
+@@ -901,6 +905,7 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
+                 framing_mode=framing_mode,
+                 layout_template=layout_template,
+                 layout_credit=layout_credit,
++                hook_title_enabled=hook_title_enabled,
+                 broll_enabled=broll_enabled,
+                 separation_opt_in=separation_opt_in,
+                 target_clip_count=target_clip_count,
+diff --git a/backend/src/caption_templates.py b/backend/src/caption_templates.py
+index b544c00..d87b8b9 100644
+--- a/backend/src/caption_templates.py
++++ b/backend/src/caption_templates.py
+@@ -280,13 +280,15 @@ CAPTION_TEMPLATES: Dict[str, Dict[str, Any]] = {
+     # (font_px * stroke / 26), so a "normal" 4-5 merges into a solid box.
+     "seam_red": {
+         "name": "Seam — red",
+-        "description": "Condensed white words with a red outline on the face/game seam",
++        # White words with a black outline: the red belongs to the divider
++        # only (owner, 2026-11-18: "why are captions red?").
++        "description": "Condensed white words with a black outline on the face/game seam",
+         "font_family": "Anton-Regular",
+         "font_size": 68,
+         "font_color": "#FFFFFF",
+         "highlight_color": "#FFFFFF",
+         "emphasis_color": "#FFFFFF",
+-        "stroke_color": "#E5262B",
++        "stroke_color": "#000000",
+         "stroke_width": 2,
+         "background": False,
+         "background_color": None,
+diff --git a/backend/src/media/reframe_plan.py b/backend/src/media/reframe_plan.py
+index 3bed6f1..d7fc65e 100644
+--- a/backend/src/media/reframe_plan.py
++++ b/backend/src/media/reframe_plan.py
+@@ -3616,6 +3616,7 @@ def attach_reframe_plan(
+     keep_ranges: Sequence[Tuple[float, float]],
+     plain: bool = False,
+     framing: Optional[str] = None,
++    layout_template: Optional[str] = None,
+ ) -> bool:
+     """Compute the reframe plan for an EDL and store it on the EDL.
+ 
+@@ -3642,7 +3643,8 @@ def attach_reframe_plan(
+     behaviour exactly: ``plain`` alone decides.
+     """
+     try:
+-        return _attach_reframe_plan(edl, Path(source_path), keep_ranges, plain, framing)
++        return _attach_reframe_plan(edl, Path(source_path), keep_ranges, plain, framing,
++                                    layout_template=layout_template)
+     except Exception:
+         logger.warning(
+             "Reframe planning failed; rendering without a reframe plan",
+@@ -3712,12 +3714,26 @@ def unify_layout_plan(
+     return unified
+ 
+ 
++def _layout_facecam_found(source_path: Path, analysis: Dict[str, Any], ranges) -> bool:
++    try:
++        from .facecam_rect import find_facecam_rect, probe_times
++
++        width, height = int(analysis.get("width") or 0), int(analysis.get("height") or 0)
++        if width <= 0 or height <= 0:
++            return False
++        return find_facecam_rect(source_path, width, height, probe_times(ranges)) is not None
++    except Exception as exc:
++        logger.debug("Layout facecam check unavailable: %s", exc)
++        return False
++
++
+ def _attach_reframe_plan(
+     edl: Dict[str, Any],
+     source_path: Path,
+     keep_ranges: Sequence[Tuple[float, float]],
+     plain: bool = False,
+     framing: Optional[str] = None,
++    layout_template: Optional[str] = None,
+ ) -> bool:
+     if not edl or not edl.get("segments"):
+         return False
+@@ -3728,6 +3744,14 @@ def _attach_reframe_plan(
+     if analysis is None:
+         return False
+     duration = float(edl.get("duration") or 0) or rendered_ranges_duration(ranges)
++    if layout_template and _layout_facecam_found(source_path, analysis, ranges):
++        # The user picked "face on top, game below": it wins over the
++        # framing choice whenever the clip has a facecam. Only the plain
++        # path composes the stack (the EDL graph cannot), so the clip is
++        # delegated to it; without a facecam the framing choice stands.
++        logger.info("Reframe plan: %s chosen and a facecam found; delegating to the layout path", layout_template)
++        edl["reframe"] = {"version": 1, "delegate": "plain", "shots": [], "layout_template": layout_template}
++        return True
+     if framing == "fit":
+         plan = build_fit_reframe_plan(analysis, ranges, duration)
+     elif framing == "crop":
+diff --git a/backend/src/media/reframing.py b/backend/src/media/reframing.py
+index 10d810d..5d6c79a 100644
+--- a/backend/src/media/reframing.py
++++ b/backend/src/media/reframing.py
+@@ -1611,6 +1611,11 @@ def describe_vertical_layout(
+     # same description the planner's own all-fit outcome produces
+     # below. No face analysis is needed: nothing is cropped, so
+     # nothing can be lost, and captions take the all-fit height.
++    # A chosen "face on top, game below" layout outranks the framing
++    # choice: the reaction layout below composes it when a facecam is
++    # found, and falls back to the normal planner when none is.
++    if layout_template:
++        framing = None
+     if framing == "fit":
+         return _described("fit", build_full_frame_filter(), "complex", 0.80)
+ 
+diff --git a/backend/src/migrations/sql/20261118_0002_task_hook_title_enabled.sql b/backend/src/migrations/sql/20261118_0002_task_hook_title_enabled.sql
+new file mode 100644
+index 0000000..58aa38d
+--- /dev/null
++++ b/backend/src/migrations/sql/20261118_0002_task_hook_title_enabled.sql
+@@ -0,0 +1,4 @@
++-- Title on/off from the create form (owner, 2026-11-18: "sometimes there is
++-- no need of titles, give an option"). NULL = the title is drawn, as on every
++-- task before the control. FALSE = no hook title is burned into the clips.
++ALTER TABLE tasks ADD COLUMN IF NOT EXISTS hook_title_enabled BOOLEAN
+diff --git a/backend/src/models.py b/backend/src/models.py
+index d7cc050..18f0252 100644
+--- a/backend/src/models.py
++++ b/backend/src/models.py
+@@ -239,6 +239,10 @@ class Task(Base):
+     layout_credit: Mapped[Optional[str]] = mapped_column(
+         String(48), nullable=True
+     )
++    # Title on/off from the create form. NULL (every older task) = drawn.
++    hook_title_enabled: Mapped[Optional[bool]] = mapped_column(
++        Boolean, nullable=True
++    )
+     # B-roll switch from the create form: the user's own On/Off for stock
+     # cutaways, independent of the other template effects. NULL means the
+     # row predates the control and the template default decides (Auto
+diff --git a/backend/src/repositories/task_repository.py b/backend/src/repositories/task_repository.py
+index 1555201..4ca173f 100644
+--- a/backend/src/repositories/task_repository.py
++++ b/backend/src/repositories/task_repository.py
+@@ -120,6 +120,7 @@ class TaskRepository:
+         framing_mode: Optional[str] = None,
+         layout_template: Optional[str] = None,
+         layout_credit: Optional[str] = None,
++        hook_title_enabled: Optional[bool] = None,
+         broll_enabled: Optional[bool] = None,
+         separation_opt_in: bool = False,
+         target_clip_count: Optional[int] = None,
+@@ -142,7 +143,7 @@ class TaskRepository:
+                     INSERT INTO tasks (
+                         id, user_id, source_id, status, font_family, font_size, font_color,
+                         caption_template, include_broll, processing_mode, niche_override,
+-                        music_override, music_mode, template_mode, framing_mode, layout_template, layout_credit, broll_enabled, separation_opt_in,
++                        music_override, music_mode, template_mode, framing_mode, layout_template, layout_credit, hook_title_enabled, broll_enabled, separation_opt_in,
+                         target_clip_count, source_duration_seconds, content_brief, campaign_id,
+                         brand_kit_id, intro_asset, outro_asset, creation_mode, manual_ranges_json,
+                         created_at, updated_at
+@@ -150,7 +151,7 @@ class TaskRepository:
+                     VALUES (
+                         :task_id, :user_id, :source_id, :status, :font_family, :font_size, :font_color,
+                         :caption_template, :include_broll, :processing_mode, :niche_override,
+-                        :music_override, :music_mode, :template_mode, :framing_mode, :layout_template, :layout_credit, :broll_enabled, :separation_opt_in,
++                        :music_override, :music_mode, :template_mode, :framing_mode, :layout_template, :layout_credit, :hook_title_enabled, :broll_enabled, :separation_opt_in,
+                         :target_clip_count, :source_duration_seconds, :content_brief, :campaign_id,
+                         :brand_kit_id, :intro_asset, :outro_asset, :creation_mode, :manual_ranges_json,
+                         NOW(), NOW()
+@@ -175,6 +176,7 @@ class TaskRepository:
+                     "framing_mode": framing_mode,
+                     "layout_template": layout_template,
+                     "layout_credit": layout_credit,
++                    "hook_title_enabled": hook_title_enabled,
+                     "broll_enabled": broll_enabled,
+                     "separation_opt_in": separation_opt_in,
+                     "target_clip_count": target_clip_count,
+@@ -302,6 +304,7 @@ class TaskRepository:
+             "framing_mode": getattr(row, "framing_mode", None),
+             "layout_template": getattr(row, "layout_template", None),
+             "layout_credit": getattr(row, "layout_credit", None),
++            "hook_title_enabled": getattr(row, "hook_title_enabled", None),
+             "target_clip_count": getattr(row, "target_clip_count", None),
+             "source_duration_seconds": getattr(
+                 row, "source_duration_seconds", None
+@@ -602,6 +605,7 @@ class TaskRepository:
+                     "framing_mode": getattr(row, "framing_mode", None),
+                     "layout_template": getattr(row, "layout_template", None),
+                     "layout_credit": getattr(row, "layout_credit", None),
++                    "hook_title_enabled": getattr(row, "hook_title_enabled", None),
+                     "broll_enabled": getattr(row, "broll_enabled", None),
+                     "separation_opt_in": getattr(
+                         row, "separation_opt_in", None
+diff --git a/backend/src/services/task_service.py b/backend/src/services/task_service.py
+index e9eda26..8fcdba0 100644
+--- a/backend/src/services/task_service.py
++++ b/backend/src/services/task_service.py
+@@ -1100,6 +1100,7 @@ class TaskService(ClipEditingMixin):
+         framing_mode: Optional[str] = None,
+         layout_template: Optional[str] = None,
+         layout_credit: Optional[str] = None,
++        hook_title_enabled: Optional[bool] = None,
+         broll_enabled: Optional[bool] = None,
+         separation_opt_in: bool = False,
+         target_clip_count: Optional[int] = None,
+@@ -1193,6 +1194,7 @@ class TaskService(ClipEditingMixin):
+             framing_mode=framing_mode,
+             layout_template=layout_template,
+             layout_credit=layout_credit,
++            hook_title_enabled=hook_title_enabled,
+             broll_enabled=broll_enabled,
+             separation_opt_in=separation_opt_in,
+             target_clip_count=target_clip_count,
+@@ -2549,6 +2551,8 @@ class TaskService(ClipEditingMixin):
+                 else None
+             )
+             project_broll_enabled = task_row.get("broll_enabled")
++            # Title on/off: only an explicit False turns the burned-in title off.
++            project_hook_title_enabled = task_row.get("hook_title_enabled") is not False
+             # Brand Kit application for this task's renders: resolved
+             # once from the opted-in kit, then threaded into every
+             # clip's EDL build exactly like the music override. No kit
+@@ -2844,6 +2848,7 @@ class TaskService(ClipEditingMixin):
+                                 else {}
+                             ),
+                             broll_enabled=project_broll_enabled,
++                            hook_title_enabled=project_hook_title_enabled,
+                             brand_application=brand_application or None,
+                             profile_adjustments=segment_adjustments,
+                             profile_adjustments_niche=(
+diff --git a/backend/src/services/video_service.py b/backend/src/services/video_service.py
+index 2cdc5bc..f32d4f0 100644
+--- a/backend/src/services/video_service.py
++++ b/backend/src/services/video_service.py
+@@ -1743,6 +1743,7 @@ class VideoService:
+         layout_template: Optional[str] = None,
+         layout_credit: Optional[str] = None,
+         broll_enabled: Optional[bool] = None,
++        hook_title_enabled: bool = True,
+         vocals_stem: Optional[Path] = None,
+         brand_application: Optional[Dict[str, Any]] = None,
+         niche_override: Optional[str] = None,
+@@ -2177,6 +2178,7 @@ class VideoService:
+                         keep_ranges,
+                         plain,
+                         framing=framing_mode,
++                        layout_template=layout_template,
+                     )
+                 except Exception as exc:
+                     logger.warning("Reframe planning skipped: %s", exc)
+@@ -2268,7 +2270,9 @@ class VideoService:
+                 caption_template,
+                 output_format,
+                 keep_ranges,
+-                segment.get("hook_title"),
++                # Title on/off (create form): off burns no title; the clip
++                # keeps its hook_title as its name in the library.
++                segment.get("hook_title") if hook_title_enabled else None,
+                 extend_to_sentence=False,
+                 layout_report=render_report,
+                 broll_overlays=broll_overlays,
+diff --git a/backend/src/video_utils.py b/backend/src/video_utils.py
+index c419b38..27d032d 100644
+--- a/backend/src/video_utils.py
++++ b/backend/src/video_utils.py
+@@ -1,4 +1,5 @@
+ """Video utils helpers for the video pipeline."""
++import os
+ 
+ from .clip_source_map import save_clip_broll, save_clip_caption_settings
+ from .media.common import (
+@@ -447,6 +448,47 @@ def _stamp_render_timings(
+         pass
+ 
+ 
++def min_clip_seconds() -> float:
++    """CLIP_MIN_SECONDS (default 17): no rendered clip is shorter (owner,
++    2026-11-18: "clip should be 17 seconds minimum"; a 3 s clip shipped)."""
++    try:
++        return max(0.0, float(os.getenv("CLIP_MIN_SECONDS", "17")))
++    except ValueError:
++        return 17.0
++
++
++def enforce_min_clip_duration(
++    video_path: Path, ranges: List[Tuple[float, float]], minimum: Optional[float] = None
++) -> List[Tuple[float, float]]:
++    """Lengthen a clip that would render shorter than the minimum.
++
++    The last range is extended forward (the moment keeps playing); when the
++    source ends first, the first range starts earlier. Never past the source.
++    """
++    minimum = min_clip_seconds() if minimum is None else minimum
++    ranges = [(float(a), float(b)) for a, b in ranges]
++    total = sum(b - a for a, b in ranges)
++    if not ranges or minimum <= 0 or total >= minimum:
++        return ranges
++    try:
++        source_len = float(ffprobe_duration(video_path) or 0.0)
++    except Exception:
++        source_len = 0.0
++    if source_len <= 0:
++        return ranges
++    deficit = minimum - total
++    a, b = ranges[-1]
++    new_b = min(source_len, b + deficit)
++    ranges[-1] = (a, new_b)
++    deficit -= new_b - b
++    if deficit > 0.01:
++        a0, b0 = ranges[0]
++        ranges[0] = (max(0.0, a0 - deficit), b0)
++    logger.info("Clip lengthened to the %.0fs minimum: %.1fs -> %.1fs", minimum, total,
++                sum(y - x for x, y in ranges))
++    return ranges
++
++
+ def create_optimized_clip(
+     video_path: Path,
+     start_time: float,
+@@ -541,13 +583,19 @@ def create_optimized_clip(
+                     audited,
+                 )
+                 effective_keep_ranges = audited
++        effective_keep_ranges = enforce_min_clip_duration(video_path, effective_keep_ranges)
+         duration = sum(end - start for start, end in effective_keep_ranges)
+         if duration <= 0:
+             logger.error(f"Invalid clip duration: {duration:.1f}s")
+             return False
+ 
+         keep_original = output_format == "original"
+-        if layout_template:
++        # The seam caption style belongs to the face-on-top stack: when the
++        # clip has an EDL whose plan did not choose the stack (no facecam),
++        # the task's own caption style stays.
++        reframe_section = (edl or {}).get("reframe") or {}
++        stack_chosen = not edl or reframe_section.get("delegate") == "plain"
++        if layout_template and stack_chosen:
+             from .media.gaming_templates import caption_template_for
+ 
+             seam_template = caption_template_for(layout_template)

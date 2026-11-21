@@ -1,0 +1,117 @@
+From 8d328eca4baff5aa0142a237bffb260d5e865026 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 13:15:15 +0530
+Subject: [PATCH 08/13] feat(provider-audit): --probe-nvidia tests every NIM
+ slug with a real 8-token call (tooling only)
+
+---
+ backend/tests/unit/test_provider_audit.py | 20 +++++++++
+ tools/provider-audit/audit_providers.py   | 51 +++++++++++++++++++++++
+ 2 files changed, 71 insertions(+)
+
+diff --git a/backend/tests/unit/test_provider_audit.py b/backend/tests/unit/test_provider_audit.py
+index d40fbfe..d152a01 100644
+--- a/backend/tests/unit/test_provider_audit.py
++++ b/backend/tests/unit/test_provider_audit.py
+@@ -34,3 +34,23 @@ def test_report_never_contains_key_values(tmp_path, monkeypatch):
+     rows = audit.live_audit({"GROQ_API_KEY": secret, "DEEPSEEK_API_KEY": secret}, False, False)
+     assert secret not in str(rows)
+     assert [r for r in rows if r["provider"] == "groq"][0]["verdict"] == "AUTH_FAILED"
++
++
++def test_nvidia_probe_reports_working_and_missing_models(monkeypatch):
++    calls = []
++
++    def fake_http(url, key=None, body=None, **kw):
++        if url.endswith("/models"):
++            return 200, '{"data":[{"id":"nvidia/nemotron-3-ultra-550b-a55b"}]}', {}, 0.01
++        calls.append(body["model"])
++        if body["model"] == "nvidia/nemotron-3-ultra-550b-a55b":
++            return 200, '{"choices":[{"message":{"content":"ok"}}]}', {}, 0.2
++        return 404, "not found", {}, 0.1
++
++    monkeypatch.setattr(audit, "http", fake_http)
++    out = audit.probe_nvidia({"NVIDIA_API_KEY": "nvapi-SECRET-123"})
++    by = {r["model"]: r["result"] for r in out["probes"]}
++    assert by["nvidia/nemotron-3-ultra-550b-a55b"] == "WORKS"
++    assert by["deepseek-ai/deepseek-v4.1-flash"] == "NOT_FOUND"
++    assert "nvapi-SECRET-123" not in str(out)
++    assert audit.probe_nvidia({}) == {"verdict": "KEY_MISSING"}
+diff --git a/tools/provider-audit/audit_providers.py b/tools/provider-audit/audit_providers.py
+index d240e88..2c6d8cf 100644
+--- a/tools/provider-audit/audit_providers.py
++++ b/tools/provider-audit/audit_providers.py
+@@ -275,12 +275,53 @@ def live_audit(env: dict[str, str], infer: bool, allow_metered: bool) -> list[di
+     return rows
+ 
+ 
++NVIDIA_CANDIDATES = [  # names seen on build.nvidia.com; probed, never assumed
++    "nvidia/nemotron-3-ultra-550b-a55b",
++    "nvidia/nemotron-3.5-super-vl-120b-a12b",
++    "nvidia/nemotron-3.5-lightning-30b-a3b",
++    "deepseek-ai/deepseek-v4.1-flash",
++]
++
++
++def probe_nvidia(env: dict[str, str]) -> dict:
++    """Send one 8-token request to every NIM slug in the gateway config plus the
++    known candidates, and report which ones THIS account can actually call.
++    Free-tier traffic only; key never printed."""
++    key = env.get("NVIDIA_API_KEY", "")
++    if not key:
++        return {"verdict": "KEY_MISSING"}
++    cfg_ids = gateway_models()["nvidia"]
++    st, body, _h, _dt = http("https://integrate.api.nvidia.com/v1/models", key)
++    listed = []
++    try:
++        listed = [m["id"] for m in json.loads(body).get("data", [])]
++    except Exception:
++        pass
++    family = [i for i in listed if any(w in i.lower() for w in ("nemotron", "deepseek", "kimi", "glm", "qwen3", "mistral-large", "maverick"))
++              and "embed" not in i.lower() and "guard" not in i.lower() and "retriever" not in i.lower()]
++    todo = list(dict.fromkeys(cfg_ids + NVIDIA_CANDIDATES + family[:10]))
++    rows = []
++    for m in todo:
++        st2, body2, hdr2, dt2 = http("https://integrate.api.nvidia.com/v1/chat/completions", key,
++                                    {"model": m, "messages": [{"role": "user", "content": "Reply with: ok"}], "max_tokens": 8}, timeout=45)
++        ok = False
++        try:
++            ok = st2 == 200 and bool(json.loads(body2)["choices"])
++        except Exception:
++            pass
++        rows.append({"model": m, "in_config": m in cfg_ids, "listed_by_/v1/models": m in listed,
++                     "result": "WORKS" if ok else classify(st2, body2), "http": st2, "seconds": round(dt2, 1)})
++    return {"models_listed_total": len(listed), "family_listed": family[:25], "probes": rows}
++
++
++
+ def main() -> int:
+     ap = argparse.ArgumentParser()
+     ap.add_argument("--static", action="store_true")
+     ap.add_argument("--live", action="store_true")
+     ap.add_argument("--infer", action="store_true")
+     ap.add_argument("--allow-metered", action="store_true")
++    ap.add_argument("--probe-nvidia", action="store_true", help="test every NIM slug with a real 8-token call")
+     ap.add_argument("--env-file")
+     ap.add_argument("--out", default="audit_report.json")
+     a = ap.parse_args()
+@@ -305,6 +346,16 @@ def main() -> int:
+                 if r.get(k):
+                     print(f"      {k}: {r[k]}")
+             fails += r["verdict"].startswith(("AUTH", "FAIL", "OUT_OF"))
++    if a.probe_nvidia:
++        report["nvidia_probe"] = probe_nvidia(load_env(a.env_file))
++        pr = report["nvidia_probe"]
++        print("== NVIDIA PROBE (real 8-token call per model; keys never printed)")
++        if "probes" in pr:
++            print(f"  models listed by your key: {pr['models_listed_total']}")
++            for r in pr["probes"]:
++                print(f"  {r['result']:<22} {r['model']}  (in_config={r['in_config']}, listed={r['listed_by_/v1/models']}, {r['seconds']}s)")
++        else:
++            print("  ", pr)
+     Path(a.out).write_text(json.dumps(report, indent=1))
+     print(f"\nreport written to {a.out} (contains no secrets)")
+     return 1 if fails else 0
+-- 
+2.56.0.windows.2
+

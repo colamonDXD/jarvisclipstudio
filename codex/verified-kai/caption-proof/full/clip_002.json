@@ -1,0 +1,443 @@
+{
+  "ok": true,
+  "duration": 55.1,
+  "words": 29,
+  "caption_coverage": {
+    "ok": false,
+    "uncovered": [
+      [
+        0.0,
+        4.0
+      ],
+      [
+        4.35,
+        4.55
+      ],
+      [
+        6.0,
+        7.5
+      ],
+      [
+        7.85,
+        8.1
+      ],
+      [
+        8.5,
+        8.9
+      ],
+      [
+        9.15,
+        12.3
+      ],
+      [
+        14.5,
+        15.8
+      ],
+      [
+        16.45,
+        16.65
+      ],
+      [
+        17.2,
+        17.35
+      ],
+      [
+        17.6,
+        18.5
+      ],
+      [
+        20.45,
+        21.9
+      ],
+      [
+        23.75,
+        23.8
+      ],
+      [
+        31.05,
+        31.15
+      ],
+      [
+        32.6,
+        33.75
+      ],
+      [
+        34.5,
+        35.6
+      ],
+      [
+        36.05,
+        36.3
+      ],
+      [
+        38.1,
+        38.3
+      ],
+      [
+        39.6,
+        39.6
+      ],
+      [
+        42.45,
+        43.3
+      ],
+      [
+        43.55,
+        44.1
+      ],
+      [
+        44.35,
+        45.25
+      ],
+      [
+        45.55,
+        45.75
+      ],
+      [
+        46.1,
+        46.45
+      ],
+      [
+        53.65,
+        53.65
+      ],
+      [
+        54.1,
+        54.35
+      ]
+    ],
+    "uncovered_seconds": 19.45,
+    "silent_cues": []
+  },
+  "beat_density": null,
+  "error": null,
+  "transcript_provider": "groq",
+  "source_range": [
+    0.0,
+    55.0
+  ],
+  "source_menu_intervals": [],
+  "decoder_word_counts": {
+    "groq": 29,
+    "offline-gpu": 30,
+    "groq-chunks": 29
+  },
+  "burned_words": [
+    {
+      "text": "Lapiz,",
+      "start": 12.4,
+      "end": 12.92,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "whoa,",
+      "start": 12.92,
+      "end": 13.75,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "he",
+      "start": 18.87,
+      "end": 19.7,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "unlocks",
+      "start": 23.88,
+      "end": 24.2,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "like",
+      "start": 24.2,
+      "end": 24.34,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "another",
+      "start": 24.34,
+      "end": 24.72,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "dimension",
+      "start": 24.72,
+      "end": 25.3,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Damn",
+      "start": 25.3,
+      "end": 25.55,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Damn",
+      "start": 31.22,
+      "end": 32.479,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "That",
+      "start": 36.39,
+      "end": 36.85,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "was",
+      "start": 38.38,
+      "end": 38.56,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "a",
+      "start": 38.56,
+      "end": 38.72,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "W,",
+      "start": 38.72,
+      "end": 39.16,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "chat",
+      "start": 39.16,
+      "end": 39.46,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Let",
+      "start": 50.08,
+      "end": 50.16,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "me",
+      "start": 50.16,
+      "end": 50.24,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "take",
+      "start": 50.24,
+      "end": 50.36,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "this",
+      "start": 50.36,
+      "end": 50.52,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "bag",
+      "start": 50.52,
+      "end": 50.72,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "right",
+      "start": 50.72,
+      "end": 50.98,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "here,",
+      "start": 50.98,
+      "end": 51.22,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "chat",
+      "start": 51.22,
+      "end": 51.36,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Let",
+      "start": 52.3,
+      "end": 52.38,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "me",
+      "start": 52.38,
+      "end": 52.48,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "take",
+      "start": 52.48,
+      "end": 52.6,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "this",
+      "start": 52.6,
+      "end": 52.76,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "bag",
+      "start": 52.76,
+      "end": 53.08,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "right",
+      "start": 53.08,
+      "end": 53.26,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "here",
+      "start": 53.26,
+      "end": 53.54,
+      "confidence": 1.0,
+      "speaker": null
+    }
+  ],
+  "source_caption_coverage": {
+    "ok": false,
+    "uncovered": [
+      [
+        0.0,
+        0.4
+      ],
+      [
+        1.1,
+        1.3
+      ],
+      [
+        1.55,
+        1.7
+      ],
+      [
+        2.1,
+        4.05
+      ],
+      [
+        4.35,
+        4.55
+      ],
+      [
+        6.25,
+        7.5
+      ],
+      [
+        9.15,
+        11.6
+      ],
+      [
+        15.0,
+        15.65
+      ],
+      [
+        17.6,
+        18.4
+      ],
+      [
+        20.75,
+        21.25
+      ],
+      [
+        21.55,
+        21.9
+      ],
+      [
+        23.75,
+        23.8
+      ],
+      [
+        31.05,
+        31.15
+      ],
+      [
+        32.6,
+        33.75
+      ],
+      [
+        34.5,
+        35.5
+      ],
+      [
+        36.05,
+        36.3
+      ],
+      [
+        38.1,
+        38.3
+      ],
+      [
+        39.6,
+        39.6
+      ],
+      [
+        42.45,
+        43.3
+      ],
+      [
+        43.55,
+        44.1
+      ],
+      [
+        44.35,
+        45.2
+      ],
+      [
+        45.55,
+        45.75
+      ],
+      [
+        46.1,
+        46.4
+      ],
+      [
+        53.65,
+        53.65
+      ],
+      [
+        54.1,
+        54.35
+      ]
+    ],
+    "uncovered_seconds": 14.65,
+    "silent_cues": []
+  },
+  "expected_words_in_edit": 29,
+  "audio_headroom": {
+    "before": -1.1,
+    "after": -1.1,
+    "gain_db": 0.0
+  }
+}

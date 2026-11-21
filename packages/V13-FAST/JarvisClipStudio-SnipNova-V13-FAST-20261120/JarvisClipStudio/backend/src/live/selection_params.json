@@ -1,0 +1,22 @@
+{
+ "trained_on": 10,
+ "heldout": 5,
+ "heldout_score": 0.5631810165143498,
+ "defaults_heldout_score": 0.33514830848164184,
+ "params": {
+  "baseline_sec": 120.0,
+  "exclude_sec": 8.0,
+  "min_baseline": 20.0,
+  "active_z": 1.9665400595271842,
+  "need_active": 1.0,
+  "laugh_z": 5.0,
+  "scream_f0_z": 5.962969044929711,
+  "scream_vocal_z": 0.3,
+  "merge_gap": 4.296300199602167,
+  "talk_base": 0.11662281447406521,
+  "talk_w": 1.2332663892169458,
+  "length_w": 0.8986567211617489,
+  "energy_w": 2.941694000079495,
+  "min_gap": 240.0
+ }
+}

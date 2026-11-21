@@ -1,0 +1,9 @@
+
+Rendered OK:   306/306
+Distinct:      255 of 306 (delta > 1.00 vs every other three-frame signature)
+Duplicates:    38 clip(s) in 13 near-identical group(s)
+  builtin  rendered  58  distinct  52
+  library  rendered 248  distinct 203
+Table:         D:\SnipNova-Dev\opencode\tools\transitions-proof\library-out-r2b\table.md
+Data:          D:\SnipNova-Dev\opencode\tools\transitions-proof\library-out-r2b\library.json
+Contact sheets: 45 under D:\SnipNova-Dev\opencode\tools\transitions-proof\library-out-r2b

@@ -1,0 +1,19 @@
+diff --git a/backend/src/video_utils.py b/backend/src/video_utils.py
+index 15161f3..d4f47f0 100644
+--- a/backend/src/video_utils.py
++++ b/backend/src/video_utils.py
+@@ -1002,6 +1002,14 @@ def create_optimized_clip(
+ 
+                 finish_plain_path_audio(final_clip_path, render_edl)
+ 
++            # Hook finish (media/hook_finish.py): the punch-in "cut" at ~2.6 s,
++            # a whoosh, and a brightness lift for dark footage - what the viral
++            # Shorts study found our clips were missing. Plain EDLs are skipped.
++            if render_edl and reframe_format == "vertical":
++                from .media.hook_finish import finish_hook
++
++                finish_hook(final_clip_path, render_edl, seed=Path(output_path).stem)
++
+             shutil.move(str(final_clip_path), str(output_path))
+             logger.info(f"Successfully created clip with ffmpeg: {output_path}")
+             record_pass_timing(render_timings, "total_seconds", clip_started)

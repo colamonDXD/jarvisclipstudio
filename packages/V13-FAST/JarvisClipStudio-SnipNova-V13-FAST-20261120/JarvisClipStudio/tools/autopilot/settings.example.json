@@ -1,0 +1,22 @@
+{
+    "api_key": "",
+    "api_url": "http://127.0.0.1:8000",
+    "max_parallel": 1,
+    "poll_interval_seconds": 15,
+    "task": {
+        "add_subtitles": true,
+        "caption_template": "default",
+        "clip_length": "auto",
+        "cut_long_pauses": true,
+        "filtered_words": [],
+        "include_broll": false,
+        "music_override": null,
+        "niche_override": null,
+        "output_format": "vertical",
+        "pause_threshold_ms": 1200,
+        "processing_mode": "fast",
+        "remove_filler_words": true
+    },
+    "task_poll_interval_seconds": 20,
+    "user_id": ""
+}

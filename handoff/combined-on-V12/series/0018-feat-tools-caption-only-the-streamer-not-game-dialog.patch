@@ -1,0 +1,131 @@
+From 1e8d405a37d4c2f384ea7c2c31d99112ff680780 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 18:47:30 +0530
+Subject: [PATCH 18/18] feat(tools): caption only the streamer, not game
+ dialogue (--streamer-words-only)
+
+On a stream the game and the mic share one audio track, so transcripts of a
+GTA VI cutscene caption the game characters (Luffy: "CAPTION ONLY SHOULD SAY
+BY STREAMER"). Games subtitle their own dialogue (white text, dark outline,
+bottom centre): per second, the share of bright colourless pixels touching
+dark ones in that zone marks a game subtitle (measured on Clix windows:
+2.4-13.7 with a subtitle, exactly 0.0 without; threshold 1.5). Words spoken
+during those seconds are dropped from the transcript cache the caption
+builder reads (original kept as .transcript_cache.full.json).
+Tried and rejected first: a facecam mouth-movement rule (kept game lines:
+the streamer's face moves while watching) and OpenCode's burned_captions
+band detector (0/37 s found: tuned for large caption bands).
+Result on a cutscene window: subtitles in 28/37 s, 11 of 101 words kept.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/phase2/auto_edit.py | 79 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 79 insertions(+)
+
+diff --git a/tools/phase2/auto_edit.py b/tools/phase2/auto_edit.py
+index 52e8aab..31aef37 100644
+--- a/tools/phase2/auto_edit.py
++++ b/tools/phase2/auto_edit.py
+@@ -108,6 +108,81 @@ def fixed_windows(words: list[dict], count: int, length: float = 40.0) -> list[d
+     return out
+ 
+ 
++def _burned_captions_module():
++    try:
++        from src.media import burned_captions  # in the combined V12 tree (OpenCode R2)
++        return burned_captions
++    except ImportError:
++        import importlib.util
++        path = ROOT.parent / "opencode" / "backend" / "src" / "media" / "burned_captions.py"
++        spec = importlib.util.spec_from_file_location("burned_captions", path)
++        module = importlib.util.module_from_spec(spec)
++        sys.modules["burned_captions"] = module  # dataclasses look their module up here
++        spec.loader.exec_module(module)
++        return module
++
++
++def _keep_streamer_words(source: Path, data: dict) -> dict:
++    """Drop transcript words spoken while a GAME subtitle is on screen.
++
++    On a stream the game and the mic share one audio track, so the transcript
++    holds game characters' lines too. Games subtitle their own dialogue
++    (GTA VI: white text, bottom centre). Each second is checked with the
++    burned-in subtitle detector (OpenCode R2, burned_captions): a
++    subtitle-like band in the lower third spanning the frame centre means the
++    voice at that second is the game's, and its words are not captioned.
++    (A facecam mouth-movement rule was tried first: on a cutscene it kept the
++    game lines, because the streamer's face moves while watching.)
++    The filtered words are written to the transcript cache the caption builder
++    reads; the original is kept as .transcript_cache.full.json.
++    """
++    import cv2
++    import numpy as np
++
++    # Game subtitles (GTA VI and most games): white text with a dark outline
++    # or shadow, bottom centre. Per second, the share of bright, colourless
++    # pixels touching dark ones in that zone. Measured on Clix windows:
++    # seconds with a subtitle 2.4-13.7, without exactly 0.0; threshold 1.5.
++    # (OpenCode's burned_captions band detector found 0/37 here: it is
++    # tuned for large caption bands, not small game subtitles.)
++    capture = cv2.VideoCapture(str(source))
++    fps = float(capture.get(cv2.CAP_PROP_FPS) or 30.0)
++    total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
++    seconds = int(total / fps) if fps else 0
++    kernel = np.ones((3, 3), np.uint8)
++    game_sub = []
++    for sec in range(seconds + 1):
++        capture.set(cv2.CAP_PROP_POS_FRAMES, int(min(max(total - 1, 0), (sec + 0.5) * fps)))
++        ok, frame = capture.read()
++        score = 0.0
++        if ok:
++            h, w = frame.shape[:2]
++            band = frame[int(h * 0.80):int(h * 0.95), int(w * 0.25):int(w * 0.75)]
++            hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
++            white = (hsv[..., 2] > 215) & (hsv[..., 1] < 40)
++            near_dark = cv2.dilate((hsv[..., 2] < 90).astype(np.uint8), kernel) > 0
++            score = float((white & near_dark).mean()) * 1000.0
++        game_sub.append(score >= 1.5)
++    capture.release()
++    kept = []
++    for word in data["words"]:
++        st, en = float(word.get("start", 0)) / 1000.0, float(word.get("end", 0)) / 1000.0
++        secs = range(int(st), int(en) + 1)
++        if not any(0 <= s_ < len(game_sub) and game_sub[s_] for s_ in secs):
++            kept.append(word)
++    cache = source.with_suffix(".transcript_cache.json")
++    if cache.exists():
++        full = source.with_suffix(".transcript_cache.full.json")
++        if not full.exists():
++            full.write_text(cache.read_text(encoding="utf-8"), encoding="utf-8")
++        cached = json.loads(cache.read_text(encoding="utf-8"))
++        cached["words"] = kept
++        cache.write_text(json.dumps(cached), encoding="utf-8")
++    print(f"streamer-words-only: game subtitles on screen in {sum(game_sub)}/{len(game_sub)} s; "
++          f"kept {len(kept)} of {len(data['words'])} words", flush=True)
++    return {**data, "words": kept}
++
++
+ async def main_async(a) -> int:
+     video = Path(a.video).resolve()
+     out = ROOT / "test-footage" / "phase2" / (video.stem + (a.out_suffix or ""))
+@@ -150,6 +225,8 @@ async def main_async(a) -> int:
+     transcript = get_video_transcript(source)
+     timings["transcribe_s"] = round(time.time() - t, 1)
+     data = load_cached_transcript_data(source) or {}
++    if a.streamer_words_only and data.get("words"):
++        data = _keep_streamer_words(source, data)
+     words = [{"text": str(w.get("text", "")).strip(), "start": float(w.get("start", 0)) / 1000.0, "end": float(w.get("end", 0)) / 1000.0}
+              for w in data.get("words") or []]
+     print(f"transcribed {len(words)} words in {timings['transcribe_s']}s", flush=True)
+@@ -324,6 +401,8 @@ def main() -> int:
+     ap.add_argument("--env-file")
+     ap.add_argument("--llm", default="auto")
+     ap.add_argument("--hook-title", help="on-screen title for every clip (e.g. a creator campaign)")
++    ap.add_argument("--streamer-words-only", action="store_true",
++                    help="do not caption words spoken while a game subtitle is on screen (game dialogue)")
+     ap.add_argument("--select", choices=("ai", "fixed", "events", "whole"), default="ai",
+                     help="events = no-model fallback from visual story moments (SELECTION_EVENTS)")
+     ap.add_argument("--ollama-url", default="http://localhost:11434/v1")
+-- 
+2.56.0.windows.2
+

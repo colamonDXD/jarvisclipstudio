@@ -1,0 +1,58 @@
+From 02c450349b5e43015ced15d1dd20dfa1b33f8ce3 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 15:58:08 +0530
+Subject: [PATCH 5/6] fix(reframe): screen framing only when the screen is a
+ real part of the clip
+
+Validation on 6 content types (2026-11-18) found SCREEN_SUBJECT turning two
+person-led clips into small full-frame fits: a bright patch beside the vlog
+host (21% of the clip) and a lit object in a stock cutaway of the talking-head
+speech (13%) were taken for screens, and any screen run switched the whole
+clip to the fit layout.
+
+The screen layout now applies only when screen runs cover at least 25% of
+the clip (SCREEN_SUBJECT_MIN_SHARE); otherwise the normal layout stands.
+clip1's real nominees screen covers 40% and keeps its stack. The threshold
+is set from these three real cases; more footage may move it.
+
+Evidence: handoff/quality-validation/vlog_talkinghead_fix_sheet.png and
+<type>/after_fix.mp4 - both back to full-frame person crops, no blur.
+Tests: test_screen_subject + test_reframe_consistent 13/13.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/media/reframe_plan.py | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/backend/src/media/reframe_plan.py b/backend/src/media/reframe_plan.py
+index 6498e12..427fde4 100644
+--- a/backend/src/media/reframe_plan.py
++++ b/backend/src/media/reframe_plan.py
+@@ -3401,6 +3401,8 @@ def attach_reframe_plan(
+ 
+ 
+ _CROP_FAMILY = frozenset({"single", "pair", "static", "plain", "crop"})
++# SCREEN_SUBJECT only re-frames a clip whose screen runs cover this share.
++SCREEN_SUBJECT_MIN_SHARE = 0.25
+ 
+ 
+ def consistent_layout_enabled() -> bool:
+@@ -3496,6 +3498,15 @@ def _attach_reframe_plan(
+                 width = int(raw_plan.get("width") or 0)
+                 height = int(raw_plan.get("height") or 0)
+                 runs = screen_runs(source_path, ranges, duration, width, height)
++                share = sum(r["end"] - r["start"] for r in runs) / max(duration, 1e-6)
++                if runs and share < SCREEN_SUBJECT_MIN_SHARE:
++                    # A bright patch seen briefly (a window, a lamp, a lit
++                    # monitor in a cutaway) is not the clip's subject: the
++                    # normal layout stands (validation 2026-11-18: vlog 21%,
++                    # talking head 13% were false screens; clip1's real
++                    # nominees screen was 40%).
++                    logger.info("Screen subject: screen in %.0f%% of the clip; layout unchanged", share * 100)
++                    runs = []
+                 if runs:
+                     fit_plan = build_fit_reframe_plan(analysis, ranges, duration)
+                     if fit_plan is not None and apply_screen_windows(
+-- 
+2.56.0.windows.2
+

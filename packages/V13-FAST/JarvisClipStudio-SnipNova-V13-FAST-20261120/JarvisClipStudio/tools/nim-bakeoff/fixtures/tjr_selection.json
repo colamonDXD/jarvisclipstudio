@@ -1,0 +1,8 @@
+{
+ "id": "tjr_selection",
+ "kind": "selection",
+ "source_id": null,
+ "gold_ids_covered": [],
+ "transcript": "[00:00 - 00:02] trade worth $96 ,000 in profit.\n[00:02 - 00:13] This loss today, or these two loss today, are actually helping me get closer to my next win, that I know, it sounds stupid, but I'm due to my probabilities within the market.\n[00:13 - 00:25] I know that 10 times out of 10, when I execute on my strategy, I have higher odds of winning than losing, and I know that when I win, my winners are going to be larger than my losers, and that's all that I care about.\n[00:25 - 00:28] So whenever my strategy presents itself, I'm taking that fucking trade,",
+ "notes": "TJR's real 28.6 s trading clip (faster-whisper word list, golden fixture of the B-roll word-sense suite). Unlabelled for selection: schema validity, grounding and title checks only - no gold agreement is claimed."
+}

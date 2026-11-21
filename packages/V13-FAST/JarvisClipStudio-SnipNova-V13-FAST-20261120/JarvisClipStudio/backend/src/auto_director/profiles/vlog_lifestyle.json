@@ -1,0 +1,52 @@
+{
+  "niche": "vlog_lifestyle",
+  "pacing": {
+    "target_cuts_per_min": [15, 25],
+    "silence_trim_aggressive": true,
+    "min_shot_sec": 2.4,
+    "max_shot_sec": 4.0
+  },
+  "transitions": {
+    "default": "cut",
+    "duration_sec": 0.05,
+    "on_topic_change": "fade",
+    "on_punchline": "cut",
+    "signature": {"name": "smoothleft", "duration_sec": 0.3}
+  },
+  "zooms": {
+    "punch_in_scale": 1.1,
+    "punch_in_trigger": "personal_moment",
+    "ken_burns": false
+  },
+  "captions": {
+    "preset_id": "tiktok_animated",
+    "words_per_line": 3,
+    "position": "bottom"
+  },
+  "overlays": {
+    "info_cards": false,
+    "lower_thirds": false,
+    "reference_images": "off",
+    "ref_image_at_entity_mentions": false
+  },
+  "broll": {
+    "enabled": true,
+    "source": "stock",
+    "density_per_min": 2.0,
+    "cadence_per_min": 4.0,
+    "layout": "cutaway"
+  },
+  "audio": {
+    "music_mood": "upbeat",
+    "music_volume_0_to_1": 0.2,
+    "ducking_db": -12.0,
+    "sfx_from_user_library": true
+  },
+  "color": {
+    "lut": "punchy"
+  },
+  "hook": {
+    "title_style": "story",
+    "title_seconds": 2.0
+  }
+}

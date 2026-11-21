@@ -1,0 +1,522 @@
+From 7fd598dfca83ccb3ee8bb69338c288a0ae478bbc Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 19:53:27 +0530
+Subject: [PATCH 17/27] feat(clips): hook finish from the viral Shorts study
+ (punch-in cut ~2.6 s, whoosh, dark-clip lift) + funny-voice option
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/api/routes/live.py         |  10 +-
+ backend/src/live/finisher.py           |   6 +-
+ backend/src/live/session.py            |   4 +-
+ backend/src/live/vod.py                |   3 +-
+ backend/src/media/hook_finish.py       | 158 +++++++++++++++++++++++++
+ backend/src/media/voice_fx.py          |  42 +++++++
+ backend/src/video_utils.py             |   8 ++
+ backend/src/workers/live_worker.py     |   2 +-
+ backend/tests/unit/test_hook_finish.py |  64 ++++++++++
+ backend/tests/unit/test_live_vod.py    |   4 +-
+ backend/tests/unit/test_voice_fx.py    |  35 ++++++
+ frontend/src/app/live/page.tsx         |  11 ++
+ 12 files changed, 341 insertions(+), 6 deletions(-)
+ create mode 100644 backend/src/media/hook_finish.py
+ create mode 100644 backend/src/media/voice_fx.py
+ create mode 100644 backend/tests/unit/test_hook_finish.py
+ create mode 100644 backend/tests/unit/test_voice_fx.py
+
+diff --git a/backend/src/api/routes/live.py b/backend/src/api/routes/live.py
+index 84b7a4e..1226b03 100644
+--- a/backend/src/api/routes/live.py
++++ b/backend/src/api/routes/live.py
+@@ -85,6 +85,14 @@ def _text(data: Dict[str, Any], key: str, limit: int) -> Any:
+     return value or None
+ 
+ 
++def _voice_fx(value: Any) -> Any:
++    if value in (None, "", "off", "none"):
++        return None
++    if value not in ("high", "deep"):
++        raise HTTPException(status_code=422, detail="voice_fx must be off, high or deep")
++    return value
++
++
+ def validate_settings(data: Dict[str, Any]) -> Dict[str, Any]:
+     layout = data.get("layout_template", "facecam_red")
+     if layout is not None and layout not in LAYOUTS:
+@@ -101,7 +109,7 @@ def validate_settings(data: Dict[str, Any]) -> Dict[str, Any]:
+         raise HTTPException(status_code=422, detail="max_clips must be a whole number from 1 to 60")
+     return {"layout_template": layout, "niche": niche, "streamer_words_only": words_only, "max_clips": max_clips,
+             "credit": _text(data, "credit", 40), "hook_title": _text(data, "hook_title", 80),
+-            "request": _text(data, "request", 200)}
++            "request": _text(data, "request", 200), "voice_fx": _voice_fx(data.get("voice_fx"))}
+ 
+ 
+ @router.get("/status")
+diff --git a/backend/src/live/finisher.py b/backend/src/live/finisher.py
+index a811cb7..5541b9b 100644
+--- a/backend/src/live/finisher.py
++++ b/backend/src/live/finisher.py
+@@ -32,7 +32,7 @@ def _duration(path: Path) -> float:
+ 
+ def render_live_clip(window: Path, out_path: Path, *, niche: str = "gaming", layout_template: Optional[str] = "facecam_red",
+                      credit: Optional[str] = None, hook_title: Optional[str] = None,
+-                     streamer_words_only: bool = True) -> Dict[str, Any]:
++                     streamer_words_only: bool = True, voice_fx: Optional[str] = None) -> Dict[str, Any]:
+     """Render ``window`` into ``out_path``; returns ``{ok, duration, words, error}``."""
+     from ..auto_director import edl as E
+     from ..media.gaming_templates import clean_layout_credit
+@@ -77,5 +77,9 @@ def render_live_clip(window: Path, out_path: Path, *, niche: str = "gaming", lay
+                                framing_mode="auto", layout_template=layout_template,
+                                layout_credit=clean_layout_credit(credit) if layout_template else None)
+     ok = bool(ok) and out_path.is_file()
++    if ok and voice_fx:
++        from ..media.voice_fx import apply_voice_fx
++
++        apply_voice_fx(out_path, voice_fx)
+     return {"ok": ok, "duration": round(_duration(out_path), 2) if ok else None, "words": len(words),
+             "error": None if ok else "render failed"}
+diff --git a/backend/src/live/session.py b/backend/src/live/session.py
+index bbbcffa..b18f182 100644
+--- a/backend/src/live/session.py
++++ b/backend/src/live/session.py
+@@ -50,6 +50,7 @@ class LiveSettings:
+     credit: Optional[str] = None
+     hook_title: Optional[str] = None
+     request: Optional[str] = None      # "Find moments where..." (finished streams)
++    voice_fx: Optional[str] = None     # funny voice: "high" | "deep"
+     streamer_words_only: bool = True
+     min_talk_share: float = 0.5
+     max_clips: int = 30
+@@ -207,7 +208,8 @@ class LiveSession:
+                 result = render_live_clip(job["window"], out, niche=self.settings.niche,
+                                           layout_template=self.settings.layout_template, credit=self.settings.credit,
+                                           hook_title=self.settings.hook_title,
+-                                          streamer_words_only=self.settings.streamer_words_only)
++                                          streamer_words_only=self.settings.streamer_words_only,
++                                          voice_fx=self.settings.voice_fx)
+             except Exception as exc:
+                 logger.exception("Live clip render failed")
+                 result = {"ok": False, "error": str(exc)[:300]}
+diff --git a/backend/src/live/vod.py b/backend/src/live/vod.py
+index 1e7bc61..4b69e7f 100644
+--- a/backend/src/live/vod.py
++++ b/backend/src/live/vod.py
+@@ -662,7 +662,8 @@ class VodSession:
+             try:
+                 result = render_live_clip(section, out, niche=s.niche, layout_template=s.layout_template,
+                                           credit=s.credit, hook_title=s.hook_title if s.hook_title else None,
+-                                          streamer_words_only=s.streamer_words_only)
++                                          streamer_words_only=s.streamer_words_only,
++                                          voice_fx=getattr(s, "voice_fx", None))
+             except Exception as exc:
+                 result = {"ok": False, "error": str(exc)[:300]}
+             self._emit({"type": "clip", "n": n, "status": "ready" if result.get("ok") else "failed",
+diff --git a/backend/src/media/hook_finish.py b/backend/src/media/hook_finish.py
+new file mode 100644
+index 0000000..5f779d3
+--- /dev/null
++++ b/backend/src/media/hook_finish.py
+@@ -0,0 +1,158 @@
++"""Hook finish: the first seconds of a clip shaped like the Shorts that go viral.
++
++Measured 2026-11-19 (tools/live/study_viral_hooks.py): 13 Shorts with 10M-110M
++views (MrBeast, Zach King, iShowSpeed, KSI...) against 10 SnipNova clips.
++
++| first seconds            | viral            | ours      |
++|--------------------------|------------------|-----------|
++| first cut                | ~2.7 s, 7/min    | never     |
++| motion in first 2 s      | 10.9             | 6.8       |
++| brightness (0-255)       | 125              | 93        |
++
++``finish_hook(clip)`` adds, in one GPU pass over the finished clip:
++
++- a punch-in at ``HOOK_PUNCH_AT`` (2.6 s): the frame jumps to ``HOOK_PUNCH_ZOOM``
++  (1.08) for ``HOOK_PUNCH_SECONDS`` (1.2 s), the "cut" the viral openings have,
++  with a whoosh from the licence-checked SFX library just before it;
++- a brightness lift when the clip is dark (mean luma under 108): eq brightness
++  towards ~120, slight contrast; a bright clip is left alone.
++
++Skipped for Plain ("just cuts") EDLs and clips shorter than 6 s.
++``HOOK_FINISH=off`` turns it off.
++"""
++from __future__ import annotations
++
++import logging
++import os
++import shutil
++import subprocess
++from pathlib import Path
++from typing import Any, Dict, Optional
++
++logger = logging.getLogger(__name__)
++
++TARGET_LUMA = 120.0
++DARK_LUMA = 108.0
++
++
++def hook_finish_enabled() -> bool:
++    return os.getenv("HOOK_FINISH", "on").strip().lower() not in ("off", "0", "false", "no")
++
++
++def _env_float(name: str, default: float) -> float:
++    try:
++        return float(os.getenv(name, str(default)))
++    except ValueError:
++        return default
++
++
++def _probe(clip: Path) -> Dict[str, Any]:
++    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height",
++                          "-of", "json", str(clip)], capture_output=True, text=True).stdout
++    import json
++
++    try:
++        data = json.loads(out or "{}")
++    except ValueError:
++        data = {}
++    streams = data.get("streams") or []
++    video = next((s for s in streams if s.get("codec_type") == "video"), {})
++    return {"duration": float((data.get("format") or {}).get("duration") or 0),
++            "width": int(video.get("width") or 0), "height": int(video.get("height") or 0),
++            "audio": any(s.get("codec_type") == "audio" for s in streams)}
++
++
++def mean_luma(clip: Path, duration: float) -> float:
++    import numpy as np
++
++    values = []
++    for frac in (0.1, 0.3, 0.5, 0.7, 0.9):
++        raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{duration * frac:.2f}", "-i", str(clip), "-frames:v", "1",
++                              "-vf", "scale=90:160,format=gray", "-f", "rawvideo", "-"], capture_output=True).stdout
++        if len(raw) >= 90 * 160:
++            values.append(float(np.frombuffer(raw[:90 * 160], np.uint8).mean()))
++    return sum(values) / len(values) if values else 128.0
++
++
++def brightness_filter(luma: float) -> Optional[str]:
++    """eq filter that lifts a dark clip towards TARGET_LUMA, or None."""
++    if luma >= DARK_LUMA:
++        return None
++    lift = min(0.12, (TARGET_LUMA - luma) / 255.0 * 0.9)
++    return f"eq=brightness={lift:.3f}:contrast=1.05:saturation=0.97"
++
++
++def punch_filter(width: int, height: int, at: float, seconds: float, zoom: float) -> str:
++    """Scale the frame up by ``zoom`` during [at, at+seconds] and crop back to size (centre)."""
++    w2, h2 = int(width * zoom) // 2 * 2, int(height * zoom) // 2 * 2
++    cond = f"between(t,{at:.2f},{at + seconds:.2f})"
++    return (f"scale=w='if({cond},{w2},{width})':h='if({cond},{h2},{height})':eval=frame,"
++            f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2")
++
++
++def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str = "") -> bool:
++    """Apply the hook finish to ``clip_path`` in place. True when applied."""
++    if not hook_finish_enabled():
++        return False
++    if edl is not None and edl.get("template") == "plain":
++        return False
++    clip_path = Path(clip_path)
++    info = _probe(clip_path)
++    if info["duration"] < 6.0 or not info["width"] or not info["height"]:
++        return False
++    at = _env_float("HOOK_PUNCH_AT", 2.6)
++    seconds = _env_float("HOOK_PUNCH_SECONDS", 1.2)
++    zoom = _env_float("HOOK_PUNCH_ZOOM", 1.08)
++    filters = []
++    luma = mean_luma(clip_path, info["duration"])
++    lift = brightness_filter(luma)
++    if lift:
++        filters.append(lift)
++    filters.append(punch_filter(info["width"], info["height"], at, seconds, zoom))
++    video_chain = ",".join(filters)
++
++    whoosh = None
++    try:
++        from .asset_library import pick_variant
++        from .edl_render import ASSETS_DIR
++
++        whoosh = pick_variant(Path(ASSETS_DIR) / "sfx", "whoosh", f"{seed or clip_path.stem}|hook")
++        if whoosh is None:
++            candidate = Path(ASSETS_DIR) / "sfx" / "whoosh.wav"
++            whoosh = candidate if candidate.is_file() else None
++    except Exception as exc:
++        logger.debug("Hook whoosh unavailable: %s", exc)
++
++    from .edl_render import CPU_FALLBACK_CRF, CPU_FALLBACK_PRESET, get_video_encoder
++    from .ffmpeg import build_final_video_encode_args
++
++    out = clip_path.with_name(clip_path.stem + ".hook" + clip_path.suffix)
++
++    def command(encoder_args):
++        if not any(a == "-c:v" for a in encoder_args):
++            encoder_args = ["-c:v", "libx264", *encoder_args]
++        cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(clip_path)]
++        if whoosh is not None and info["audio"]:
++            delay_ms = max(0, int((at - 0.15) * 1000))
++            cmd += ["-i", str(whoosh), "-filter_complex",
++                    f"[0:v]{video_chain}[v];[1:a]adelay={delay_ms}|{delay_ms},volume=0.55[s];"
++                    f"[0:a][s]amix=inputs=2:duration=first:normalize=0[a]",
++                    "-map", "[v]", "-map", "[a]", "-c:a", "aac", "-b:a", "192k"]
++        else:
++            cmd += ["-filter_complex", f"[0:v]{video_chain}[v]", "-map", "[v]", "-map", "0:a?", "-c:a", "copy"]
++        return cmd + [*encoder_args, "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)]
++
++    encoder, encoder_args = get_video_encoder(True)
++    result = subprocess.run(command(encoder_args), capture_output=True, text=True)
++    if (result.returncode != 0 or not out.is_file() or out.stat().st_size == 0) and encoder != "libx264":
++        # NVENC refused (no GPU in this container): one CPU retry.
++        cpu_args = build_final_video_encode_args(crf=CPU_FALLBACK_CRF, preset=CPU_FALLBACK_PRESET)
++        result = subprocess.run(command(cpu_args), capture_output=True, text=True)
++    if result.returncode != 0 or not out.is_file() or out.stat().st_size == 0:
++        logger.warning("Hook finish failed; keeping the clip as rendered: %s", (result.stderr or "")[-300:])
++        out.unlink(missing_ok=True)
++        return False
++    shutil.move(str(out), str(clip_path))
++    logger.info("Hook finish: punch-in at %.1fs%s%s", at, f", brightness lift (luma {luma:.0f})" if lift else "",
++                ", whoosh" if whoosh is not None else "")
++    return True
+diff --git a/backend/src/media/voice_fx.py b/backend/src/media/voice_fx.py
+new file mode 100644
+index 0000000..d363b83
+--- /dev/null
++++ b/backend/src/media/voice_fx.py
+@@ -0,0 +1,42 @@
++"""Funny-voice effect for clips (owner request 2026-11-19: "voice changer to make it funnier").
++
++``apply_voice_fx(clip, "high")`` pitches the whole soundtrack up (chipmunk);
++``"deep"`` pitches it down. The duration stays the same: the pitch is shifted
++with asetrate and the tempo is put back with atempo, so captions stay in sync.
++The video stream is copied, not re-encoded.
++"""
++from __future__ import annotations
++
++import logging
++import shutil
++import subprocess
++from pathlib import Path
++
++logger = logging.getLogger(__name__)
++
++VOICE_FX = {"high": 1.35, "deep": 0.78}
++
++
++def voice_fx_filter(mode: str, rate: int = 48000) -> str:
++    factor = VOICE_FX[mode]
++    tempo = 1.0 / factor
++    # atempo accepts 0.5-2.0 per stage.
++    return f"asetrate={int(rate * factor)},aresample={rate},atempo={tempo:.4f}"
++
++
++def apply_voice_fx(clip_path: Path, mode: str | None) -> bool:
++    if not mode or mode not in VOICE_FX:
++        return False
++    clip_path = Path(clip_path)
++    out = clip_path.with_name(clip_path.stem + ".voice" + clip_path.suffix)
++    cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(clip_path), "-map", "0:v:0", "-map", "0:a:0",
++           "-c:v", "copy", "-af", voice_fx_filter(mode), "-c:a", "aac", "-b:a", "192k",
++           "-movflags", "+faststart", str(out)]
++    result = subprocess.run(cmd, capture_output=True, text=True)
++    if result.returncode != 0 or not out.is_file() or out.stat().st_size == 0:
++        logger.warning("Voice effect failed; keeping the original voice: %s", (result.stderr or "")[-200:])
++        out.unlink(missing_ok=True)
++        return False
++    shutil.move(str(out), str(clip_path))
++    logger.info("Voice effect applied: %s", mode)
++    return True
+diff --git a/backend/src/video_utils.py b/backend/src/video_utils.py
+index 15161f3..d4f47f0 100644
+--- a/backend/src/video_utils.py
++++ b/backend/src/video_utils.py
+@@ -1002,6 +1002,14 @@ def create_optimized_clip(
+ 
+                 finish_plain_path_audio(final_clip_path, render_edl)
+ 
++            # Hook finish (media/hook_finish.py): the punch-in "cut" at ~2.6 s,
++            # a whoosh, and a brightness lift for dark footage - what the viral
++            # Shorts study found our clips were missing. Plain EDLs are skipped.
++            if render_edl and reframe_format == "vertical":
++                from .media.hook_finish import finish_hook
++
++                finish_hook(final_clip_path, render_edl, seed=Path(output_path).stem)
++
+             shutil.move(str(final_clip_path), str(output_path))
+             logger.info(f"Successfully created clip with ffmpeg: {output_path}")
+             record_pass_timing(render_timings, "total_seconds", clip_started)
+diff --git a/backend/src/workers/live_worker.py b/backend/src/workers/live_worker.py
+index 4ab9326..064108c 100644
+--- a/backend/src/workers/live_worker.py
++++ b/backend/src/workers/live_worker.py
+@@ -58,7 +58,7 @@ def settings_from_row(row: Dict[str, Any]) -> LiveSettings:
+     return LiveSettings(
+         url=row["url"], niche=s.get("niche") or "gaming",
+         layout_template=s.get("layout_template"), credit=s.get("credit"), hook_title=s.get("hook_title"),
+-        request=s.get("request"),
++        request=s.get("request"), voice_fx=s.get("voice_fx"),
+         streamer_words_only=bool(s.get("streamer_words_only", True)),
+         max_clips=int(s.get("max_clips") or (10 if s.get("mode") == "vod" else 30)),
+     )
+diff --git a/backend/tests/unit/test_hook_finish.py b/backend/tests/unit/test_hook_finish.py
+new file mode 100644
+index 0000000..15635a2
+--- /dev/null
++++ b/backend/tests/unit/test_hook_finish.py
+@@ -0,0 +1,64 @@
++"""Hook finish: punch-in, brightness lift for dark clips, whoosh; Plain untouched."""
++from __future__ import annotations
++
++import hashlib
++import subprocess
++
++import numpy as np
++import pytest
++
++from src.media import hook_finish as HF
++
++
++def _clip(path, color="0x202020", seconds=8, audio=True):
++    cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=s=270x480:d={seconds}"]
++    if audio:
++        cmd += ["-f", "lavfi", "-i", f"sine=frequency=300:duration={seconds}"]
++    vf = f"drawbox=t=fill:c={color}@0.85"
++    cmd += ["-vf", vf, "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p"]
++    if audio:
++        cmd += ["-c:a", "aac"]
++    cmd.append(str(path))
++    subprocess.run(cmd, check=True)
++    return path
++
++
++def _frame(path, t):
++    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", str(t), "-i", str(path), "-frames:v", "1",
++                          "-vf", "format=gray", "-f", "rawvideo", "-"], capture_output=True).stdout
++    return np.frombuffer(raw, np.uint8)
++
++
++def test_dark_clip_gets_lift_punch_and_keeps_length(tmp_path, monkeypatch):
++    monkeypatch.setattr("src.media.edl_render.check_nvenc_available", lambda: False, raising=False)
++    clip = _clip(tmp_path / "dark.mp4")
++    before_luma = HF.mean_luma(clip, 8.0)
++    before_mid = _frame(clip, 3.0)
++    assert HF.finish_hook(clip, {"segments": [{}]}, seed="x") is True
++    info = HF._probe(clip)
++    assert abs(info["duration"] - 8.0) < 0.3 and info["width"] == 270 and info["audio"]
++    assert HF.mean_luma(clip, 8.0) > before_luma + 5  # lifted
++    assert not np.array_equal(_frame(clip, 3.0), before_mid)  # punched in at 2.6-3.8 s
++
++
++def test_bright_clip_is_not_lifted():
++    assert HF.brightness_filter(130.0) is None
++    f = HF.brightness_filter(80.0)
++    assert f.startswith("eq=brightness=") and float(f.split("=")[2].split(":")[0]) <= 0.12
++
++
++def test_plain_short_and_switch_off_are_untouched(tmp_path, monkeypatch):
++    clip = _clip(tmp_path / "c.mp4")
++    digest = hashlib.sha256(clip.read_bytes()).hexdigest()
++    assert HF.finish_hook(clip, {"template": "plain", "segments": [{}]}) is False
++    monkeypatch.setenv("HOOK_FINISH", "off")
++    assert HF.finish_hook(clip, {"segments": [{}]}) is False
++    monkeypatch.delenv("HOOK_FINISH")
++    short = _clip(tmp_path / "s.mp4", seconds=4)
++    assert HF.finish_hook(short, {"segments": [{}]}) is False
++    assert hashlib.sha256(clip.read_bytes()).hexdigest() == digest
++
++
++def test_punch_filter_expression():
++    f = HF.punch_filter(1080, 1920, 2.6, 1.2, 1.08)
++    assert "between(t,2.60,3.80)" in f and "eval=frame" in f and f.endswith("crop=1080:1920:(iw-1080)/2:(ih-1920)/2")
+diff --git a/backend/tests/unit/test_live_vod.py b/backend/tests/unit/test_live_vod.py
+index ba7f0a4..e4aba01 100644
+--- a/backend/tests/unit/test_live_vod.py
++++ b/backend/tests/unit/test_live_vod.py
+@@ -28,7 +28,9 @@ def test_heat_at_reads_the_bucket():
+     assert V.heat_at(heat, 150) == 0.9 and V.heat_at(heat, 50) == 0.1 and V.heat_at(heat, 500) == 0.0
+ 
+ 
+-def test_candidates_are_spaced_and_rewatched_parts_rank_higher():
++def test_candidates_are_spaced_and_rewatched_parts_rank_higher(monkeypatch, tmp_path):
++    # The shipped default weights (a trained selection_params.json would change the ranking).
++    monkeypatch.setenv("LIVE_SELECTION_PARAMS", str(tmp_path / "none.json"))
+     series = _series(1200, [400, 800, 830])
+     heat = [{"start_time": 700, "end_time": 900, "value": 1.0}]
+     picks = V.find_candidates(series, heat, limit=5)
+diff --git a/backend/tests/unit/test_voice_fx.py b/backend/tests/unit/test_voice_fx.py
+new file mode 100644
+index 0000000..35274cc
+--- /dev/null
++++ b/backend/tests/unit/test_voice_fx.py
+@@ -0,0 +1,35 @@
++"""Funny-voice effect keeps the clip length and changes the pitch."""
++import subprocess
++
++import numpy as np
++
++from src.media.voice_fx import apply_voice_fx, voice_fx_filter
++
++
++def _dur(p):
++    return float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(p)],
++                                capture_output=True, text=True).stdout)
++
++
++def _peak_hz(p):
++    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(p), "-t", "2", "-ac", "1", "-ar", "16000", "-f", "s16le", "-"],
++                         capture_output=True).stdout
++    a = np.frombuffer(raw, np.int16).astype(float)
++    return np.argmax(np.abs(np.fft.rfft(a))) * 16000 / len(a)
++
++
++def test_high_voice_raises_pitch_and_keeps_length(tmp_path):
++    clip = tmp_path / "c.mp4"
++    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=300:duration=4",
++                    "-f", "lavfi", "-i", "color=c=black:s=160x284:d=4", "-shortest", "-c:v", "libx264", "-c:a", "aac", str(clip)],
++                   check=True)
++    d0, f0 = _dur(clip), _peak_hz(clip)
++    assert apply_voice_fx(clip, "high") is True
++    assert abs(_dur(clip) - d0) < 0.15
++    assert _peak_hz(clip) > f0 * 1.25
++
++
++def test_off_and_unknown_do_nothing(tmp_path):
++    assert apply_voice_fx(tmp_path / "x.mp4", None) is False
++    assert apply_voice_fx(tmp_path / "x.mp4", "robot") is False
++    assert "asetrate=" in voice_fx_filter("deep") and "atempo=" in voice_fx_filter("deep")
+diff --git a/frontend/src/app/live/page.tsx b/frontend/src/app/live/page.tsx
+index 1b1b1ce..3d5f4c9 100644
+--- a/frontend/src/app/live/page.tsx
++++ b/frontend/src/app/live/page.tsx
+@@ -158,6 +158,7 @@ export default function LivePage() {
+   const [title, setTitle] = useState("");
+   const [clipCount, setClipCount] = useState("10");
+   const [request, setRequest] = useState("");
++  const [voiceFx, setVoiceFx] = useState("");
+   const [busy, setBusy] = useState(false);
+   const selected = useRef<string | null>(null);
+ 
+@@ -216,6 +217,7 @@ export default function LivePage() {
+           hook_title: title.trim() || null,
+           max_clips: Math.max(1, Math.min(30, parseInt(clipCount, 10) || 10)),
+           request: request.trim() || null,
++          voice_fx: voiceFx || null,
+         }),
+       });
+       const body = await response.json().catch(() => ({}));
+@@ -320,6 +322,15 @@ export default function LivePage() {
+           <Input id="live-credit" value={credit} maxLength={40} onChange={(e) => setCredit(e.target.value)}
+             placeholder="@streamer" className="mt-1.5" />
+         </div>
++        <div>
++          <Label htmlFor="live-voice">Funny voice</Label>
++          <select id="live-voice" value={voiceFx} onChange={(e) => setVoiceFx(e.target.value)}
++            className="mt-1.5 h-9 w-full rounded-md border bg-background px-3 text-sm">
++            <option value="">Off (original voice)</option>
++            <option value="high">High (chipmunk)</option>
++            <option value="deep">Deep</option>
++          </select>
++        </div>
+         <div>
+           <Label htmlFor="live-count">Clips (finished streams)</Label>
+           <Input id="live-count" type="number" min={1} max={30} value={clipCount}
+-- 
+2.56.0.windows.2
+

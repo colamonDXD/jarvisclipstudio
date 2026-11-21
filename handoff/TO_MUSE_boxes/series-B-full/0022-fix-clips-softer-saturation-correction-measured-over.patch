@@ -1,0 +1,27 @@
+From b2b1bd6bc06a9f8f6cbb09951cad3c21d48050a4 Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 20:27:46 +0530
+Subject: [PATCH 22/27] fix(clips): softer saturation correction (measured
+ overshoot 79 -> 53 vs viral 64)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/media/hook_finish.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/backend/src/media/hook_finish.py b/backend/src/media/hook_finish.py
+index f01e0be..60020da 100644
+--- a/backend/src/media/hook_finish.py
++++ b/backend/src/media/hook_finish.py
+@@ -87,7 +87,7 @@ def colour_filter(luma: float, sat: float, profile: Dict[str, float]) -> Optiona
+         parts.append(f"brightness={min(0.12, (target_l - luma) / 255.0 * 0.9):.3f}:contrast=1.05")
+     target_s = float(profile["target_saturation"])
+     if sat > 1 and abs(sat - target_s) / target_s > 0.12:
+-        parts.append(f"saturation={max(0.85, min(1.25, target_s / sat)):.3f}")
++        parts.append(f"saturation={max(0.92, min(1.2, target_s / sat)):.3f}")
+     return ("eq=" + ":".join(parts)) if parts else None
+ 
+ 
+-- 
+2.56.0.windows.2
+

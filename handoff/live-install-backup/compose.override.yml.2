@@ -1,0 +1,122 @@
+services:
+  backend:
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - ANALYSIS_MODELS=${ANALYSIS_MODELS}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+      - PIXABAY_API_KEY=${PIXABAY_API_KEY}
+      - COVERR_API_KEY=${COVERR_API_KEY}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+      - VOICEOVER_ENABLED=${VOICEOVER_ENABLED:-}
+      - VOICEOVER_MODELS_DIR=${VOICEOVER_MODELS_DIR:-}
+      - ENABLE_NVDEC=${ENABLE_NVDEC:-}
+      - HOOK_ENFORCEMENT_ENABLED=${HOOK_ENFORCEMENT_ENABLED:-}
+      - USER_PROFILES_DIR=${USER_PROFILES_DIR:-}
+      - ANALYSIS_INTRO_ZONE_SECONDS=${ANALYSIS_INTRO_ZONE_SECONDS:-}
+      - ANALYSIS_LONGFORM_TPM=${ANALYSIS_LONGFORM_TPM:-}
+      - WATCH_FOLDER_PATH=${WATCH_FOLDER_PATH:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+  worker:
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - ANALYSIS_MODELS=${ANALYSIS_MODELS}
+      - ANALYSIS_LONGFORM_TPM=${ANALYSIS_LONGFORM_TPM}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+      - PIXABAY_API_KEY=${PIXABAY_API_KEY}
+      - COVERR_API_KEY=${COVERR_API_KEY}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+      - WORKER_MAX_JOBS=1
+      - VOICEOVER_ENABLED=${VOICEOVER_ENABLED:-}
+      - VOICEOVER_MODELS_DIR=${VOICEOVER_MODELS_DIR:-}
+      - ENABLE_NVDEC=${ENABLE_NVDEC:-}
+      - HOOK_ENFORCEMENT_ENABLED=${HOOK_ENFORCEMENT_ENABLED:-}
+      - USER_PROFILES_DIR=${USER_PROFILES_DIR:-}
+      - ANALYSIS_INTRO_ZONE_SECONDS=${ANALYSIS_INTRO_ZONE_SECONDS:-}
+      - WATCH_FOLDER_PATH=${WATCH_FOLDER_PATH:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      # arq --check imports the full worker app; under a busy render that can
+      # take longer than the base 10s and wrongly mark the worker unhealthy.
+      test: ["CMD", ".venv/bin/arq", "--check", "src.workers.tasks.WorkerSettings"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 120s
+  ai-worker:
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - ANALYSIS_MODELS=${ANALYSIS_MODELS}
+      - ANALYSIS_LONGFORM_TPM=${ANALYSIS_LONGFORM_TPM}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+      - PIXABAY_API_KEY=${PIXABAY_API_KEY}
+      - COVERR_API_KEY=${COVERR_API_KEY}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+      - VOICEOVER_ENABLED=${VOICEOVER_ENABLED:-}
+      - VOICEOVER_MODELS_DIR=${VOICEOVER_MODELS_DIR:-}
+      - ENABLE_NVDEC=${ENABLE_NVDEC:-}
+      - HOOK_ENFORCEMENT_ENABLED=${HOOK_ENFORCEMENT_ENABLED:-}
+      - USER_PROFILES_DIR=${USER_PROFILES_DIR:-}
+      - ANALYSIS_INTRO_ZONE_SECONDS=${ANALYSIS_INTRO_ZONE_SECONDS:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: jarvisclipstudio-litellm-1
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    restart: unless-stopped
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-jarvis-local}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      # Cloudflare Workers AI ??? required for cloudflare-free route
+      - CLOUDFLARE_API_KEY=${CLOUDFLARE_API_KEY}
+      - CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID}
+    healthcheck:
+      # Unauthenticated liveliness probe ??? works without master key.
+      # The litellm image ships no curl/wget, so probe with its bundled python3.
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=10).status == 200 else 1)"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 45s
+  # Live clipping: captions through Groq's hosted Whisper (free tier) instead
+  # of the laptop's CPU; falls back to the local model on any failure.
+  live-worker:
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

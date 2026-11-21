@@ -1,0 +1,37 @@
+From 9a8336c9839b625896e767a55e9cde3f61f80c77 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 22:14:28 +0530
+Subject: [PATCH 09/22] docs: checkpoint resume point after phase 2 templates
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CLAUDE_CHECKPOINT.md | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/CLAUDE_CHECKPOINT.md b/CLAUDE_CHECKPOINT.md
+index dcf6c71..34bdab5 100644
+--- a/CLAUDE_CHECKPOINT.md
++++ b/CLAUDE_CHECKPOINT.md
+@@ -131,3 +131,19 @@ Recorded results on this branch (evidence = tool output in the session):
+ V10 ZIP SHA-256 verified (`e5d219eb…72533e`, 41,230,939 bytes) — owner installs it himself; Claude never installs.
+ Memory files: `C:\Users\Prateek T H\.claude\projects\D--EditedTool-JarvisClipStudio\memory\` (`claude-is-main-driver.md`,
+ `snipnova-phase-status.md`).
++
++## Resume point (2026-11-17, after usage limit)
++Branch lane-a/phase2-auto-editor. Committed: 2b116b4 (reactor inset fix, podcast clip 2 now split), QC wiring commit (HEAD).
++OpenCode: b0965c8 on lane-b/render-basics fixes its 2 test pins; Round 2 prompt at D:\SnipNova-Dev\handoff\opencode\PROMPT_ROUND2.md.
++UNCOMMITTED facecam work: backend/src/media/facecam_rect.py (new), reaction_layout.py (inset_bottom generalisation + facecam fallback in choose_reaction_layout), reframe_plan.py (facecam delegation + _inset_probe_times -> probe_times), tests/unit/test_facecam_rect.py (3 FAIL: synthetic noise video yields a spurious right-side rect; fix the fixture or the detector, and _render(cam=None) crashes), tools/phase2/run_all.py (Gaming HD entry; INDEX.md is overwritten by --only runs, make it merge).
++Real-video eval of facecam_rect: 14/16 streamer facecams found, lecture presenter window 2/2, 0 false positives on podcast/vlog/comedy/talking head/Speed. Gaming re-render was running (log test-footage/phase2_gaming_rerun.log); check reaction layout in test-footage/phase2/kai_sa_20000*/ frames.
++Next: fix the 3 tests, run reframe suites, commit facecam; docs/phase2/AUTO_EDITOR.md; handoff\phase2; give owner the --select ai command.
++
++## Resume point (2026-11-17, evening)
++Session now rooted in D:\SnipNova-Dev\claude-code (NEVER the install folder: its shell cwd blocked Luffy's installer).
++Phase 2 commits: 545ce39, 07caa7e, 2b116b4, 25ac503, 023f5f1 (facecam_rect), 1b0fcc8 (gaming templates facecam_red/gold + layout_template/layout_credit + frontend picker), 7c5b03b (REACTION_API_CONTRACT fields), 27f00d0 (score_fixture.py, gate_compare.py).
++Handoff in progress: D:\SnipNova-Dev\handoff\phase2 (HANDOFF.md, EVIDENCE.md drafted; series + patch + final render table + gate-compare table still to add).
++Sanji coordination via Luffy: replies in handoff\REPLY_TO_SANJI_2026-11-17*.md. Freeze Nov 20 10:00 IST.
++Fixture v2 at test-footage\fixtures\streamer_fixture_v2.mp4: reaction picker FAILS (decoy #1; no episodes). Next Lane A fix: mic channel / speech-relative voice bursts, YuNet-landmark face activity in the facecam_rect window.
++Sanji's gate diff applied in worktree D:\SnipNova-Dev\sanji-gate-wt (base 48dd1e9); compare results in test-footage\gate_compare\*.jsonl.
++Owner still to run: tools\phase2\run_all.py --select ai --env-file <his .env> (after his V11 install finishes).
+-- 
+2.56.0.windows.2
+

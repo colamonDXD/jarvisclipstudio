@@ -1,0 +1,30 @@
+From c52f801406384e3fa73f90f33ed48a590eaf06a0 Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 21:45:36 +0530
+Subject: [PATCH 26/27] fix(clips): no emoji under titles (owner adds them
+ himself); HOOK_EMOJI=on brings them back
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/media/hook_finish.py | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/backend/src/media/hook_finish.py b/backend/src/media/hook_finish.py
+index 842f008..3816a22 100644
+--- a/backend/src/media/hook_finish.py
++++ b/backend/src/media/hook_finish.py
+@@ -217,7 +217,10 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+     # under it - the container has no emoji font, so they cannot be text.
+     quote = (edl or {}).get("quote_title") or {}
+     quote_text = quote_title_text(quote.get("text"), quote.get("creator")) if quote else None
+-    emoji_paths = [p for p in (emoji_file(e) for e in (quote.get("emojis") or [])[:3]) if p is not None]
++    # Emoji under the title: OFF (owner 2026-11-19: "stop adding emoji, I will add them myself").
++    use_emoji = os.getenv("HOOK_EMOJI", "off").strip().lower() in ("on", "1", "true", "yes")
++    emoji_paths = ([p for p in (emoji_file(e) for e in (quote.get("emojis") or [])[:3]) if p is not None]
++                   if use_emoji else [])
+     text_file = None
+     if quote_text:
+         import tempfile
+-- 
+2.56.0.windows.2
+

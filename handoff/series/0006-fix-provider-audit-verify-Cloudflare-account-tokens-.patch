@@ -1,0 +1,64 @@
+From 529a9366a5204883525da48d143f94a228e27333 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 13:03:12 +0530
+Subject: [PATCH 06/13] fix(provider-audit): verify Cloudflare account tokens,
+ list closest provider models
+
+The audit called a valid account-owned Cloudflare token AUTH_FAILED because it only
+tried the user-token endpoint. It now tries account then user verification and prints
+the closest model ids a provider actually lists when a configured one is missing.
+Tooling only; no product behaviour change (no CHANGELOG entry).
+---
+ tools/provider-audit/audit_providers.py | 21 +++++++++++++++++++--
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/tools/provider-audit/audit_providers.py b/tools/provider-audit/audit_providers.py
+index 4b4e508..d240e88 100644
+--- a/tools/provider-audit/audit_providers.py
++++ b/tools/provider-audit/audit_providers.py
+@@ -202,8 +202,18 @@ def live_audit(env: dict[str, str], infer: bool, allow_metered: bool) -> list[di
+         key = env.get(p["env"][0]) if p["env"] else None
+         if name == "cloudflare":
+             acct = env["CLOUDFLARE_ACCOUNT_ID"]
+-            st, body, _h, dt = http("https://api.cloudflare.com/client/v4/user/tokens/verify", key)
++            # Account-owned tokens verify at the account endpoint; user-owned
++            # tokens at /user. Try both so a valid token is never called bad.
++            st, body, _h, dt = http(f"https://api.cloudflare.com/client/v4/accounts/{acct}/tokens/verify", key)
++            row["verified_via"] = "account"
++            if st != 200:
++                st_u, body_u, _h_u, dt_u = http("https://api.cloudflare.com/client/v4/user/tokens/verify", key)
++                if st_u == 200:
++                    st, body, dt, row["verified_via"] = st_u, body_u, dt_u, "user"
+             row.update(key_check=classify(st), latency=round(dt, 2))
++            if st != 200:
++                row["detail"] = ("neither account nor user token verification accepted this token; if it is the old "
++                                 "'Global API Key' it will not work: create an API TOKEN with Workers AI permission")
+             row["verdict"] = "OK" if st == 200 else classify(st)
+             if st == 200 and infer:
+                 model = "@cf/openai/gpt-oss-120b"
+@@ -235,6 +245,12 @@ def live_audit(env: dict[str, str], infer: bool, allow_metered: bool) -> list[di
+             missing = [m for m in wanted.get(name, []) if ids and m not in ids]
+             row["models_configured"] = wanted.get(name, [])
+             row["models_missing_from_provider"] = missing
++            if missing and ids:
++                # Public model names only (never secrets): the closest ids the provider does list.
++                row["closest_listed_models"] = {
++                    m: [i for i in ids if m.split("/")[-1].split("-")[0].lower() in i.lower()][:8] for m in missing}
++                if name == "deepseek":
++                    row["provider_lists"] = ids[:30]
+             row["verdict"] = "OK" if st == 200 and not missing else ("MODEL_NOT_LISTED" if st == 200 else classify(st))
+             if name == "openrouter":
+                 for m in wanted["openrouter"]:
+@@ -284,7 +300,8 @@ def main() -> int:
+         print("== LIVE (key values are never printed)")
+         for r in report["live"]:
+             print(f"  {r['provider']:<12} {r['verdict']:<16} env={r['env']} cost={r['cost']}")
+-            for k in ("key_check", "inference", "models_missing_from_provider", "detail"):
++            for k in ("key_check", "verified_via", "inference", "models_missing_from_provider",
++                      "closest_listed_models", "provider_lists", "detail"):
+                 if r.get(k):
+                     print(f"      {k}: {r[k]}")
+             fails += r["verdict"].startswith(("AUTH", "FAIL", "OUT_OF"))
+-- 
+2.56.0.windows.2
+

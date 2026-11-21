@@ -1,0 +1,2 @@
+096ff9d561c3a548c69e379bfca0649cccc2e7f69cd2f4fdd850c55b31c9a588 *./series/0001-feat-assets-licence-gated-music-SFX-variant-library-.patch
+41bcd38eb76664cf1545e70200a4e08fe84daebe04e03b4babce21bb5d47a11a *./series/0002-feat-edl-cut-zoom-and-transition-only-where-the-foot.patch

@@ -1,0 +1,51 @@
+{
+  "task": "48bf078c-6414-4929-9c60-d88674d598c2",
+  "request": {
+    "source": {
+      "url": "upload://b58252a5-1bc7-4a40-b66c-532203c06498.mp4",
+      "title": "window_002.mp4"
+    },
+    "font_options": {
+      "font_family": null,
+      "font_size": null,
+      "font_color": null
+    },
+    "caption_template": "default",
+    "processing_mode": "fast",
+    "output_format": "vertical",
+    "clip_length": "auto",
+    "add_subtitles": true,
+    "cut_long_pauses": true,
+    "pause_threshold_ms": 1200,
+    "remove_filler_words": true,
+    "filtered_words": [],
+    "niche_override": null,
+    "template_mode": "auto",
+    "framing_mode": "auto",
+    "hook_title_enabled": false,
+    "layout_template": "facecam_red",
+    "boxes": {
+      "cam": {
+        "x": 0.003,
+        "y": 0.401,
+        "w": 0.2,
+        "h": 0.202
+      },
+      "game": {
+        "x": 0.24,
+        "y": 0.06,
+        "w": 0.54,
+        "h": 0.9
+      },
+      "arrange": "top"
+    },
+    "broll_enabled": true,
+    "creation_mode": "manual_cutter_ai",
+    "manual_ranges": [
+      {
+        "start": 10,
+        "end": 40
+      }
+    ]
+  }
+}

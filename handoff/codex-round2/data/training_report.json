@@ -1,0 +1,102 @@
+{
+ "videos": 18,
+ "train_videos": [
+  "0B2taochBu8",
+  "0jSEH6f4Sdo",
+  "8-OP15Rggos",
+  "br4EM-kwfAw",
+  "hK47JsHu7kg",
+  "J75pIuPdZd8",
+  "jQblhs2UNHs",
+  "kX1PASUTrEo",
+  "LHgpBrrDN8I",
+  "na7v7dSe0tA",
+  "THRBZfHK8CQ",
+  "W2rgwr6I1Vk"
+ ],
+ "heldout_videos": [
+  "6PNS7fSlds8",
+  "dUxtcRpYssE",
+  "EE8U7U8syuI",
+  "ENVsRstGyiA",
+  "MDQpJoiiPi4",
+  "miQWQr4v4HM"
+ ],
+ "experiments": 2398,
+ "kept": 1,
+ "defaults": {
+  "train": 0.3992511089733311,
+  "heldout": 0.336080380524825
+ },
+ "incumbent_heldout": 0.5208326652771097,
+ "trained": {
+  "train": 0.6124789562289562,
+  "heldout": 0.5146598257709368
+ },
+ "params": {
+  "baseline_sec": 120.0,
+  "exclude_sec": 8.0,
+  "min_baseline": 20.0,
+  "active_z": 2.0246567843752157,
+  "need_active": 1.0,
+  "laugh_z": 5.0,
+  "scream_f0_z": 5.962969044929711,
+  "scream_vocal_z": 0.3,
+  "merge_gap": 4.296300199602167,
+  "talk_base": 0.11662281447406521,
+  "talk_w": 1.2332663892169458,
+  "length_w": 0.8986567211617489,
+  "energy_w": 2.941694000079495,
+  "min_gap": 240.0,
+  "extra_active": 2.0,
+  "extra_w": 0.0
+ },
+ "log": [
+  {
+   "step": 0,
+   "train": 0.610942760942761,
+   "heldout": 0.5208326652771097,
+   "params": {
+    "baseline_sec": 120.0,
+    "exclude_sec": 8.0,
+    "min_baseline": 20.0,
+    "active_z": 1.9665400595271842,
+    "need_active": 1.0,
+    "laugh_z": 5.0,
+    "scream_f0_z": 5.962969044929711,
+    "scream_vocal_z": 0.3,
+    "merge_gap": 4.296300199602167,
+    "talk_base": 0.11662281447406521,
+    "talk_w": 1.2332663892169458,
+    "length_w": 0.8986567211617489,
+    "energy_w": 2.941694000079495,
+    "min_gap": 240.0,
+    "extra_active": 2.0,
+    "extra_w": 0.0
+   }
+  },
+  {
+   "step": 1035,
+   "train": 0.6124789562289562,
+   "heldout": 0.5146598257709368,
+   "params": {
+    "baseline_sec": 120.0,
+    "exclude_sec": 8.0,
+    "min_baseline": 20.0,
+    "active_z": 2.0246567843752157,
+    "need_active": 1.0,
+    "laugh_z": 5.0,
+    "scream_f0_z": 5.962969044929711,
+    "scream_vocal_z": 0.3,
+    "merge_gap": 4.296300199602167,
+    "talk_base": 0.11662281447406521,
+    "talk_w": 1.2332663892169458,
+    "length_w": 0.8986567211617489,
+    "energy_w": 2.941694000079495,
+    "min_gap": 240.0,
+    "extra_active": 2.0,
+    "extra_w": 0.0
+   }
+  }
+ ]
+}

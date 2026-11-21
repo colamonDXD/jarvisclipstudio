@@ -1,0 +1,25 @@
+From c68985035e25d5c1cea6cebc2344ba6532044307 Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Fri, 20 Nov 2026 13:42:11 +0530
+Subject: [PATCH 3/7] Use the changelog format required by the production
+ sitemap
+
+---
+ CHANGELOG.md | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index ed28282..2265f69 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,8 +5,8 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-20
+-- **New** Live exports can be saved to Clips and opened in the editor. The upload form offers vocal separation on installations that support it.
+-- **Fixed** Gaming captions now compare spoken phrases with text visible in the game before removing dialogue. Streamer comments can appear while game subtitles are on screen.
++- **New:** Live exports can be saved to Clips and opened in the editor. The upload form offers vocal separation on installations that support it. ([Live](http://localhost:3107/live))
++- **Fixed:** Gaming captions compare spoken phrases with text visible in the game before removing dialogue. Streamer comments can appear while game subtitles are on screen. ([Live](http://localhost:3107/live))
+ - **New:** Clip cards accept selection feedback, and the Live page accepts Kick stream links. Enable `REACTION_PUNCH` to place one eased zoom and a quiet impact at the measured reaction. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **New:** Hand-drawn live layouts now include four corner cameras, a circle camera, side-by-side, gameplay only, full-frame crop and blurred fill. The layout preview and saved channel settings support all eleven choices. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Improved:** Streamer exports can use a gold, word-wrapped top title with `STYLED_HOOK_TITLE=on`. The gateway route `clip-free` tries NVIDIA, Groq, OpenRouter free and local Ollama in order. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))

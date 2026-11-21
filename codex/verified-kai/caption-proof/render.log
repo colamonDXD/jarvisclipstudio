@@ -1,0 +1,6 @@
+Caption coverage: 8.35s of speech has no caption over it: [(2.55, 4.0), (5.4, 6.45), (8.15, 8.4), (10.9, 11.75), (13.6, 14.3)]
+clip_001.mp4 True None {'groq': 108, 'offline-gpu': 105, 'groq-chunks': 104} 78
+Caption coverage: 14.65s of speech has no caption over it: [(0.0, 0.4), (1.1, 1.3), (1.55, 1.7), (2.1, 4.05), (4.35, 4.55)]
+clip_002.mp4 True None {'groq': 29, 'offline-gpu': 30, 'groq-chunks': 29} 14
+Caption coverage: 32.55s of speech has no caption over it: [(0.15, 0.3), (2.5, 2.7), (4.9, 11.4), (12.2, 13.3), (14.65, 17.0)]
+clip_003.mp4 True None {'groq': 65, 'offline-gpu': 50, 'groq-chunks': 65} 35

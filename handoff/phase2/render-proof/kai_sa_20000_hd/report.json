@@ -1,0 +1,142 @@
+{
+ "video": "D:\\SnipNova-Dev\\claude-code\\test-footage\\real_hd\\kai_sa_20000_hd.mp4",
+ "niche": "gaming",
+ "llm": "ollama:qwen3:8b",
+ "stock_broll": false,
+ "timings": {
+  "transcribe_s": 20.4,
+  "select_s": 0.0
+ },
+ "clips": [
+  {
+   "clip": "clip1.mp4",
+   "render_ok": true,
+   "render_s": 153.8,
+   "source_start": 87.84,
+   "source_end": 127.97,
+   "duration": 40.1,
+   "selection": {
+    "virality": null,
+    "hook_type": "fixed-window",
+    "hook_title": null,
+    "reasoning": "Pipeline check only: sentence-aligned window, not an AI selection."
+   },
+   "decisions": {
+    "segments": 15,
+    "transitions": [
+     "pixelize"
+    ],
+    "zooms": 4,
+    "broll_planned": 0,
+    "broll_inserted": 0,
+    "broll": [],
+    "broll_dropped": [],
+    "music": "energetic",
+    "captions": "tiktok_animated"
+   },
+   "qc": {
+    "ffprobe": [
+     {
+      "codec_type": "video",
+      "width": 1080,
+      "height": 1920
+     },
+     {
+      "codec_type": "audio",
+      "width": null,
+      "height": null
+     }
+    ],
+    "output_seconds": 40.3,
+    "loudness_lufs": -14.7,
+    "black_seconds": 0,
+    "boundary": {
+     "ok": true,
+     "starts_on_sentence": true,
+     "ends_on_sentence": true,
+     "cuts_a_word": false,
+     "first_words": "They do that on purpose, bro.",
+     "last_words": "They all lost their serial numbers."
+    },
+    "layout": {
+     "broll_applied": false
+    },
+    "reframe_plan": {
+     "attached": true,
+     "delegate": "plain",
+     "shots": []
+    }
+   },
+   "frames": [
+    "clip1_8pct.png",
+    "clip1_50pct.png",
+    "clip1_90pct.png"
+   ]
+  },
+  {
+   "clip": "clip2.mp4",
+   "render_ok": true,
+   "render_s": 119.3,
+   "source_start": 173.21,
+   "source_end": 213.21,
+   "duration": 40.0,
+   "selection": {
+    "virality": null,
+    "hook_type": "fixed-window",
+    "hook_title": null,
+    "reasoning": "Pipeline check only: sentence-aligned window, not an AI selection."
+   },
+   "decisions": {
+    "segments": 15,
+    "transitions": [
+     "pixelize"
+    ],
+    "zooms": 4,
+    "broll_planned": 0,
+    "broll_inserted": 0,
+    "broll": [],
+    "broll_dropped": [],
+    "music": "energetic",
+    "captions": "tiktok_animated"
+   },
+   "qc": {
+    "ffprobe": [
+     {
+      "codec_type": "video",
+      "width": 1080,
+      "height": 1920
+     },
+     {
+      "codec_type": "audio",
+      "width": null,
+      "height": null
+     }
+    ],
+    "output_seconds": 40.37,
+    "loudness_lufs": -15.9,
+    "black_seconds": 0,
+    "boundary": {
+     "ok": false,
+     "starts_on_sentence": false,
+     "ends_on_sentence": true,
+     "cuts_a_word": false,
+     "first_words": "you didn't get it here, okay",
+     "last_words": "I'm going the wrong way I"
+    },
+    "layout": {
+     "broll_applied": false
+    },
+    "reframe_plan": {
+     "attached": true,
+     "delegate": "plain",
+     "shots": []
+    }
+   },
+   "frames": [
+    "clip2_8pct.png",
+    "clip2_50pct.png",
+    "clip2_90pct.png"
+   ]
+  }
+ ]
+}

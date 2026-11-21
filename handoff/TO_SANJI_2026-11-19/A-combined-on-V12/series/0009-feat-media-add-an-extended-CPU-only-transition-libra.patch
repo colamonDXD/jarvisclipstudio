@@ -1,0 +1,2199 @@
+From 85107feb34207ed30705e90341ea5b8c816b7846 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 09:30:41 +0530
+Subject: [PATCH 09/18] feat(media): add an extended CPU-only transition
+ library
+
+Add backend/src/media/transition_library.py, a registry of 248
+transition builders across 33 families. Each builder takes two
+equal-size clips [a]/[b] and returns one FFmpeg filter-graph fragment
+producing [out], given duration, offset, width, height and fps. The
+module is standard-library only: no app imports, no external assets,
+no GPU.
+
+Most geometric reveals (soft iris, diamond, checkerboard, blinds,
+zig-zag, wave, spiral, clock, blocks, barn doors, frame, star,
+multi-iris, shutter, corner, pinwheel, polygon, gradient, grid, mosaic,
+rings, diagonal blinds) use xfade=transition=custom expressions.
+Motion, glitch and light families, plus the blend, strobe, pixel,
+mirror, rotate, hue, channel and grade effects, use ordinary filter
+graphs (overlay, zoompan, rotate, rgbashift, noise, gblur, blend, eq).
+
+Add tools/transitions-proof/make_library_reel.py, which renders every
+registry entry and all 58 built-in xfade names at 1080x1920 with a 0.5 s
+join, probes each clip, computes the three-frame grey signature against
+every other clip, and writes the honest distinct count, near-identical
+groups, render times and contact sheets. It supports --reuse for
+incremental registry changes.
+
+Add backend/tests/unit/test_transition_library.py, which renders every
+entry at 108x192 / 10 fps through real ffmpeg and pins the join
+contract: two cards in, 2*card - duration out, first frame is the
+outgoing card and last frame is the incoming one.
+
+Attribution: OpenCode (DeepSeek V4.1 Flash Free), lane-b/round2.
+---
+ backend/src/media/transition_library.py       | 1338 +++++++++++++++++
+ backend/tests/unit/test_transition_library.py |  232 +++
+ tools/transitions-proof/.gitignore            |    1 +
+ tools/transitions-proof/make_library_reel.py  |  555 +++++++
+ 4 files changed, 2126 insertions(+)
+ create mode 100644 backend/src/media/transition_library.py
+ create mode 100644 backend/tests/unit/test_transition_library.py
+ create mode 100644 tools/transitions-proof/make_library_reel.py
+
+diff --git a/backend/src/media/transition_library.py b/backend/src/media/transition_library.py
+new file mode 100644
+index 0000000..fd17749
+--- /dev/null
++++ b/backend/src/media/transition_library.py
+@@ -0,0 +1,1338 @@
++"""Extended, CPU-only transition library.
++
++The product already exposes 58 built-in FFmpeg ``xfade`` names. Those
++names are useful but several families look alike, and a few effects an
++editor expects -- iris shapes, blinds, glitches, light leaks -- do not
++exist there at all.
++
++This module is a registry, not a renderer. Every entry is a
++:class:`TransitionSpec` whose ``builder`` returns one FFmpeg filter-graph
++fragment: it consumes two equal-size labelled clips ``[a]`` and ``[b]``
++and produces ``[out]``. The caller decides how the clips are decoded and
++encoded. The module itself is standard-library only; it does not import
++the application or touch the network.
++
++Two implementation styles are used:
++
++* ``xfade=transition=custom`` with an expression. FFmpeg evaluates the
++  expression per pixel. Its progress variable ``P`` runs from 1.0 at the
++  start of the transition to 0.0 at the end (that is FFmpeg's convention;
++  ``A`` is the outgoing clip, ``B`` the incoming one). Most geometric
++  reveals are built this way.
++* A small graph of ordinary filters (``overlay``, ``zoompan``,
++  ``rotate``, ``rgbashift``, ``noise``, ``gblur``, ``blend``) for motion,
++  glitch and light effects that an xfade expression cannot express.
++
++All builders take the same five values: ``duration`` (transition
++seconds), ``offset`` (when the transition starts in the first clip),
++``width``, ``height`` and ``fps``. The caller supplies two clips of
++``offset + duration`` seconds; the expected output duration is
++``2 * offset + duration``.
++"""
++
++from __future__ import annotations
++
++import math
++from dataclasses import dataclass
++from typing import Callable, Dict
++
++Builder = Callable[..., str]
++
++
++@dataclass(frozen=True)
++class TransitionSpec:
++    """One registry entry."""
++
++    name: str
++    family: str
++    description: str
++    builder: Builder
++
++
++TRANSITIONS: Dict[str, TransitionSpec] = {}
++
++
++def _min(*parts: str) -> str:
++    """FFmpeg's eval only has binary ``min``; fold a list into it."""
++    value = parts[0]
++    for part in parts[1:]:
++        value = f"min({value},{part})"
++    return value
++
++
++def _register(
++    name: str, family: str, description: str, builder: Builder
++) -> None:
++    if name in TRANSITIONS:
++        raise ValueError(f"duplicate transition name: {name}")
++    TRANSITIONS[name] = TransitionSpec(name, family, description, builder)
++
++
++def _num(value: float) -> str:
++    """Short, locale-independent number formatting for filter graphs."""
++    return f"{value:.6g}"
++
++
++def _soft(value: str, width: float = 0.08) -> str:
++    """A 0..1 soft edge (smoothstep) around ``value``."""
++    u = f"clip(({value})/{_num(width)},0,1)"
++    return f"(({u})*({u})*(3-2*({u})))"
++
++
++def _mix(mask: str) -> str:
++    """Outgoing clip weighted by ``mask`` (1 = A, 0 = B)."""
++    return f"A*({mask})+B*(1-({mask}))"
++
++
++def _xfade_builder(expr: str) -> Builder:
++    def builder(
++        duration: float,
++        offset: float,
++        width: int,
++        height: int,
++        fps: float,
++    ) -> str:
++        return (
++            f"[a][b]xfade=transition=custom:expr='{expr}'"
++            f":duration={_num(duration)}:offset={_num(offset)}[out]"
++        )
++
++    return builder
++
++
++def _add_custom(
++    name: str, family: str, description: str, expr: str
++) -> None:
++    _register(name, family, description, _xfade_builder(expr))
++
++
++def _add_iris() -> None:
++    variants = (
++        ("iris_soft_center", 0.5, 0.5, 0.5, 0.5, 0.06),
++        ("iris_soft_tl", 0.28, 0.28, 0.72, 0.72, 0.055),
++        ("iris_soft_tr", 0.72, 0.28, 0.72, 0.72, 0.055),
++        ("iris_soft_bl", 0.28, 0.72, 0.72, 0.72, 0.055),
++        ("iris_soft_br", 0.72, 0.72, 0.72, 0.72, 0.055),
++        ("iris_soft_wide", 0.5, 0.5, 1.15, 0.85, 0.08),
++        ("iris_soft_tall", 0.5, 0.5, 0.85, 1.15, 0.08),
++        ("iris_soft_low", 0.5, 0.68, 0.85, 0.9, 0.07),
++    )
++    for name, cx, cy, rx, ry, soft in variants:
++        dist = f"hypot((X-{_num(cx)}*W)/{_num(rx)},(Y-{_num(cy)}*H)/{_num(ry)})"
++        _add_custom(
++            name,
++            "iris",
++            f"soft-edged elliptical iris from ({cx:.2f}, {cy:.2f})",
++            _mix(f"1-{_soft(f'((1-P)*1.6-({dist}))', soft)}"),
++        )
++
++
++def _add_diamond() -> None:
++    variants = (
++        ("diamond_center", 0.5, 0.5, 0.06),
++        ("diamond_tl", 0.3, 0.3, 0.06),
++        ("diamond_tr", 0.7, 0.3, 0.06),
++        ("diamond_bl", 0.3, 0.7, 0.06),
++        ("diamond_br", 0.7, 0.7, 0.06),
++        ("diamond_wide", 0.5, 0.5, 0.14),
++    )
++    for name, cx, cy, soft in variants:
++        dist = (
++            f"abs(X-{_num(cx)}*W)/(W/2)"
++            f"+abs(Y-{_num(cy)}*H)/(H/2)"
++        )
++        # Worst corner is at most 2; the off-centre variants need a
++        # little more travel so every edge is B at the end.
++        extra = 0.35 + abs(cx - 0.5) * 2 + abs(cy - 0.5) * 2
++        _add_custom(
++            name,
++            "diamond",
++            f"soft diamond reveal centred at ({cx:.2f}, {cy:.2f})",
++            _mix(f"1-{_soft(f'((1-P)*{_num(2 + extra)}-({dist}))', soft)}"),
++        )
++
++
++def _add_checker() -> None:
++    variants = (
++        ("checker_32", 32, 0.10, False),
++        ("checker_48", 48, 0.10, False),
++        ("checker_64", 64, 0.10, False),
++        ("checker_96", 96, 0.12, False),
++        ("checker_128", 128, 0.12, False),
++        ("checker_64_inverse", 64, 0.10, True),
++    )
++    for name, cell, soft, inverse in variants:
++        phase = f"mod(floor(X/{cell})+floor(Y/{cell}),2)"
++        if inverse:
++            phase = f"(1-{phase})"
++        _add_custom(
++            name,
++            "checker",
++            f"checkerboard dissolve with {cell}px cells"
++            + (" (inverted order)" if inverse else ""),
++            _mix(
++                f"1-{_soft(f'((1-P)-({0.28}+0.56*({phase})))', 0.04)}"
++            ),
++        )
++
++
++def _add_blinds() -> None:
++    for axis, label in (("X", "vertical"), ("Y", "horizontal")):
++        for count in (6, 10, 14, 20, 28):
++            period = f"W/{count}" if axis == "X" else f"H/{count}"
++            phase = f"mod(floor({axis}/({period})),2)"
++            expr = (
++                f"1-{_soft(f'((1-P)-({0.28}+0.56*({phase})))', 0.04)}"
++            )
++            _add_custom(
++                f"blinds_{label}_{count}",
++                "blinds",
++                f"{label} venetian blinds, {count} slats",
++                _mix(expr),
++            )
++
++
++def _add_zigzag() -> None:
++    for axis, label in (("X", "h"), ("Y", "v")):
++        for cycles in (3, 6, 9):
++            if axis == "X":
++                tri = f"abs(mod(Y/H*{cycles},1)*2-1)"
++                edge = f"(W+2*W*0.08)*P-W*0.08+W*0.08*({tri})"
++                dist = f"(X-({edge}))/W"
++            else:
++                tri = f"abs(mod(X/W*{cycles},1)*2-1)"
++                edge = f"(H+2*H*0.08)*P-H*0.08+H*0.08*({tri})"
++                dist = f"(Y-({edge}))/H"
++            _add_custom(
++                f"zigzag_{label}_{cycles}",
++                "zigzag",
++                f"{cycles}-tooth zig-zag wipe ({label})",
++                _mix(f"1-{_soft(dist, 0.05)}"),
++            )
++
++
++def _add_wave() -> None:
++    for axis, label in (("X", "h"), ("Y", "v")):
++        for cycles in (2, 4, 6):
++            for phase in (0.0, 1.570796):
++                if axis == "X":
++                    edge = (
++                        f"(W+2*W*0.10)*P-W*0.10"
++                        f"+W*0.10*sin(2*PI*Y/H*{cycles}+{_num(phase)})"
++                    )
++                    dist = f"(X-({edge}))/W"
++                else:
++                    edge = (
++                        f"(H+2*H*0.10)*P-H*0.10"
++                        f"+H*0.10*sin(2*PI*X/W*{cycles}+{_num(phase)})"
++                    )
++                    dist = f"(Y-({edge}))/H"
++                _add_custom(
++                    f"wave_{label}_{cycles}_{'a' if phase == 0 else 'b'}",
++                    "wave",
++                    f"{cycles}-cycle sine wipe ({label}, phase "
++                    f"{'0' if phase == 0 else 'pi/2'})",
++                    _mix(f"1-{_soft(dist, 0.06)}"),
++                )
++
++
++def _spiral_mask(turns: int, direction: str) -> str:
++    """Archimedean spiral front that is fully open at ``P = 1``.
++
++    The angle is normalised to one turn and the radius to the half
++    diagonal, so the reveal front is ``turns`` twists long and the
++    travel has to cover both the radius and the twist.
++    """
++    theta = "atan2(Y-H/2,X-W/2)+PI"
++    if direction == "ccw":
++        theta = f"(2*PI-({theta}))"
++    theta_n = f"(({theta})/(2*PI))"
++    rad = "hypot(X-W/2,Y-H/2)/(hypot(W,H)/2)"
++    travel = 1.0 + turns + 0.3
++    value = f"(P*{_num(travel)}-(({rad})+{turns}*({theta_n})))"
++    return f"1-{_soft(value, 0.05)}"
++
++
++def _add_spiral() -> None:
++    for turns in (1, 2, 3):
++        for direction in ("cw", "ccw"):
++            _add_custom(
++                f"spiral_{direction}_{turns}",
++                "spiral",
++                f"{direction.upper()} spiral with {turns} turn(s)",
++                _mix(_spiral_mask(turns, direction)),
++            )
++
++
++def _add_clock() -> None:
++    centres = (
++        ("center", 0.5, 0.5),
++        ("left", 0.3, 0.5),
++        ("right", 0.7, 0.5),
++        ("top", 0.5, 0.3),
++        ("bottom", 0.5, 0.7),
++    )
++    for label, cx, cy in centres:
++        for direction in ("cw", "ccw"):
++            ang = f"atan2(Y-{_num(cy)}*H,X-{_num(cx)}*W)"
++            if direction == "cw":
++                ang = f"mod(({ang})+PI,2*PI)"
++            else:
++                ang = f"mod(2*PI-(({ang})+PI),2*PI)"
++            _add_custom(
++                f"clock_{label}_{direction}",
++                "clock",
++                f"clock wipe from the {label} ({direction})",
++                _mix(f"1-{_soft(f'((1-P)*(2*PI+0.35)-({ang}))', 0.35)}"),
++            )
++
++
++def _add_blocks() -> None:
++    for cell in (32, 64, 96):
++        for seed in (11.0, 37.0):
++            bx = f"floor(X/{cell})"
++            by = f"floor(Y/{cell})"
++            rnd = (
++                f"(0.05+0.80*mod(abs(sin({bx}*12.9898+{by}*78.233+"
++                f"{_num(seed)})*43758.5453),1))"
++            )
++            _add_custom(
++                f"blocks_{cell}_{int(seed)}",
++                "blocks",
++                f"random {cell}px block dissolve (seed {int(seed)})",
++                _mix(f"1-{_soft(f'((1-P)-({rnd}))', 0.03)}"),
++            )
++
++
++def _add_barn() -> None:
++    for axis, label in (("X", "horizontal"), ("Y", "vertical")):
++        for margin, soft in ((0.22, 0.08), (0.42, 0.16)):
++            if axis == "X":
++                dist = "abs(X-W/2)/(W/2)"
++            else:
++                dist = "abs(Y-H/2)/(H/2)"
++            expr = (
++                f"1-{_soft(f'((1-P)*{_num(1 + margin)}-(1-({dist})))', soft)}"
++            )
++            suffix = "soft" if margin == 0.22 else "wide"
++            _add_custom(
++                f"barn_{label}_{suffix}",
++                "barn",
++                f"soft barn doors, {label} ({suffix})",
++                _mix(expr),
++            )
++
++
++def _add_gradient() -> None:
++    for angle in (0, 15, 30, 45, 60, 75, 90, 105, 120, 135):
++        radians = angle * math.pi / 180.0
++        cos_a = _num(math.cos(radians))
++        sin_a = _num(math.sin(radians))
++        proj = (
++            f"(X*({cos_a})+Y*({sin_a}))"
++            f"/(W*abs({cos_a})+H*abs({sin_a}))"
++        )
++        soft = 0.06
++        edge = f"(1+2*{_num(soft)})*(1-P)-2*{_num(soft)}"
++        _add_custom(
++            f"gradient_{angle:03d}",
++            "gradient",
++            f"soft linear wipe at {angle} degrees",
++            _mix(f"1-{_soft(f'(({proj})-({edge}))', soft)}"),
++        )
++
++
++def _add_grid() -> None:
++    for rows, cols in ((3, 3), (4, 4), (5, 5), (6, 4), (8, 6), (10, 8)):
++        idx = (
++            f"(floor(Y/(H/{rows}))*{cols}+floor(X/(W/{cols})))"
++        )
++        total = rows * cols
++        rank = f"(({idx})+0.5)/{total}"
++        _add_custom(
++            f"grid_{rows}x{cols}",
++            "grid",
++            f"row-major grid reveal, {rows}x{cols} cells",
++            _mix(f"1-{_soft(f'((1-P)-({rank}))', 0.04)}"),
++        )
++
++
++def _add_mosaic() -> None:
++    for rows, cols, stride in (
++        (4, 4, 5),
++        (5, 5, 7),
++        (6, 4, 11),
++        (4, 6, 13),
++        (8, 6, 17),
++        (6, 8, 19),
++    ):
++        idx = f"(floor(Y/(H/{rows}))*{cols}+floor(X/(W/{cols})))"
++        total = rows * cols
++        rank = f"(mod(({idx})*{stride}+{stride}, {total})+0.5)/{total}"
++        _add_custom(
++            f"mosaic_{rows}x{cols}_{stride}",
++            "mosaic",
++            f"shuffled mosaic reveal, {rows}x{cols} cells (stride {stride})",
++            _mix(f"1-{_soft(f'((1-P)-({rank}))', 0.04)}"),
++        )
++
++
++def _add_rings() -> None:
++    for freq, soft in ((3, 0.05), (5, 0.05), (7, 0.07), (9, 0.07)):
++        rad = "hypot(X-W/2,Y-H/2)/(hypot(W,H)/2)"
++        ripple = f"({rad}+0.035*sin(({rad})*{freq}*2*PI))"
++        _add_custom(
++            f"ripple_{freq}",
++            "ripple",
++            f"concentric ripple reveal, {freq} wave(s)",
++            _mix(f"1-{_soft(f'((1-P)*1.35-({ripple}))', soft)}"),
++        )
++
++
++def _add_star() -> None:
++    for points in (5, 6, 8, 10):
++        theta = "atan2(Y-H/2,X-W/2)+PI"
++        rad = "hypot(X-W/2,Y-H/2)/(hypot(W,H)/2)"
++        shape = f"({rad})/(0.55+0.45*abs(cos(({theta})*{points}/2)))"
++        _add_custom(
++            f"star_{points}",
++            "star",
++            f"{points}-point star iris",
++            _mix(f"1-{_soft(f'(P*2.0-({shape}))', 0.07)}"),
++        )
++
++
++def _add_multi_iris() -> None:
++    grids = (
++        ("2x2", 2, 2, 0.0),
++        ("3x3", 3, 3, 0.0),
++        ("2x3", 2, 3, 0.0),
++        ("3x2", 3, 2, 0.0),
++        ("2x2_offset", 2, 2, 0.12),
++        ("3x3_offset", 3, 3, 0.10),
++    )
++    for label, cols, rows, shift in grids:
++        parts = []
++        for row in range(rows):
++            for col in range(cols):
++                cx = (col + 0.5 + shift) / cols
++                cy = (row + 0.5 + shift) / rows
++                parts.append(f"hypot(X-{_num(cx)}*W,Y-{_num(cy)}*H)")
++        dist = _min(*parts)
++        _add_custom(
++            f"multi_iris_{label}",
++            "multi-iris",
++            f"multi-point iris, {rows}x{cols} centres"
++            + (" (offset)" if shift else ""),
++            _mix(f"1-{_soft(f'((1-P)*hypot(W,H)*0.7-({dist}))', 0.06)}"),
++        )
++
++
++def _add_shutter() -> None:
++    for axis, label in (("X", "vertical"), ("Y", "horizontal")):
++        for count in (4, 8):
++            period = f"W/{count}" if axis == "X" else f"H/{count}"
++            frac = f"(mod({axis},{period})/({period}))"
++            phase = f"mod(floor({axis}/({period})),2)"
++            front = f"if(eq({phase},0),{frac},1-({frac}))"
++            _add_custom(
++                f"shutter_{label}_{count}",
++                "shutter",
++                f"{label} shutter, {count} bars sliding in from both sides",
++                _mix(f"1-{_soft(f'(P*1.25-({front}))', 0.04)}"),
++            )
++
++
++def _corner_mask(dist: str) -> str:
++    """Radial front from a corner, normalised by the frame diagonal."""
++    dist_n = f"(({dist})/hypot(W,H))"
++    return f"1-{_soft(f'(P*1.08-({dist_n}))', 0.03)}"
++
++
++def _add_corner() -> None:
++    corners = (
++        ("tl", "hypot(X,Y)"),
++        ("tr", "hypot(W-X,Y)"),
++        ("bl", "hypot(X,H-Y)"),
++        ("br", "hypot(W-X,H-Y)"),
++    )
++    for label, dist in corners:
++        _add_custom(
++            f"corner_{label}",
++            "corner",
++            f"radial reveal from the {label} corner",
++            _mix(_corner_mask(dist)),
++        )
++    _add_custom(
++        "corner_all",
++        "corner",
++        "radial reveal from all four corners at once",
++        _mix(
++            _corner_mask(
++                _min(
++                    "hypot(X,Y)",
++                    "hypot(W-X,Y)",
++                    "hypot(X,H-Y)",
++                    "hypot(W-X,H-Y)",
++                )
++            )
++        ),
++    )
++    _add_custom(
++        "corner_diagonal",
++        "corner",
++        "two-corner diagonal reveal (TL and BR)",
++        _mix(_corner_mask(_min("hypot(X,Y)", "hypot(W-X,H-Y)"))),
++    )
++
++
++def _pinwheel_mask(spokes: int) -> str:
++    """Rotating N-spoke wedge iris."""
++    theta = "atan2(Y-H/2,X-W/2)+PI"
++    rad = "hypot(X-W/2,Y-H/2)/(hypot(W,H)/2)"
++    wedge = f"abs(cos(({theta})*{spokes}/2+(1-P)*PI/2))"
++    return f"1-{_soft(f'(P*1.85-({rad})-0.55*({wedge}))', 0.05)}"
++
++
++def _add_pinwheel() -> None:
++    for spokes in (2, 3, 4, 5):
++        _add_custom(
++            f"pinwheel_{spokes}",
++            "pinwheel",
++            f"{spokes}-spoke pinwheel iris, rotating as it opens",
++            _mix(_pinwheel_mask(spokes)),
++        )
++
++
++def _add_polygon() -> None:
++    shapes = (
++        ("square", "max(abs(X-W/2)/(W/2),abs(Y-H/2)/(H/2))"),
++        (
++            "hexagon",
++            "max(abs(X-W/2)/(W/2),max(0.5*abs(X-W/2)/(W/2)+"
++            "0.866*abs(Y-H/2)/(H/2),0.5*abs(X-W/2)/(W/2)-"
++            "0.866*abs(Y-H/2)/(H/2)))",
++        ),
++        (
++            "triangle",
++            "max(abs(Y-H/2)/(H/2),abs(X-W/2)/(W/2)*0.9+"
++            "(Y-H/2)/(H/2)*0.45)",
++        ),
++    )
++    for label, dist in shapes:
++        for variant, extra in (("soft", 0.06), ("wide", 0.14)):
++            _add_custom(
++                f"polygon_{label}_{variant}",
++                "polygon",
++                f"{label} iris ({variant} edge)",
++                _mix(f"1-{_soft(f'(P*1.55-({dist}))', extra)}"),
++            )
++
++
++def _add_diagonal_blinds() -> None:
++    for count in (6, 10, 14, 18, 24, 30):
++        phase = f"mod(floor((X+Y)/((W+H)/{count})),2)"
++        _add_custom(
++            f"diag_blinds_{count}",
++            "diagonal-blinds",
++            f"diagonal venetian blinds, {count} slats",
++            _mix(f"1-{_soft(f'((1-P)-({0.28}+0.56*({phase})))', 0.04)}"),
++        )
++
++
++def _add_frame() -> None:
++    d = "max(abs(X-W/2)/(W/2),abs(Y-H/2)/(H/2))"
++    _add_custom(
++        "window_open",
++        "frame",
++        "soft window opens from the centre",
++        _mix(f"1-{_soft(f'((1-P)*1.35-({d}))', 0.08)}"),
++    )
++    _add_custom(
++        "frame_close",
++        "frame",
++        "soft frame closes in from the borders",
++        _mix(f"1-{_soft(f'((1-P)*1.35-(1-({d})))', 0.08)}"),
++    )
++    _add_custom(
++        "window_wide",
++        "frame",
++        "wide soft window from the centre",
++        _mix(f"1-{_soft(f'((1-P)*1.35-({d}))', 0.16)}"),
++    )
++    _add_custom(
++        "frame_wide",
++        "frame",
++        "wide soft frame from the borders",
++        _mix(f"1-{_soft(f'((1-P)*1.35-(1-({d})))', 0.16)}"),
++    )
++
++
++_add_iris()
++_add_diamond()
++_add_checker()
++_add_blinds()
++_add_zigzag()
++_add_wave()
++_add_spiral()
++_add_clock()
++_add_blocks()
++_add_barn()
++_add_gradient()
++_add_grid()
++_add_mosaic()
++_add_rings()
++_add_star()
++_add_multi_iris()
++_add_shutter()
++_add_corner()
++_add_pinwheel()
++_add_polygon()
++_add_diagonal_blinds()
++_add_frame()
++
++
++# ---------------------------------------------------------------------------
++
++
++# ---------------------------------------------------------------------------
++# Ordinary-filter graphs: motion, glitch and light
++# ---------------------------------------------------------------------------
++
++
++def _timeline(
++    *,
++    duration: float,
++    offset: float,
++    a_filters: str = "",
++    b_filters: str = "",
++    alpha: float | None = None,
++    x: str = "0",
++    y: str = "0",
++    post: str = "",
++) -> str:
++    """Two clips on one timeline, with B composited over A.
++
++    A is extended by ``offset`` with its last frame; B is preceded by
++    ``offset`` seconds of its first frame. B therefore starts its own
++    content exactly at the transition, and the result lasts
++    ``2 * offset + duration`` seconds.
++    """
++    a_chain = f"tpad=stop_mode=clone:stop_duration={_num(offset)}"
++    if a_filters:
++        a_chain += "," + a_filters
++
++    b_chain = f"tpad=start_mode=clone:start_duration={_num(offset)}"
++    if b_filters:
++        b_chain += "," + b_filters
++    if alpha is not None:
++        b_chain += (
++            f",format=rgba,fade=t=in:st={_num(offset)}"
++            f":d={_num(alpha)}:alpha=1"
++        )
++
++    graph = (
++        f"[a]{a_chain}[aext];[b]{b_chain}[bpad];"
++        f"[aext][bpad]overlay=x='{x}':y='{y}':eof_action=pass"
++    )
++    if post:
++        graph += "," + post
++    return graph + "[out]"
++
++
++def _window(offset: float, duration: float) -> str:
++    return f"between(t,{_num(offset)},{_num(offset + duration)})"
++
++
++def _whip_builder(axis: str, start: float, blur: str) -> Builder:
++    def builder(duration, offset, width, height, fps) -> str:
++        span = width if axis == "x" else height
++        travel = start * span
++        pos = (
++            f"if(lt(t,{_num(offset)}),{_num(travel)},"
++            f"{_num(travel)}*(1-clip((t-{_num(offset)})"
++            f"/{_num(duration)},0,1)))"
++        )
++        active = f"{blur}:enable='{_window(offset, duration)}'"
++        if axis == "x":
++            return _timeline(
++                duration=duration,
++                offset=offset,
++                a_filters=active,
++                b_filters=active,
++                x=pos,
++                y="0",
++            )
++        return _timeline(
++            duration=duration,
++            offset=offset,
++            a_filters=active,
++            b_filters=active,
++            x="0",
++            y=pos,
++        )
++
++    return builder
++
++
++def _add_motion() -> None:
++    for name, desc, axis, start in (
++        ("whip_left", "whip pan left, B enters from the right", "x", 1.0),
++        ("whip_right", "whip pan right, B enters from the left", "x", -1.0),
++        ("whip_up", "whip pan up, B enters from the bottom", "y", 1.0),
++        ("whip_down", "whip pan down, B enters from the top", "y", -1.0),
++    ):
++        blur = (
++            "avgblur=sizeX=12:sizeY=1"
++            if axis == "x"
++            else "avgblur=sizeX=1:sizeY=12"
++        )
++        _register(name, "motion", desc, _whip_builder(axis, start, blur))
++
++    for name, desc, z0, z1 in (
++        ("zoom_punch_in", "zoom punch into the incoming clip", 1.0, 1.9),
++        ("zoom_punch_out", "zoom punch out of the incoming clip", 1.9, 1.0),
++    ):
++        def builder(
++            duration, offset, width, height, fps, z0=z0, z1=z1
++        ) -> str:
++            z = (
++                f"{_num(z0)}+{_num(z1 - z0)}*"
++                f"clip((time-{_num(offset)})/{_num(duration)},0,1)"
++            )
++            filt = (
++                f"zoompan=z='{z}':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2'"
++                f":d=1:s={width}x{height}:fps={_num(fps)}"
++            )
++            return _timeline(
++                duration=duration,
++                offset=offset,
++                b_filters=filt,
++                alpha=duration,
++            )
++
++        _register(name, "motion", desc, builder)
++
++    for name, desc, sign in (
++        ("spin_zoom_cw", "clockwise spin and zoom", 1),
++        ("spin_zoom_ccw", "counter-clockwise spin and zoom", -1),
++    ):
++        def builder(duration, offset, width, height, fps, sign=sign) -> str:
++            zoom_progress = (
++                f"clip((time-{_num(offset)})/{_num(duration)},0,1)"
++            )
++            spin_progress = (
++                f"clip((t-{_num(offset)})/{_num(duration)},0,1)"
++            )
++            z = f"1+0.5*{zoom_progress}"
++            filt = (
++                f"zoompan=z='{z}':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2'"
++                f":d=1:s={width}x{height}:fps={_num(fps)},"
++                "format=rgba,"
++                f"rotate=angle='{sign}*2*PI*{spin_progress}'"
++                f":ow={width}:oh={height}:c=black@0"
++            )
++            return _timeline(
++                duration=duration,
++                offset=offset,
++                b_filters=filt,
++                alpha=duration,
++            )
++
++        _register(name, "motion", desc, builder)
++
++    for name, desc, amp, freq, decay, alpha in (
++        ("shake_cut_hard", "hard cut with a sharp camera shake", 34, 70, 9, 0.04),
++        ("shake_cut_soft", "cut with a soft decaying camera shake", 18, 38, 5, 0.08),
++    ):
++        def builder(
++            duration,
++            offset,
++            width,
++            height,
++            fps,
++            amp=amp,
++            freq=freq,
++            decay=decay,
++            alpha=alpha,
++        ) -> str:
++            t0 = f"(t-{_num(offset)})"
++            gate = f"if(lt(t,{_num(offset)}),0,"
++            x = (
++                f"{gate}{_num(amp)}*sin({_num(freq)}*{t0})"
++                f"*exp(-{_num(decay)}*{t0}))"
++            )
++            y = (
++                f"{gate}{_num(amp)}*cos({_num(freq)}*{t0})"
++                f"*exp(-{_num(decay)}*{t0}))"
++            )
++            return _timeline(
++                duration=duration,
++                offset=offset,
++                x=x,
++                y=y,
++                alpha=alpha,
++            )
++
++        _register(name, "motion", desc, builder)
++
++
++def _slice_overlay_builder(axis: str, slices: int, shift: int) -> Builder:
++    """B enters as offset slices (a glitch cut).
++
++    ``axis="y"`` cuts horizontal bands that slide sideways;
++    ``axis="x"`` cuts vertical bands that slide up or down. Neighbouring
++    bands slide in opposite directions and settle at zero.
++    """
++
++    def builder(duration, offset, width, height, fps) -> str:
++        size = height if axis == "y" else width
++        step = max(1, size // slices)
++        parts = [
++            f"[a]tpad=stop_mode=clone:stop_duration={_num(offset)}[aext]",
++            f"[b]tpad=start_mode=clone:start_duration={_num(offset)}"
++            f",split={slices}" + "".join(f"[b{i}]" for i in range(slices)),
++        ]
++        current = "[aext]"
++        for index in range(slices):
++            start = index * step
++            extent = step if index < slices - 1 else size - start
++            signed = shift if index % 2 == 0 else -shift
++            pos = (
++                f"if(lt(t,{_num(offset)}),{signed},"
++                f"{signed}*(1-clip((t-{_num(offset)})"
++                f"/{_num(duration)},0,1)))"
++            )
++            if axis == "y":
++                crop = f"crop={width}:{extent}:0:{start}"
++                x, y = pos, str(start)
++            else:
++                crop = f"crop={extent}:{height}:{start}:0"
++                x, y = str(start), pos
++            parts.append(
++                f"[b{index}]{crop},format=rgba,"
++                f"fade=t=in:st={_num(offset)}"
++                f":d={_num(min(0.05, duration))}:alpha=1[g{index}]"
++            )
++            parts.append(
++                f"{current}[g{index}]overlay=x='{x}':y='{y}'"
++                f":eof_action=pass[o{index}]"
++            )
++            current = f"[o{index}]"
++        return ";".join(parts) + f";{current}null[out]"
++
++    return builder
++
++
++def _add_glitch() -> None:
++    for name, desc, filt in (
++        (
++            "rgb_split_lr",
++            "red/blue channel split during the cut",
++            "format=gbrp,rgbashift=rh=28:bh=-28",
++        ),
++        (
++            "rgb_split_tb",
++            "red/blue vertical channel split during the cut",
++            "format=gbrp,rgbashift=rv=22:bv=-22",
++        ),
++        (
++            "rgb_split_soft",
++            "gentle red/blue channel split during the cut",
++            "format=gbrp,rgbashift=rh=12:bh=-12",
++        ),
++    ):
++        def builder(duration, offset, width, height, fps, filt=filt) -> str:
++            post = (
++                f"{filt}:enable='{_window(offset, duration)}',"
++                "format=yuv420p"
++            )
++            return _timeline(
++                duration=duration,
++                offset=offset,
++                alpha=0.04,
++                post=post,
++            )
++
++        _register(name, "glitch", desc, builder)
++
++    _register(
++        "slice_offset_h",
++        "glitch",
++        "horizontal slices offset in opposite directions",
++        _slice_overlay_builder("y", 4, 16),
++    )
++    _register(
++        "slice_offset_v",
++        "glitch",
++        "vertical slices offset in opposite directions",
++        _slice_overlay_builder("x", 4, 16),
++    )
++    _register(
++        "slice_offset_fine",
++        "glitch",
++        "eight horizontal slices offset in opposite directions",
++        _slice_overlay_builder("y", 8, 10),
++    )
++
++    for name, desc, strength in (
++        ("noise_burst_soft", "short noise burst over the cut", 38),
++        ("noise_burst_hard", "heavy noise burst over the cut", 78),
++    ):
++        def builder(
++            duration, offset, width, height, fps, strength=strength
++        ) -> str:
++            post = (
++                f"noise=alls={strength}:allf=t+u"
++                f":enable='{_window(offset, duration)}'"
++            )
++            return _timeline(
++                duration=duration,
++                offset=offset,
++                alpha=0.04,
++                post=post,
++            )
++
++        _register(name, "glitch", desc, builder)
++
++    def scanline_builder(duration, offset, width, height, fps) -> str:
++        active = _window(offset, duration)
++        post = (
++            f"format=gbrp,rgbashift=rh=8:bh=-8:enable='{active}',"
++            f"drawgrid=w=iw:h=4:t=1:c=black@0.35:enable='{active}',"
++            "format=yuv420p"
++        )
++        return _timeline(
++            duration=duration, offset=offset, alpha=0.04, post=post
++        )
++
++    _register(
++        "scanline_glitch",
++        "glitch",
++        "scanlines and channel offset during the cut",
++        scanline_builder,
++    )
++
++    def block_builder(duration, offset, width, height, fps) -> str:
++        post = (
++            f"pixelize=w=18:h=18:enable='{_window(offset, duration)}'"
++        )
++        return _timeline(
++            duration=duration, offset=offset, alpha=0.04, post=post
++        )
++
++    _register(
++        "block_glitch",
++        "glitch",
++        "pixel-block burst at the cut",
++        block_builder,
++    )
++
++
++def _add_light() -> None:
++    for name, desc, colour in (
++        ("flash_white", "full-frame white flash at the cut", "white"),
++        ("flash_amber", "warm amber flash at the cut", "0xFFB000"),
++        ("flash_cyan", "cool cyan flash at the cut", "0x00E5FF"),
++        ("flash_gray", "neutral gray flash at the cut", "0x808080"),
++        ("flash_red", "red flash at the cut", "0xFF0000"),
++        ("flash_green", "green flash at the cut", "0x00FF00"),
++    ):
++        def builder(
++            duration, offset, width, height, fps, colour=colour
++        ) -> str:
++            total = 2 * offset + duration
++            attack = max(0.04, duration * 0.35)
++            release = max(0.04, duration - attack)
++            flash = (
++                f"color=c={colour}:s={width}x{height}:r={_num(fps)}"
++                f":d={_num(total)},format=rgba,"
++                f"fade=t=in:st={_num(offset)}:d={_num(attack)}:alpha=1,"
++                f"fade=t=out:st={_num(offset + attack)}"
++                f":d={_num(release)}:alpha=1"
++            )
++            return (
++                f"[a][b]xfade=transition=fade:duration={_num(duration)}"
++                f":offset={_num(offset)}[xf];{flash}[fl];"
++                "[xf][fl]overlay=0:0:eof_action=pass[out]"
++            )
++
++        _register(name, "light", desc, builder)
++
++    for name, desc, forward in (
++        ("light_leak_left", "warm light leak sweeping left to right", True),
++        ("light_leak_right", "warm light leak sweeping right to left", False),
++        (
++            "light_leak_soft",
++            "soft warm light leak sweeping left to right",
++            True,
++        ),
++    ):
++        def builder(
++            duration, offset, width, height, fps, forward=forward,
++            name=name,
++        ) -> str:
++            total = 2 * offset + duration
++            if forward:
++                centre = f"(W*T/{_num(total)})"
++            else:
++                centre = f"(W*(1-T/{_num(total)}))"
++            halo = "0.34" if name == "light_leak_soft" else "0.22"
++            fade = max(0.04, duration * 0.18)
++            envelope = (
++                f"clip((T-{_num(offset)})/{_num(fade)},0,1)*"
++                f"clip(({_num(offset + duration)}-T)/{_num(fade)},0,1)"
++            )
++            band = (
++                f"clip(1-abs(X-({centre}))/(W*{halo}),0,1)"
++                f"*{envelope}"
++            )
++            leak = (
++                f"color=c=black:s={width}x{height}:r={_num(fps)}"
++                f":d={_num(total)},format=rgba,"
++                f"geq=r='240*{band}':g='140*{band}':b='40*{band}':a=255"
++            )
++            return (
++                f"[a][b]xfade=transition=fade:duration={_num(duration)}"
++                f":offset={_num(offset)},format=rgba[xf];"
++                f"{leak}[leak];"
++                "[xf][leak]blend=all_mode=screen:shortest=1,"
++                "format=yuv420p[out]"
++            )
++
++        _register(name, "light", desc, builder)
++
++    for name, desc, sigma in (
++        ("blur_dissolve_soft", "cross-fade through a soft blur", 8),
++        ("blur_dissolve_strong", "cross-fade through a heavy blur", 22),
++    ):
++        def builder(
++            duration, offset, width, height, fps, sigma=sigma
++        ) -> str:
++            return (
++                f"[a][b]xfade=transition=fade:duration={_num(duration)}"
++                f":offset={_num(offset)},"
++                f"gblur=sigma={_num(sigma)}"
++                f":enable='{_window(offset, duration)}'[out]"
++            )
++
++        _register(name, "light", desc, builder)
++
++    for name, desc, gamma in (
++        ("luma_fade_soft", "luma-weighted fade with a soft curve", 0.55),
++        ("luma_fade_hard", "luma-weighted fade with a hard curve", 2.2),
++    ):
++        expr = f"A*pow(P,{_num(gamma)})+B*(1-pow(P,{_num(gamma)}))"
++        _register(name, "light", desc, _xfade_builder(expr))
++
++
++def _blend_mode_builder(formula: str) -> Builder:
++    """A -> blend(A, B) -> B, with the mode expression in RGB.
++
++    ``formula`` is an FFmpeg expression over ``A`` and ``B``; it is
++    evaluated at the midpoint of the join, while the first and last
++    quarters cross-fade into and out of the blended frame. That keeps
++    the outgoing and incoming frames intact at both ends.
++    """
++
++    def builder(duration, offset, width, height, fps) -> str:
++        start = _num(offset)
++        end = _num(offset + duration)
++        progress = _num(duration)
++        p = f"clip((T-{start})/{progress},0,1)"
++        mode = formula
++        blended = (
++            f"if(lt({p},0.5),"
++            f"A*(1-2*{p})+({mode})*(2*{p}),"
++            f"({mode})*(2-2*{p})+B*(2*{p}-1))"
++        )
++        expr = f"if(lt(T,{start}),A,if(gte(T,{end}),B,{blended}))"
++        return (
++            f"[a]tpad=stop_mode=clone:stop_duration={start},"
++            f"format=gbrp[aext];"
++            f"[b]tpad=start_mode=clone:start_duration={start},"
++            f"format=gbrp[bext];"
++            f"[aext][bext]blend=all_expr='{expr}',"
++            "format=yuv420p[out]"
++        )
++
++    return builder
++
++
++def _strobe_builder(frequency: float) -> Builder:
++    """Alternate the two clips on a fixed cadence through the join."""
++
++    def builder(duration, offset, width, height, fps) -> str:
++        start = _num(offset)
++        end = _num(offset + duration)
++        expr = (
++            f"if(lt(T,{start}),A,if(gte(T,{end}),B,"
++            f"if(mod(floor(T*{_num(frequency)}),2),B,A)))"
++        )
++        return (
++            f"[a]tpad=stop_mode=clone:stop_duration={start}[aext];"
++            f"[b]tpad=start_mode=clone:start_duration={start}[bext];"
++            f"[aext][bext]blend=all_expr='{expr}'[out]"
++        )
++
++    return builder
++
++
++def _fade_post(post: str) -> Builder:
++    """Cross-fade, then run ``post`` inside the transition window.
++
++    ``post`` may contain ``{window}``; it is replaced with the real
++    ``between(t, offset, offset + duration)`` expression.
++    """
++
++    def builder(duration, offset, width, height, fps) -> str:
++        window = _window(offset, duration)
++        return (
++            f"[a][b]xfade=transition=fade:duration={_num(duration)}"
++            f":offset={_num(offset)},{post.format(window=window)}[out]"
++        )
++
++    return builder
++
++
++def _mirror_builder(filters: str) -> Builder:
++    """Show a full-frame mirrored copy during the join."""
++
++    def builder(duration, offset, width, height, fps) -> str:
++        window = _window(offset, duration)
++        return (
++            f"[a][b]xfade=transition=fade:duration={_num(duration)}"
++            f":offset={_num(offset)},split=2[keep][mir];"
++            f"[mir]{filters}[flip];"
++            f"[keep][flip]overlay=0:0:enable='{window}'[out]"
++        )
++
++    return builder
++
++
++def _add_effects() -> None:
++    modes = (
++        ("blend_screen", "screen blend through the cut", "255-(255-A)*(255-B)/255"),
++        ("blend_multiply", "multiply blend through the cut", "A*B/255"),
++        ("blend_difference", "absolute difference blend", "abs(A-B)"),
++        ("blend_darken", "keep the darker pixel of both clips", "min(A,B)"),
++        ("blend_lighten", "keep the lighter pixel of both clips", "max(A,B)"),
++        ("blend_add", "additive blend through the cut", "min(255,A+B)"),
++        (
++            "blend_exclusion",
++            "exclusion blend through the cut",
++            "A+B-2*A*B/255",
++        ),
++        (
++            "blend_hardlight",
++            "hard-light blend through the cut",
++            "if(lt(B,128),2*A*B/255,255-2*(255-A)*(255-B)/255)",
++        ),
++        (
++            "blend_overlay",
++            "overlay blend through the cut",
++            "if(lt(A,128),2*A*B/255,255-2*(255-A)*(255-B)/255)",
++        ),
++        (
++            "blend_softlight",
++            "soft-light blend through the cut",
++            "sqrt(A*B)",
++        ),
++        (
++            "blend_linearlight",
++            "linear-light blend through the cut",
++            "clip(A+2*B-255,0,255)",
++        ),
++        (
++            "blend_vividlight",
++            "vivid-light blend through the cut",
++            "if(lt(B,128),255-min(255,(255-A)*255/max(1,2*B)),"
++            "min(255,A*255/max(1,2*(255-B))))",
++        ),
++        (
++            "blend_subtract",
++            "subtract the incoming clip from the outgoing one",
++            "max(0,A-B)",
++        ),
++        (
++            "blend_grainmerge",
++            "grain-merge blend through the cut",
++            "clip(A+B-128,0,255)",
++        ),
++        (
++            "blend_divide",
++            "divide blend through the cut",
++            "min(255,A*255/max(1,B))",
++        ),
++        (
++            "blend_colorburn",
++            "colour-burn blend through the cut",
++            "255-min(255,(255-A)*255/max(1,B))",
++        ),
++        (
++            "blend_colordodge",
++            "colour-dodge blend through the cut",
++            "min(255,A*255/max(1,255-B))",
++        ),
++        (
++            "blend_pinlight",
++            "pin-light blend through the cut",
++            "if(lt(B,128),min(A,2*B),max(A,2*B-255))",
++        ),
++        (
++            "blend_hardmix",
++            "hard-mix blend through the cut",
++            "if(gte(A+B,255),255,0)",
++        ),
++        (
++            "blend_negation",
++            "negated sum blend through the cut",
++            "255-abs(255-A-B)",
++        ),
++        (
++            "blend_linearburn",
++            "linear-burn blend through the cut",
++            "clip(A+B-255,0,255)",
++        ),
++        (
++            "blend_grainextract",
++            "grain-extract blend through the cut",
++            "clip(A-B+128,0,255)",
++        ),
++        (
++            "blend_average",
++            "hold the average of both clips through the cut",
++            "(A+B)/2",
++        ),
++        (
++            "blend_reflect",
++            "reflected blend through the cut",
++            "min(255,A*A/max(1,255-B))",
++        ),
++        (
++            "blend_phoenix",
++            "inverted difference blend through the cut",
++            "255-abs(A-B)",
++        ),
++        (
++            "blend_glow",
++            "glow blend through the cut",
++            "min(255,A+B/2)",
++        ),
++    )
++    for name, desc, formula in modes:
++        _register(name, "blend", desc, _blend_mode_builder(formula))
++
++    for frequency in (6, 9, 13, 17, 23, 29, 37, 47):
++        _register(
++            name := f"strobe_{frequency}",
++            "strobe",
++            f"{frequency} Hz strobe between both clips",
++            _strobe_builder(frequency),
++        )
++
++    for size in (6, 10, 14, 24, 36, 48, 72, 108):
++        post = f"pixelize=w={size}:h={size}:enable='{{window}}'"
++        _register(
++            f"pixel_{size}",
++            "pixel",
++            f"{size}px pixel-block dissolve",
++            _fade_post(post),
++        )
++
++    for name, desc, filters in (
++        ("mirror_h", "horizontal mirror at the midpoint", "hflip"),
++        ("mirror_v", "vertical mirror at the midpoint", "vflip"),
++        ("mirror_hv", "both-axis mirror at the midpoint", "hflip,vflip"),
++    ):
++        _register(name, "mirror", desc, _mirror_builder(filters))
++
++    for name, desc, filt in (
++        (
++            "mirror_cw",
++            "quarter-turn clockwise at the midpoint",
++            "rotate=PI/2:ow=iw:oh=ih",
++        ),
++        (
++            "mirror_ccw",
++            "quarter-turn counter-clockwise at the midpoint",
++            "rotate=-PI/2:ow=iw:oh=ih",
++        ),
++        (
++            "mirror_tilt",
++            "diagonal tilt at the midpoint",
++            "rotate=PI/4:ow=iw:oh=ih",
++        ),
++    ):
++        post = f"{filt}:enable='{{window}}'"
++        _register(name, "mirror", desc, _fade_post(post))
++
++    for angle in (45, 90, 135, 180, 270, 330):
++        post = f"hue=h={angle}:enable='{{window}}'"
++        _register(
++            f"hue_{angle}",
++            "hue",
++            f"{angle} degree hue swing through the cut",
++            _fade_post(post),
++        )
++
++    for name, desc, mixer in (
++        (
++            "channel_swap_rb",
++            "red and blue channels swap through the cut",
++            "rr=0:rb=1:br=1:bb=0",
++        ),
++        (
++            "channel_swap_rg",
++            "red and green channels swap through the cut",
++            "rr=0:rg=1:gr=1:gg=0",
++        ),
++        (
++            "channel_swap_gb",
++            "green and blue channels swap through the cut",
++            "gg=0:gb=1:bg=1:bb=0",
++        ),
++        (
++            "channel_warm",
++            "warm channel push through the cut",
++            "rr=1.4:gg=0.75:bb=0.6",
++        ),
++    ):
++        post = (
++            f"colorchannelmixer={mixer}"
++            f":enable='{{window}}'"
++        )
++        _register(name, "channel", desc, _fade_post(post))
++
++    for name, desc, grade in (
++        ("grade_flat", "flatten contrast through the cut", "contrast=0.4"),
++        ("grade_soft", "soften contrast through the cut", "contrast=0.7"),
++        ("grade_punch", "punch up contrast through the cut", "contrast=1.8"),
++        ("grade_hard", "hard contrast through the cut", "contrast=2.5"),
++        ("grade_mono", "drain colour through the cut", "saturation=0"),
++        ("grade_bright", "lift exposure through the cut", "brightness=0.12"),
++        ("grade_dark", "drop exposure through the cut", "brightness=-0.12"),
++        ("grade_shadow", "crush shadows through the cut", "gamma=0.6"),
++        ("grade_lift", "lift midtones through the cut", "gamma=1.6"),
++        ("grade_bloom", "strong midtone lift through the cut", "gamma=2.4"),
++        ("grade_gentle", "gently raise contrast through the cut", "contrast=1.3"),
++    ):
++        post = f"eq={grade}:enable='{{window}}'"
++        _register(name, "grade", desc, _fade_post(post))
++
++    for name, desc, angle in (
++        ("rotate_15", "15 degree twist at the midpoint", "PI/12"),
++        ("rotate_30", "30 degree twist at the midpoint", "PI/6"),
++        ("rotate_60", "60 degree twist at the midpoint", "PI/3"),
++        ("rotate_75", "75 degree twist at the midpoint", "5*PI/12"),
++        ("rotate_105", "105 degree twist at the midpoint", "7*PI/12"),
++        ("rotate_120", "120 degree twist at the midpoint", "2*PI/3"),
++    ):
++        post = f"rotate={angle}:ow=iw:oh=ih:enable='{{window}}'"
++        _register(name, "rotate", desc, _fade_post(post))
++
++
++_add_motion()
++_add_glitch()
++_add_light()
++_add_effects()
+diff --git a/backend/tests/unit/test_transition_library.py b/backend/tests/unit/test_transition_library.py
+new file mode 100644
+index 0000000..7ef1422
+--- /dev/null
++++ b/backend/tests/unit/test_transition_library.py
+@@ -0,0 +1,232 @@
++"""The extended transition registry renders and honours the join contract.
++
++Every entry in ``src.media.transition_library.TRANSITIONS`` is a filter
++graph that takes two equal-size clips ``[a]``/``[b]`` and produces
++``[out]``. These tests render each one for real at 108x192 / 10 fps and
++pin the contract the renderer will rely on:
++
++* the graph needs no external assets and no GPU,
++* the output lasts ``2 * card - duration`` (the same shape as ``xfade``),
++* the first frame is the outgoing clip and the last frame is the
++  incoming one.
++
++Rendering at 108x192 keeps the matrix cheap; the proof reel in
++``tools/transitions-proof/make_library_reel.py`` renders the same entries
++at 1080x1920 and measures how distinct they look.
++"""
++
++from __future__ import annotations
++
++import json
++import shutil
++import subprocess
++
++import pytest
++
++from src.media.transition_library import TRANSITIONS
++
++WIDTH = 108
++HEIGHT = 192
++FPS = 10.0
++CARD_SECONDS = 1.0
++TRANSITION_SECONDS = 0.5
++OFFSET_SECONDS = CARD_SECONDS - TRANSITION_SECONDS
++EXPECTED_DURATION = 2 * CARD_SECONDS - TRANSITION_SECONDS
++EXPECTED_FRAMES = int(round(EXPECTED_DURATION * FPS))
++
++A_HEX = "0x1E3A8A"
++B_HEX = "0xD97706"
++A_RGB = (0x1E, 0x3A, 0x8A)
++B_RGB = (0xD9, 0x77, 0x06)
++
++REQUIRED_FAMILIES = {
++    "barn",
++    "blend",
++    "blinds",
++    "blocks",
++    "channel",
++    "checker",
++    "clock",
++    "corner",
++    "diagonal-blinds",
++    "diamond",
++    "frame",
++    "glitch",
++    "grade",
++    "gradient",
++    "grid",
++    "hue",
++    "iris",
++    "light",
++    "mirror",
++    "mosaic",
++    "motion",
++    "multi-iris",
++    "pixel",
++    "pinwheel",
++    "polygon",
++    "ripple",
++    "rotate",
++    "shutter",
++    "spiral",
++    "star",
++    "strobe",
++    "wave",
++    "zigzag",
++}
++
++requires_ffmpeg = pytest.mark.skipif(
++    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
++    reason="ffmpeg and ffprobe are required",
++)
++
++
++def _centre_offset() -> int:
++    return ((HEIGHT // 2) * WIDTH + WIDTH // 2) * 3
++
++
++def _distance(left: tuple[int, int, int], right: tuple[int, int, int]) -> int:
++    return sum((a - b) ** 2 for a, b in zip(left, right))
++
++
++def _render(output, name: str) -> tuple[float, bytes]:
++    fragment = TRANSITIONS[name].builder(
++        TRANSITION_SECONDS, OFFSET_SECONDS, WIDTH, HEIGHT, FPS
++    )
++    assert "[a]" in fragment and "[b]" in fragment
++    assert fragment.rstrip().endswith("[out]")
++    graph = f"[0:v]null[a];[1:v]null[b];{fragment}"
++    command = [
++        "ffmpeg",
++        "-y",
++        "-v",
++        "error",
++        "-f",
++        "lavfi",
++        "-i",
++        f"color=c={A_HEX}:s={WIDTH}x{HEIGHT}:r={FPS}:d={CARD_SECONDS}",
++        "-f",
++        "lavfi",
++        "-i",
++        f"color=c={B_HEX}:s={WIDTH}x{HEIGHT}:r={FPS}:d={CARD_SECONDS}",
++        "-filter_complex",
++        graph,
++        "-map",
++        "[out]",
++        "-c:v",
++        "libx264",
++        "-preset",
++        "ultrafast",
++        "-pix_fmt",
++        "yuv420p",
++        str(output),
++    ]
++    rendered = subprocess.run(
++        command, capture_output=True, text=True, timeout=120
++    )
++    assert rendered.returncode == 0, (
++        f"{name} did not render:\n{rendered.stderr[-1200:]}"
++    )
++
++    probe = subprocess.run(
++        [
++            "ffprobe",
++            "-v",
++            "error",
++            "-show_entries",
++            "format=duration",
++            "-of",
++            "json",
++            str(output),
++        ],
++        capture_output=True,
++        text=True,
++        timeout=60,
++    )
++    assert probe.returncode == 0, probe.stderr[-600:]
++    duration = float(
++        json.loads(probe.stdout or "{}")["format"]["duration"]
++    )
++
++    raw = subprocess.run(
++        [
++            "ffmpeg",
++            "-v",
++            "error",
++            "-i",
++            str(output),
++            "-f",
++            "rawvideo",
++            "-pix_fmt",
++            "rgb24",
++            "-",
++        ],
++        capture_output=True,
++        timeout=120,
++    )
++    assert raw.returncode == 0, raw.stderr.decode("utf-8", "replace")[-600:]
++    return duration, raw.stdout
++
++
++def test_every_name_is_unique_and_documented():
++    described = {}
++    for key, spec in TRANSITIONS.items():
++        assert spec.name == key
++        assert key.strip(), "empty transition name"
++        assert spec.family.strip(), f"{key}: empty family"
++        assert spec.description.strip(), f"{key}: empty description"
++        assert callable(spec.builder), f"{key}: builder is not callable"
++        assert described.setdefault(spec.name, spec.family) == spec.family, (
++            f"{key}: duplicate name"
++        )
++
++
++def test_the_registry_covers_the_requested_families():
++    families = {spec.family for spec in TRANSITIONS.values()}
++    missing = REQUIRED_FAMILIES - families
++    assert not missing, f"missing transition families: {sorted(missing)}"
++
++
++def test_builders_are_deterministic():
++    for name, spec in TRANSITIONS.items():
++        first = spec.builder(
++            TRANSITION_SECONDS, OFFSET_SECONDS, WIDTH, HEIGHT, FPS
++        )
++        second = spec.builder(
++            TRANSITION_SECONDS, OFFSET_SECONDS, WIDTH, HEIGHT, FPS
++        )
++        assert first == second, f"{name}: builder output changed"
++        assert "[out]" in first
++
++
++@requires_ffmpeg
++@pytest.mark.parametrize("name", sorted(TRANSITIONS))
++def test_transition_renders_with_the_expected_timing_and_sides(
++    name: str, tmp_path
++):
++    output = tmp_path / f"{name}.mp4"
++    duration, raw = _render(output, name)
++
++    assert abs(duration - EXPECTED_DURATION) <= 0.15, (
++        f"{name}: duration {duration:.3f}s, expected "
++        f"{EXPECTED_DURATION:.3f}s"
++    )
++
++    frame_bytes = WIDTH * HEIGHT * 3
++    assert len(raw) % frame_bytes == 0, f"{name}: partial frame in raw output"
++    frames = len(raw) // frame_bytes
++    assert frames == EXPECTED_FRAMES, (
++        f"{name}: {frames} frames, expected {EXPECTED_FRAMES}"
++    )
++
++    middle = _centre_offset()
++    first = tuple(raw[middle:middle + 3])
++    last_offset = (frames - 1) * frame_bytes + middle
++    last = tuple(raw[last_offset:last_offset + 3])
++
++    assert _distance(first, A_RGB) < _distance(first, B_RGB), (
++        f"{name}: first frame {first} is not the outgoing card"
++    )
++    assert _distance(last, B_RGB) < _distance(last, A_RGB), (
++        f"{name}: last frame {last} is not the incoming card"
++    )
+diff --git a/tools/transitions-proof/.gitignore b/tools/transitions-proof/.gitignore
+index 31eb1f8..5714422 100644
+--- a/tools/transitions-proof/.gitignore
++++ b/tools/transitions-proof/.gitignore
+@@ -1,3 +1,4 @@
+ out/
+ out-run.log
+ __pycache__/
++library-out*/
+diff --git a/tools/transitions-proof/make_library_reel.py b/tools/transitions-proof/make_library_reel.py
+new file mode 100644
+index 0000000..e9b636a
+--- /dev/null
++++ b/tools/transitions-proof/make_library_reel.py
+@@ -0,0 +1,555 @@
++#!/usr/bin/env python3
++"""Proof reel for the extended transition library.
++
++Renders every entry of ``backend/src/media/transition_library.py`` the same
++way Round 1 rendered the 58 built-in ``xfade`` names: two labelled
++1080x1920 cards, a 0.5 s transition, a real ``libx264`` encode. The
++built-in names are re-rendered alongside so both sets are measured with
++one rule.
++
++For every clip the tool records:
++
++* render wall time,
++* probe duration / geometry,
++* a 32x32 grey midpoint signature and a three-frame (25/50/75 %) one,
++* the mean absolute signature distance to every other clip.
++
++A variant counts as distinct only when its three-frame signature differs
++from every other clip by more than ``SEQUENCE_THRESHOLD`` (1.0 on the
++0..255 grey scale). Near-identical groups are reported, not hidden.
++
++Usage (from the repository root, with the backend venv's python):
++
++    python tools/transitions-proof/make_library_reel.py
++    python tools/transitions-proof/make_library_reel.py --only iris_
++    python tools/transitions-proof/make_library_reel.py --skip-builtins
++    python tools/transitions-proof/make_library_reel.py --reuse old/library.json
++
++``--reuse`` copies signatures, frames and clips for entries the earlier
++run completed, so an incremental registry change only renders the new
++entries.
++
++Exit code is 1 when any transition fails to render.
++"""
++
++from __future__ import annotations
++
++import argparse
++import base64
++import importlib.util
++import json
++import shutil
++import sys
++import time
++from pathlib import Path
++
++TOOLS_DIR = Path(__file__).resolve().parent
++REPO_ROOT = TOOLS_DIR.parents[1]
++LIBRARY = REPO_ROOT / "backend" / "src" / "media" / "transition_library.py"
++
++sys.path.insert(0, str(TOOLS_DIR))
++import make_reel as reel  # noqa: E402
++
++SEQUENCE_THRESHOLD = 1.0
++
++
++def load_registry() -> dict:
++    """Import the stdlib-only registry without the application package."""
++    spec = importlib.util.spec_from_file_location(
++        "transition_library_proof", LIBRARY
++    )
++    if spec is None or spec.loader is None:
++        raise SystemExit(f"cannot import {LIBRARY}")
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = module
++    spec.loader.exec_module(module)
++    return module.TRANSITIONS
++
++
++def render_one(
++    name: str,
++    builder,
++    output: Path,
++    font: Path | None,
++) -> dict:
++    """Render one join with the Round 1 cards and probe it."""
++    cards = (
++        reel._card_chain(0, name, "A -> B", font)
++        + "[a];"
++        + reel._card_chain(1, name, "B side", font)
++        + "[b];"
++    )
++    if builder is None:
++        graph = (
++            cards
++            + f"[a][b]xfade=transition={name}"
++            f":duration={reel.TRANSITION_SECONDS}"
++            f":offset={reel.OFFSET_SECONDS}[v]"
++        )
++        label = "[v]"
++    else:
++        graph = cards + builder(
++            reel.TRANSITION_SECONDS,
++            reel.OFFSET_SECONDS,
++            reel.WIDTH,
++            reel.HEIGHT,
++            reel.FPS,
++        )
++        label = "[out]"
++
++    command = [
++        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
++        "-f", "lavfi", "-i",
++        f"color=c=0x1E3A8A:s={reel.WIDTH}x{reel.HEIGHT}"
++        f":r={reel.FPS}:d={reel.CARD_SECONDS}",
++        "-f", "lavfi", "-i",
++        f"color=c=0xD97706:s={reel.WIDTH}x{reel.HEIGHT}"
++        f":r={reel.FPS}:d={reel.CARD_SECONDS}",
++        "-filter_complex", graph,
++        "-map", label,
++        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
++        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
++        str(output),
++    ]
++    started = time.perf_counter()
++    rendered = reel.subprocess.run(
++        command, capture_output=True, text=True
++    )
++    seconds = time.perf_counter() - started
++    if rendered.returncode != 0:
++        return {
++            "rendered": False,
++            "seconds": round(seconds, 3),
++            "error": (rendered.stderr or "").strip().splitlines()[-1:]
++            or [f"ffmpeg exited {rendered.returncode}"],
++        }
++    probe = reel.subprocess.run(
++        [
++            "ffprobe", "-v", "error",
++            "-show_entries",
++            "stream=codec_type,codec_name,width,height,nb_frames",
++            "-show_entries", "format=duration",
++            "-of", "json", str(output),
++        ],
++        capture_output=True, text=True,
++    )
++    if probe.returncode != 0:
++        return {
++            "rendered": False,
++            "seconds": round(seconds, 3),
++            "error": (probe.stderr or "").strip().splitlines()[-1:],
++        }
++    payload = json.loads(probe.stdout or "{}")
++    video = next(
++        (
++            stream
++            for stream in payload.get("streams", [])
++            if stream.get("codec_type") == "video"
++        ),
++        None,
++    )
++    duration = float((payload.get("format") or {}).get("duration") or 0.0)
++    geometry_ok = (
++        video is not None
++        and int(video.get("width") or 0) == reel.WIDTH
++        and int(video.get("height") or 0) == reel.HEIGHT
++    )
++    duration_ok = abs(duration - reel.EXPECTED_DURATION) <= 0.1
++    return {
++        "rendered": geometry_ok and duration_ok,
++        "seconds": round(seconds, 3),
++        "duration": duration,
++        "width": int((video or {}).get("width") or 0),
++        "height": int((video or {}).get("height") or 0),
++        "frames": (video or {}).get("nb_frames"),
++        "error": None
++        if geometry_ok and duration_ok
++        else f"bad probe output: {json.dumps(payload)[:400]}",
++    }
++
++
++def _probe_duration(clip: Path) -> float:
++    probe = reel.subprocess.run(
++        [
++            "ffprobe", "-v", "error",
++            "-show_entries", "format=duration",
++            "-of", "json", str(clip),
++        ],
++        capture_output=True, text=True,
++    )
++    if probe.returncode != 0:
++        return 0.0
++    payload = json.loads(probe.stdout or "{}")
++    return float((payload.get("format") or {}).get("duration") or 0.0)
++
++
++def _distance_matrix(names: list[str], signatures: dict[str, bytes]):
++    """Pairwise mean absolute distance, numpy when available."""
++    try:
++        import numpy as np
++    except ImportError:  # pragma: no cover - fallback for minimal envs
++        size = len(names)
++        matrix = [[0.0] * size for _ in range(size)]
++        for i, first in enumerate(names):
++            for j in range(i + 1, size):
++                value = reel.mean_abs_distance(
++                    signatures[first], signatures[names[j]]
++                )
++                matrix[i][j] = matrix[j][i] = value
++        return matrix
++
++    stacked = np.frombuffer(
++        b"".join(signatures[name] for name in names), dtype=np.uint8
++    ).reshape(len(names), -1)
++    matrix = np.zeros((len(names), len(names)), dtype=np.float64)
++    for index in range(len(names)):
++        matrix[index] = np.abs(
++            stacked.astype(np.int16) - stacked[index].astype(np.int16)
++        ).mean(axis=1)
++    return matrix
++
++
++def _groups_from_matrix(
++    names: list[str], matrix, threshold: float
++) -> list[list[str]]:
++    parent = {name: name for name in names}
++
++    def find(name: str) -> str:
++        while parent[name] != name:
++            parent[name] = parent[parent[name]]
++            name = parent[name]
++        return name
++
++    for i, first in enumerate(names):
++        for j in range(i + 1, len(names)):
++            if matrix[i][j] <= threshold:
++                root_a, root_b = find(first), find(names[j])
++                if root_a != root_b:
++                    parent[root_b] = root_a
++    groups: dict[str, list[str]] = {}
++    for name in names:
++        groups.setdefault(find(name), []).append(name)
++    return list(groups.values())
++
++
++def _near_map(
++    names: list[str], matrix, threshold: float
++) -> dict[str, list[tuple[str, float]]]:
++    near: dict[str, list[tuple[str, float]]] = {name: [] for name in names}
++    for i, first in enumerate(names):
++        for j, second in enumerate(names):
++            if i >= j:
++                continue
++            value = float(matrix[i][j])
++            if value <= threshold:
++                near[first].append((second, value))
++                near[second].append((first, value))
++    for pairs in near.values():
++        pairs.sort(key=lambda item: item[1])
++    return near
++
++
++def write_table(
++    output: Path,
++    entries: list[dict],
++    results: dict[str, dict],
++    near: dict[str, list[tuple[str, float]]],
++    groups: list[list[str]],
++) -> None:
++    lines = [
++        "| Transition | Source | Family | Rendered OK | Seconds | Duration (s) | Near-identical |",
++        "| --- | --- | --- | --- | --- | --- | --- |",
++    ]
++    for entry in entries:
++        name = entry["name"]
++        result = results[name]
++        if not result.get("rendered"):
++            lines.append(
++                f"| {name} | {entry['source']} | {entry['family']} | "
++                f"FAILED | {result.get('seconds', '-')} | - | "
++                f"{result.get('error')} |"
++            )
++            continue
++        pairs = near.get(name, [])
++        detail = (
++            ", ".join(f"{other} ({value:.2f})" for other, value in pairs)
++            if pairs
++            else "-"
++        )
++        lines.append(
++            f"| {name} | {entry['source']} | {entry['family']} | OK | "
++            f"{result['seconds']:.3f} | {result['duration']:.3f} | {detail} |"
++        )
++    lines.append("")
++    lines.append(
++        "Near-identical uses the three-frame (25/50/75 %) 32x32 grey "
++        f"signature and flags pairs within {SEQUENCE_THRESHOLD:.2f} "
++        "(mean absolute difference on 0..255)."
++    )
++    lines.append("")
++    lines.append("### Near-identical groups")
++    lines.append("")
++    meaningful = sorted(
++        tuple(sorted(group)) for group in groups if len(group) > 1
++    )
++    if not meaningful:
++        lines.append("None.")
++    else:
++        for group in meaningful:
++            lines.append(f"- {', '.join(group)}")
++    output.write_text("\n".join(lines) + "\n", encoding="utf-8")
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument(
++        "--out",
++        type=Path,
++        default=TOOLS_DIR / "library-out",
++        help="output directory (default: tools/transitions-proof/library-out)",
++    )
++    parser.add_argument(
++        "--only",
++        default=None,
++        help="substring filter applied to both sets before rendering",
++    )
++    parser.add_argument(
++        "--skip-builtins",
++        action="store_true",
++        help="render only the extended registry",
++    )
++    parser.add_argument(
++        "--threshold",
++        type=float,
++        default=SEQUENCE_THRESHOLD,
++        help="three-frame near-identical threshold (default 1.0)",
++    )
++    parser.add_argument(
++        "--reuse",
++        type=Path,
++        default=None,
++        help="reuse signatures, frames and clips from an earlier library.json",
++    )
++    args = parser.parse_args(argv)
++
++    registry = load_registry()
++    entries: list[dict] = []
++    if not args.skip_builtins:
++        for name in reel.load_transitions(reel.EDL_RENDER):
++            entries.append(
++                {
++                    "name": name,
++                    "source": "builtin",
++                    "family": reel.family_of(name),
++                    "builder": None,
++                }
++            )
++    for name, spec in registry.items():
++        entries.append(
++            {
++                "name": name,
++                "source": "library",
++                "family": spec.family,
++                "builder": spec.builder,
++                "description": spec.description,
++            }
++        )
++    if args.only:
++        entries = [entry for entry in entries if args.only in entry["name"]]
++
++    font = reel.find_font()
++    out_dir = args.out.resolve()
++    clips_dir = out_dir / "clips"
++    frames_dir = out_dir / "frames"
++    clips_dir.mkdir(parents=True, exist_ok=True)
++    frames_dir.mkdir(parents=True, exist_ok=True)
++
++    results: dict[str, dict] = {}
++    midpoint_signatures: dict[str, bytes] = {}
++    sequence_signatures: dict[str, bytes] = {}
++    frames: dict[str, Path] = {}
++    reused: dict[str, dict] = {}
++    reuse_payload: dict = {}
++    if args.reuse:
++        reuse_payload = json.loads(args.reuse.read_text(encoding="utf-8"))
++        reuse_root = args.reuse.parent
++        for name in reuse_payload.get("rendered_ok", []):
++            signatures = (reuse_payload.get("signatures") or {}).get(name)
++            frame = reuse_root / "frames" / f"{name}.png"
++            clip = reuse_root / "clips" / f"{name}.mp4"
++            if signatures and frame.is_file() and clip.is_file():
++                reused[name] = {
++                    "midpoint": base64.b64decode(signatures["midpoint"]),
++                    "sequence": base64.b64decode(signatures["sequence"]),
++                    "frame": frame,
++                    "clip": clip,
++                }
++
++    print(
++        f"Rendering {len(entries)} transitions at "
++        f"{reel.WIDTH}x{reel.HEIGHT}, {reel.TRANSITION_SECONDS}s "
++        f"({len(reused)} reused from {args.reuse}) ..."
++        if args.reuse
++        else f"Rendering {len(entries)} transitions at "
++        f"{reel.WIDTH}x{reel.HEIGHT}, {reel.TRANSITION_SECONDS}s ..."
++    )
++    for index, entry in enumerate(entries, start=1):
++        name = entry["name"]
++        clip = clips_dir / f"{name}.mp4"
++        if name in reused:
++            reuse = reused[name]
++            shutil.copy2(reuse["frame"], frames_dir / f"{name}.png")
++            midpoint_signatures[name] = reuse["midpoint"]
++            sequence_signatures[name] = reuse["sequence"]
++            frames[name] = frames_dir / f"{name}.png"
++            result = {
++                "rendered": True,
++                "seconds": reuse_payload.get("render_seconds", {}).get(name),
++                "duration": _probe_duration(reuse["clip"]),
++                "reused": True,
++            }
++            results[name] = result
++            print(
++                f"  [{index:03d}/{len(entries)}] {name:26s} REUSE  "
++                f"{result['duration']:6.3f}s"
++            )
++            continue
++        result = render_one(name, entry["builder"], clip, font)
++        if result.get("rendered"):
++            try:
++                reel.extract_midpoint_png(clip, frames_dir / f"{name}.png")
++                midpoint_signatures[name] = reel._raw_frame_signature(
++                    clip, reel.MIDPOINT_FRAME, reel.SIGNATURE_SIZE
++                )
++                sequence_signatures[name] = reel._sequence_signature(clip)
++                frames[name] = frames_dir / f"{name}.png"
++            except RuntimeError as exc:
++                result["rendered"] = False
++                result["error"] = str(exc)
++        results[name] = result
++        status = "OK" if result.get("rendered") else "FAILED"
++        duration = (
++            f"{result['duration']:.3f}s"
++            if result.get("duration") is not None
++            else "-"
++        )
++        print(
++            f"  [{index:03d}/{len(entries)}] {name:26s} {status:6s} "
++            f"{duration:>8s} {result.get('seconds', 0):6.2f}s"
++        )
++
++    working = [entry["name"] for entry in entries if results[entry["name"]].get("rendered")]
++    if working:
++        matrix = _distance_matrix(working, sequence_signatures)
++        groups = _groups_from_matrix(working, matrix, args.threshold)
++        near = _near_map(working, matrix, args.threshold)
++    else:
++        matrix = []
++        groups = []
++        near = {}
++
++    distinct = [group[0] for group in groups if len(group) == 1]
++    duplicates = sum(len(group) - 1 for group in groups if len(group) > 1)
++
++    by_source: dict[str, dict[str, int]] = {}
++    for entry in entries:
++        if entry["name"] not in working:
++            continue
++        bucket = by_source.setdefault(
++            entry["source"], {"rendered": 0, "distinct": 0}
++        )
++        bucket["rendered"] += 1
++        if any(entry["name"] in group and len(group) == 1 for group in groups):
++            bucket["distinct"] += 1
++
++    sheets = []
++    family_names: dict[str, list[str]] = {}
++    for entry in entries:
++        family_names.setdefault(entry["family"], []).append(entry["name"])
++    for family, names in family_names.items():
++        sheet = reel.contact_sheet(
++            family,
++            names,
++            frames,
++            out_dir / f"contact-{family}.png",
++        )
++        if sheet is not None:
++            sheets.append(sheet)
++
++    payload = {
++        "width": reel.WIDTH,
++        "height": reel.HEIGHT,
++        "fps": reel.FPS,
++        "card_seconds": reel.CARD_SECONDS,
++        "transition_seconds": reel.TRANSITION_SECONDS,
++        "offset_seconds": reel.OFFSET_SECONDS,
++        "expected_duration": reel.EXPECTED_DURATION,
++        "midpoint_frame": reel.MIDPOINT_FRAME,
++        "sequence_frames": list(reel.SEQUENCE_FRAMES),
++        "signature_size": reel.SEQUENCE_SIGNATURE_SIZE,
++        "threshold": args.threshold,
++        "rendered_ok": working,
++        "failed": {
++            entry["name"]: results[entry["name"]].get("error")
++            for entry in entries
++            if not results[entry["name"]].get("rendered")
++        },
++        "render_seconds": {
++            entry["name"]: results[entry["name"]].get("seconds")
++            for entry in entries
++        },
++        "reused_from": str(args.reuse) if args.reuse else None,
++        "reused": sorted(name for name in working if name in reused),
++        "total_rendered": len(working),
++        "total_distinct": len(distinct),
++        "near_identical_groups": [
++            group for group in groups if len(group) > 1
++        ],
++        "by_source": by_source,
++        "entries": [
++            {
++                "name": entry["name"],
++                "source": entry["source"],
++                "family": entry["family"],
++                "description": entry.get("description"),
++                "near_identical": near.get(entry["name"], []),
++            }
++            for entry in entries
++        ],
++        "signatures": {
++            name: {
++                "midpoint": base64.b64encode(
++                    midpoint_signatures[name]
++                ).decode("ascii"),
++                "sequence": base64.b64encode(
++                    sequence_signatures[name]
++                ).decode("ascii"),
++            }
++            for name in working
++        },
++    }
++    (out_dir / "library.json").write_text(
++        json.dumps(payload, indent=2), encoding="utf-8"
++    )
++    write_table(
++        out_dir / "table.md", entries, results, near, groups
++    )
++
++    print()
++    print(f"Rendered OK:   {len(working)}/{len(entries)}")
++    print(f"Distinct:      {len(distinct)} of {len(working)} "
++          f"(delta > {args.threshold:.2f} vs every other three-frame signature)")
++    print(f"Duplicates:    {duplicates} clip(s) in "
++          f"{sum(1 for group in groups if len(group) > 1)} near-identical group(s)")
++    for source, counts in sorted(by_source.items()):
++        print(f"  {source:8s} rendered {counts['rendered']:3d}  "
++              f"distinct {counts['distinct']:3d}")
++    print(f"Table:         {out_dir / 'table.md'}")
++    print(f"Data:          {out_dir / 'library.json'}")
++    if sheets:
++        print(f"Contact sheets: {len(sheets)} under {out_dir}")
++    return 0 if len(working) == len(entries) else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+-- 
+2.56.0.windows.2
+

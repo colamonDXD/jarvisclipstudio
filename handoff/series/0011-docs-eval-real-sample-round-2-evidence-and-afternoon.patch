@@ -1,0 +1,59 @@
+From 6237408bddd9b1d6315f2ba1409ea9fc8bf9d72e Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 14:11:23 +0530
+Subject: [PATCH 11/13] docs(eval): real-sample round 2 evidence and afternoon
+ handoff notes (docs only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/gameplay-eval/EVIDENCE.md | 15 +++++++++++++++
+ tools/gameplay-eval/HANDOFF.md  | 13 +++++++++++++
+ 2 files changed, 28 insertions(+)
+
+diff --git a/tools/gameplay-eval/EVIDENCE.md b/tools/gameplay-eval/EVIDENCE.md
+index 329372f..e6a1368 100644
+--- a/tools/gameplay-eval/EVIDENCE.md
++++ b/tools/gameplay-eval/EVIDENCE.md
+@@ -20,3 +20,18 @@ Facecam position was supplied for the synthetic runs (YuNet does not recognise a
+   because the facecam showed a real reaction, but voice-only evidence can be fooled by game dialogue.
+ * NOT measured: precision/recall on real footage (no labels), recall of missed reactions, other games/streamers/languages.
+ * Timing: 13-23 s per 300 s of video on this laptop CPU path (voice + facecam + frame evidence); memory/VRAM not measured.
++
++## REAL samples, round 2 (2026-11-17 afternoon) — 9 Twitch samples, ~44 min: Kai Cenat (GTA SA, GTA IV), IShowSpeed (GTA stream), vicens (GTA V, Spanish)
++* Facecam auto-found in 9/9.
++* Weak labels: faster-whisper `base` transcripts (word timestamps). An "exclamation cluster" = >=3 reaction words or '!' within 4 s.
++  These labels are noisy (filler "bro", ASR errors) and are NOT ground truth.
++| version | picks | picks containing an exclamation | exclamation clusters caught |
++|---|---|---|---|
++| audio + facecam only | 20 | 15 (75%) | 5/33 (15%) |
++| + transcript reaction words | 23 | 17 (74%) | 7/33 (21%) |
++* The second row is partly CIRCULAR (the new signal reads the same transcript the labels come from). The honest recall figure is the first row.
++* Reading: picks are mostly real reactions; RECALL IS LOW. Most missed clusters had no agreeing facecam/voice signal, and the
++  two-signal rule (required by the amendment) rejects them. Always-loud streamers (IShowSpeed) rarely stand out acoustically.
++* Mouth-movement check (game dialogue vs streamer): ran on every voice-led pick, demoted none. Not validated on a real
++  game-dialogue false positive.
++* Kai Cenat 04:49 pick (score 95): transcript "What the hell? That shit hurt... AHHHH" — a real scream at an on-screen event.
+diff --git a/tools/gameplay-eval/HANDOFF.md b/tools/gameplay-eval/HANDOFF.md
+index 5f55131..532626c 100644
+--- a/tools/gameplay-eval/HANDOFF.md
++++ b/tools/gameplay-eval/HANDOFF.md
+@@ -95,3 +95,16 @@ Dependencies: none outside the repo (numpy/opencv already installed; faster-whis
+ | DeepSeek | OK | **OUT_OF_CREDIT (402)** | balance is zero, so the metered primary `deepseek-chat` cannot answer. Its model list shows `deepseek-flash` and `deepseek-v4-pro`; `deepseek-chat` is NOT listed (may be a retired alias). Not verifiable until credit exists |
+ Effective ladder today (verified): deepseek-chat DOWN (no credit) -> Groq 120B UP -> NIM Nemotron Ultra UP -> nim-deepseek DOWN (slug) -> OpenRouter free UP -> Cloudflare free UP -> Groq 20B (same key as Groq, not separately tested) -> local qwen3:8b UP.
+ Net: the app runs at zero cost; Groq 120B is the real primary. No new keys are required. Open items (owner/Sanji decisions, not mine): whether to buy DeepSeek credit and rename the route to `deepseek-flash`; replacing the unlisted NIM slugs. `HF_TOKEN` is still not passed through compose.
++
++## Afternoon additions (2026-11-17)
++* `3b6b313` gateway: rung `nim-deepseek` now `nvidia/nemotron-3.5-super-vl-120b-a12b` (DeepSeek V4.1 Flash returned HTTP 410 on the owner's
++  live probe). Ladder order unchanged; `clip-fast` stays Nemotron 3 Ultra. Dead unarmed aliases annotated. Test pin + MODEL_REGISTRY updated.
++* `e4e336f` reaction intelligence: transcript reaction-word signal (`lexical`) and facecam mouth check for game dialogue.
++  `build_reaction_hints` loads the cached transcript words itself — `video_service.py` did not change for this.
++* NVIDIA probe (owner-run): WORKS = nemotron-3-ultra-550b-a55b, nemotron-3.5-super-vl-120b-a12b, nemotron-3.5-lightning-30b-a3b,
++  nemotron-3-nano-omni-30b-a3b-reasoning, nemotron-3.5-bolt-e4b, mistralai/mistral-large-4-1t-a52b. GONE (410): deepseek-v4.1-flash,
++  kimi-k2.6, llama-4-maverick, deepseek-v4-pro. NOT_FOUND: qwen3-235b-a22b. TIMEOUT: z-ai/glm-5.3-flash.
++* Working providers right now: Groq, NVIDIA (models above), OpenRouter free, Cloudflare Workers AI, Hugging Face, local Ollama qwen3:8b.
++  Failing: DeepSeek (no credit; owner will NOT fund it).
++* New DeepSeek-lane task: recall on real streamer VODs is low (see EVIDENCE.md round 2). Needs a labelled real set
++  (start with the owner's own clips) before any threshold change. Do not loosen the two-signal rule without one.
+-- 
+2.56.0.windows.2
+

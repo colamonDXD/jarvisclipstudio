@@ -1,0 +1,31 @@
+[
+ {
+  "onset": "00:01:54",
+  "start_s": 112.0,
+  "len_s": 12.0,
+  "signals": [
+   "laugh",
+   "vocal"
+  ],
+  "strength": 7.1,
+  "talk_share": 0.58,
+  "camera": "no facecam found",
+  "skipped": "not a reaction on camera"
+ },
+ {
+  "onset": "00:55:08",
+  "start_s": 3302.0,
+  "len_s": 12.0,
+  "signals": [
+   "f0",
+   "scream"
+  ],
+  "strength": 5.9,
+  "talk_share": 1.0,
+  "camera": "face visible 3/3 and moving at the moment (2.9x usual)",
+  "render_s": 73,
+  "ok": true,
+  "duration": 12.07,
+  "clip": "clip_01.mp4"
+ }
+]

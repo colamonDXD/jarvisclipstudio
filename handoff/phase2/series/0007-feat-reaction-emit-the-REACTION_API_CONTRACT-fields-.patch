@@ -1,0 +1,271 @@
+From 7c5b03b6121fc8169d4fa2df0583f2de5efe9c64 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 21:59:27 +0530
+Subject: [PATCH 07/22] feat(reaction): emit the REACTION_API_CONTRACT fields
+ on streamer moments
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Additive only (contract §3): signals{facecam_reaction, voice_burst,
+transcript_emotion, gameplay_event} as 0-1 floats or None (None means
+not measured, never 0), fused_score 0-100 (the picker's own reaction x
+context score with its coincidence cap), reason (one plain sentence),
+and layout_recommendation in contract names (full -> gameplay_only).
+Measured over each moment's window from the same per-second z-scores
+the picker ranks with; gameplay_event normalised per task. Existing
+fields keep their names and values. REACTION_CONTRACT_FIELDS=0 omits
+them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                                  |   2 +
+ backend/src/auto_director/reaction_moments.py | 107 ++++++++++++++++++
+ backend/tests/unit/test_reaction_contract.py  |  90 +++++++++++++++
+ 3 files changed, 199 insertions(+)
+ create mode 100644 backend/tests/unit/test_reaction_contract.py
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index e4d52ee..e4f8af6 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,8 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-17
++- **Under the hood:** Streamer moments now also carry the reaction contract's fields. These are a 0–1 strength for each signal (facecam reaction, voice burst, emotional words, gameplay event; empty when not measured, never a fake zero), a fused 0–100 score, a one-sentence reason, and a layout recommendation. Existing fields are unchanged. Set `REACTION_CONTRACT_FIELDS=0` to leave them out.
++- **New:** Two "Face on top, game below" layouts for streamer clips, in the style of popular gaming pages. The streamer's facecam fills the top of the frame, cropped tight, and the gameplay fills the bottom. The captions sit on the seam a couple of punchy words at a time. A small "credit @creator" line can go at the bottom. **Red** has a red divider and white captions with a red outline; **Gold** has a gold divider and the spoken word in yellow. Pick one under "Gaming layout" on the create page when the niche is Gaming, and optionally type the creator's name for the credit. Clips without a facecam keep the normal layout.
+ - **Improved:** Streamer clips now find the facecam even when it sits half-way down the side of the screen or the face is small, and even when the game shows no faces. The app looks for the camera window itself, checks there is a face in it, and then puts the streamer on top and the game below. It ignores video calls (several people in fixed windows) and stream overlays with a printed face. Set `FACECAM_RECT_DETECT=0` to switch this off.
+ - **Fixed:** Video-call podcasts (each person in their own window) sometimes came out as the whole call shrunk into the middle of the vertical frame, with small faces. A still face in a top corner was being mistaken for a streamer's facecam. Now a facecam also needs a camera frame the app can actually measure; otherwise the clip gets the normal layout, which shows both people large, one above the other. Set `REFRAME_REACTOR_NEEDS_INSET=0` to restore the previous check.
+ - **Fixed:** On a computer with an NVIDIA graphics card but without the CUDA libraries installed (common outside the Docker image), transcription crashed or hung. It now switches to the processor once and remembers that for the rest of the run. `WHISPER_DEVICE=cpu` forces the processor.
+diff --git a/backend/src/auto_director/reaction_moments.py b/backend/src/auto_director/reaction_moments.py
+index c827052..99b7cff 100644
+--- a/backend/src/auto_director/reaction_moments.py
++++ b/backend/src/auto_director/reaction_moments.py
+@@ -553,6 +553,104 @@ _REASON = {
+ }
+ 
+ 
++# --- REACTION_API_CONTRACT §2 (Sanji, 2026-11-17): additive moment fields ---
++#
++# signals.* are 0-1 floats or None. None means "not measured" (no facecam,
++# no voice track, no transcript), never 0; a measured 0 is evidence (the
++# decoy: a loud explosion with a still face and a silent mic). Measured over
++# the moment's own window from the same per-second z-scores the picker
++# ranks with; z >= _CONTRACT_Z_FULL maps to 1. gameplay_event is the
++# window's peak eventfulness over the task's peak (normalised per task, as
++# the contract allows). fused_score is the picker's own reaction x context
++# score (0-100, capped when only one modality fired).
++
++_CONTRACT_Z_FULL = 6.0
++_CONTRACT_LAYOUT = {
++    "stacked_reactor": "stacked_reactor",
++    "pip_preserved": "pip_preserved",
++    "full": "gameplay_only",
++}
++_SIGNAL_WORDS = {
++    "facecam_reaction": "a facecam reaction",
++    "voice_burst": "a voice burst",
++    "transcript_emotion": "emotional words",
++    "gameplay_event": "an on-screen gameplay event",
++}
++
++
++def contract_fields_enabled() -> bool:
++    import os
++
++    return os.getenv("REACTION_CONTRACT_FIELDS", "1").strip().lower() not in {"0", "false", "no", "off"}
++
++
++def _window_peak(series: Optional[np.ndarray], start: float, end: float) -> Optional[float]:
++    if series is None or len(series) == 0:
++        return None
++    a = max(0, int(np.floor(start)))
++    b = min(len(series), max(a + 1, int(np.ceil(end))))
++    if a >= len(series):
++        return 0.0
++    return float(np.max(series[a:b]))
++
++
++def _z01(z: Optional[float]) -> Optional[float]:
++    if z is None:
++        return None
++    return round(float(np.clip(z / _CONTRACT_Z_FULL, 0.0, 1.0)), 3)
++
++
++def contract_fields(
++    start: float, end: float, score: float, zs: dict[str, np.ndarray],
++    voice_present: bool, transcript_present: bool, facecam_present: bool,
++    game_event: Optional[np.ndarray],
++) -> dict[str, Any]:
++    """signals / fused_score / reason for one moment window (contract §2)."""
++    acoustic = [zs[k] for k in ("vocal", "pitch", "laugh") if k in zs]
++    voice_z = (
++        max(_window_peak(s, start, end) or 0.0 for s in acoustic)
++        if voice_present and acoustic else None
++    )
++    if transcript_present:
++        lexical_z = _window_peak(zs.get("lexical"), start, end) if "lexical" in zs else 0.0
++    else:
++        lexical_z = None
++    face_z = _window_peak(zs.get("face"), start, end) if facecam_present and "face" in zs else None
++    gameplay = None
++    if game_event is not None and len(game_event):
++        peak = float(np.max(game_event))
++        window = _window_peak(game_event, start, end) or 0.0
++        gameplay = round(float(np.clip(window / peak, 0.0, 1.0)), 3) if peak > 0 else 0.0
++    signals = {
++        "facecam_reaction": _z01(face_z),
++        "voice_burst": _z01(voice_z),
++        "transcript_emotion": _z01(lexical_z),
++        "gameplay_event": gameplay,
++    }
++    fired = [_SIGNAL_WORDS[k] for k, v in signals.items() if v is not None and v >= 0.5]
++    reacted = [w for w in fired if w != _SIGNAL_WORDS["gameplay_event"]]
++    if reacted and len(fired) > len(reacted):
++        reason = f"The streamer reacts ({', '.join(reacted)}) to {_SIGNAL_WORDS['gameplay_event']}."
++    elif reacted:
++        reason = f"The streamer reacts ({', '.join(reacted)}) with no clear on-screen trigger."
++    elif fired:
++        reason = "Something happens in the game, but the streamer does not react."
++    else:
++        reason = "A weak moment: no signal stands out."
++    return {"signals": signals, "fused_score": round(float(score), 1), "reason": reason}
++
++
++def apply_contract_layout(moments: list[dict[str, Any]]) -> None:
++    """layout_recommendation from the recommendation pass, in contract names."""
++    for moment in moments:
++        if "fused_score" not in moment:
++            continue
++        layout = ((moment.get("edit_recommendations") or {}).get("framing") or {}).get("layout")
++        mapped = _CONTRACT_LAYOUT.get(layout)
++        if mapped:
++            moment["layout_recommendation"] = mapped
++
++
+ def shape_window(it: dict[str, Any], duration: float, clip_seconds: float) -> tuple[float, float, float, float]:
+     """(start, end, lead, tail). Keep the trigger AND the full reaction."""
+     r_start, r_end = it["start"], it["end"]
+@@ -668,6 +766,13 @@ def select_streamer_moments(
+                 "lead_in_sec": round(lead, 1), "tail_sec": round(tail, 1),
+             },
+         })
++        if contract_fields_enabled():
++            moments[-1].update(contract_fields(
++                start, end, score, zs, voice_present,
++                transcript_present=words_s is not None,
++                facecam_present=face is not None and len(face) > 0,
++                game_event=g_event,
++            ))
+         if len(moments) >= target_count:
+             break
+     try:
+@@ -679,6 +784,8 @@ def select_streamer_moments(
+         attach_recommendations(moments, facecam_roi=roi, strength=strength, words=words_s)
+     except Exception:
+         logger.warning("Reaction hook/recommendation pass failed", exc_info=True)
++    if contract_fields_enabled():
++        apply_contract_layout(moments)
+     moments.sort(key=lambda m: m["start_time"])
+     return moments
+ 
+diff --git a/backend/tests/unit/test_reaction_contract.py b/backend/tests/unit/test_reaction_contract.py
+new file mode 100644
+index 0000000..2b5da96
+--- /dev/null
++++ b/backend/tests/unit/test_reaction_contract.py
+@@ -0,0 +1,90 @@
++"""REACTION_API_CONTRACT §2 (Sanji, 2026-11-17): additive fields on reaction moments.
++
++signals.* are 0-1 or None (None = not measured, never 0), fused_score is 0-100,
++reason is one plain sentence, layout_recommendation uses the contract names.
++Existing fields keep their names (§3: additive only).
++"""
++
++import numpy as np
++import pytest
++
++from src.auto_director import reaction_moments as rm
++from tests.unit.test_reaction_moments import _face, _game, _pick, _voice
++
++
++@pytest.fixture(autouse=True)
++def _on(monkeypatch):
++    monkeypatch.delenv("REACTION_CONTRACT_FIELDS", raising=False)
++
++
++def _shout(v, f, at):
++    v["vocal"][at:at + 4] += 15
++    v["f0"][at:at + 4] += 120
++    f[at:at + 4] += 12
++
++
++def test_reaction_to_event_carries_every_contract_field():
++    v, f = _voice(), _face()
++    _shout(v, f, 90)
++    out = _pick(v, f, _game(events=[(88, 91)]))
++    m = out[0]
++    # Existing fields unchanged.
++    for key in ("start_time", "end_time", "text", "reasoning", "virality_score",
++                "relevance_score", "hook_title", "evidence"):
++        assert key in m
++    s = m["signals"]
++    assert set(s) == {"facecam_reaction", "voice_burst", "transcript_emotion", "gameplay_event"}
++    assert s["facecam_reaction"] >= 0.5 and s["voice_burst"] >= 0.5
++    assert s["gameplay_event"] >= 0.5
++    # No transcript was given: unmeasured is None, never 0.
++    assert s["transcript_emotion"] is None
++    assert 0 <= m["fused_score"] <= 100
++    assert m["fused_score"] == pytest.approx(m["virality_score"], abs=0.6)
++    assert "reacts" in m["reason"] and "gameplay event" in m["reason"]
++    assert m["layout_recommendation"] in {"stacked_reactor", "pip_preserved", "facecam_full", "gameplay_only"}
++
++
++def test_decoy_window_measures_zero_reaction_not_none():
++    zs = {"vocal": np.zeros(120), "pitch": np.zeros(120), "laugh": np.zeros(120),
++          "face": np.zeros(120)}
++    game = np.zeros(120)
++    game[80:86] = 9.0          # the loudest gameplay event, nobody reacts
++    fields = rm.contract_fields(78, 90, 35.0, zs, voice_present=True, transcript_present=False,
++                                facecam_present=True, game_event=game)
++    s = fields["signals"]
++    assert s["facecam_reaction"] == 0.0 and s["voice_burst"] == 0.0   # measured zeros
++    assert s["gameplay_event"] == 1.0
++    assert s["transcript_emotion"] is None
++    assert fields["reason"] == "Something happens in the game, but the streamer does not react."
++
++
++def test_no_facecam_and_no_voice_are_unmeasured():
++    fields = rm.contract_fields(10, 20, 40.0, {"lexical": np.full(60, 4.0)}, voice_present=False,
++                                transcript_present=True, facecam_present=False, game_event=None)
++    s = fields["signals"]
++    assert s["facecam_reaction"] is None and s["voice_burst"] is None and s["gameplay_event"] is None
++    assert s["transcript_emotion"] == pytest.approx(4.0 / 6.0, abs=0.001)
++
++
++def test_layout_names_map_to_the_contract():
++    moments = [
++        {"fused_score": 50, "edit_recommendations": {"framing": {"layout": "full"}}},
++        {"fused_score": 50, "edit_recommendations": {"framing": {"layout": "stacked_reactor"}}},
++        {"fused_score": 50, "edit_recommendations": {"framing": {"layout": "pip_preserved"}}},
++        {"fused_score": 50},
++        {"edit_recommendations": {"framing": {"layout": "full"}}},     # contract fields off
++    ]
++    rm.apply_contract_layout(moments)
++    assert [m.get("layout_recommendation") for m in moments] == [
++        "gameplay_only", "stacked_reactor", "pip_preserved", None, None]
++    # The producer's own field keeps its name and value.
++    assert moments[0]["edit_recommendations"]["framing"]["layout"] == "full"
++
++
++def test_off_switch_removes_every_contract_field(monkeypatch):
++    monkeypatch.setenv("REACTION_CONTRACT_FIELDS", "0")
++    v, f = _voice(), _face()
++    _shout(v, f, 90)
++    m = _pick(v, f, _game(events=[(88, 91)]))[0]
++    for key in ("signals", "fused_score", "reason", "layout_recommendation"):
++        assert key not in m
+-- 
+2.56.0.windows.2
+

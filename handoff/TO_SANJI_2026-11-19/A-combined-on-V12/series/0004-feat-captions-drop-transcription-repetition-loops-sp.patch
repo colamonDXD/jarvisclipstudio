@@ -1,0 +1,294 @@
+From fca3ef179f9a4ef48da468c6416dc71a6ee498e1 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 12:03:19 +0530
+Subject: [PATCH 04/18] feat(captions): drop transcription repetition loops;
+ split lines by phrase
+
+Root cause #6 of clip1.mp4 (handoff/quality-clip1/ROOT_CAUSE.md): the
+transcript repeated "I'm like, I just want to have a war" over loud crowd
+audio (a speech-to-text loop), and hard 3-word chunks left orphans.
+
+media/caption_cleanup.py, both default OFF until Luffy approves (Sanji Q15):
+- CAPTION_LOOP_FILTER: a 3+ word phrase repeated back-to-back 3+ times is
+  captioned once (audio untouched; editor renders with placements exempt).
+  Real repeats ("no no no", "go go go") are kept.
+- CAPTION_PHRASE_SPLIT: breaks at sentence ends, pauses and commas; a run
+  longer than the line limit is balanced so no line is a lone word.
+Phase-2 harness turns on all review switches (content cuts, ambient pad,
+hi-res probe, caption loop filter, phrase split).
+
+Evidence: handoff/quality-clip1/step5/caption_lines.md - in the clip1
+window 126 of 136 transcribed words were the loop; captions now read
+"Yes, I'm like, / I just want / to have / a war." once. Render + sheet +
+step2-vs-step5 side by side in the same folder.
+Tests: test_caption_cleanup 6/6.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                               |   1 +
+ backend/src/media/caption_cleanup.py       | 121 +++++++++++++++++++++
+ backend/src/media/captions.py              |  19 +++-
+ backend/tests/unit/test_caption_cleanup.py |  56 ++++++++++
+ tools/phase2/auto_edit.py                  |   6 +
+ 5 files changed, 202 insertions(+), 1 deletion(-)
+ create mode 100644 backend/src/media/caption_cleanup.py
+ create mode 100644 backend/tests/unit/test_caption_cleanup.py
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 466ebfe..3ea14fb 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,7 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-18
++- **Fixed:** Captions no longer repeat a phrase over and over when the speech recogniser loops over loud crowd or music noise; the phrase is shown once. Caption lines now follow the phrasing of the speech (sentence ends, pauses, commas) and never leave a single word stranded on its own line. Off until approved: set `CAPTION_LOOP_FILTER=on` and `CAPTION_PHRASE_SPLIT=on` to try it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Improved:** Wide shots no longer fill the top and bottom of the frame with a blurred copy of the picture: the bars become a calm, dark tint of the shot's own colour, so captions and titles sit on a clean background. On 4K footage people are now found at a sharper resolution, so medium shots of the speaker are framed on them instead of shown tiny. Off until approved: set `FIT_PAD=ambient` and `REFRAME_HIRES_PROBE=on` to try it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Improved:** Auto edits can now cut only where the footage gives a reason: a real camera change or the end of a sentence. Before, clips were sliced into equal pieces, with zooms every few seconds and cuts snapped to the background music. Zooms now need speech behind them, and decorative transitions only land on real camera changes. Off until approved: set `EDL_CONTENT_CUTS=on` to try it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **New:** Auto clips no longer all sound the same once the extended library is installed (one command, checked file by file). Each music mood then has a library of free tracks, and each sound-effect cue has many variants. Every clip gets its own pick, and keeps it when it is re-rendered. New moods are available too: epic, suspense, emotional, cinematic and world. Everything shipped is public domain (CC0) or our own original, and the packaging check refuses any file without a recorded licence. Set `ASSET_VARIANTS=off` for the old one-file-per-mood behaviour. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+diff --git a/backend/src/media/caption_cleanup.py b/backend/src/media/caption_cleanup.py
+new file mode 100644
+index 0000000..9816b0d
+--- /dev/null
++++ b/backend/src/media/caption_cleanup.py
+@@ -0,0 +1,121 @@
++"""Step 5 of the clip1 correction: captions that read as complete thoughts.
++
++Root cause #6 of clip1.mp4 (handoff/quality-clip1/ROOT_CAUSE.md):
++(a) the transcript repeated "I'm like, I just want to have a war" about a
++    dozen times over loud crowd audio, a speech-to-text repetition loop,
++    not what was said; and
++(b) captions were cut by a hard word count, leaving orphans ("just",
++    "have a...").
++
++``CAPTION_LOOP_FILTER`` (default off until approved): drop a phrase of 3+
++words that repeats back-to-back 3+ times; keep the first occurrence. The
++audio is untouched; only the captions stop repeating.
++
++``CAPTION_PHRASE_SPLIT`` (default off until approved): line breaks prefer
++sentence ends, pauses and commas; a sentence is never left with a single
++orphan word on its own line when a balanced split exists.
++"""
++from __future__ import annotations
++
++import os
++import re
++from typing import Any, Dict, List, Tuple
++
++LOOP_MIN_PHRASE = 3
++LOOP_MAX_PHRASE = 14
++LOOP_MIN_REPEATS = 3
++_SENTENCE_END = re.compile(r"[.!?…]+[\"')\]]*$")
++_CLAUSE_END = re.compile(r"[,;:—–-]+[\"')\]]*$")
++
++
++def _on(name: str) -> bool:
++    return os.getenv(name, "off").strip().lower() in ("on", "1", "true", "yes")
++
++
++def loop_filter_enabled() -> bool:
++    return _on("CAPTION_LOOP_FILTER")
++
++
++def phrase_split_enabled() -> bool:
++    return _on("CAPTION_PHRASE_SPLIT")
++
++
++def _norm(word: Dict[str, Any]) -> str:
++    return re.sub(r"[^\w']+", "", str(word.get("text", "")).lower())
++
++
++def drop_repetition_loops(words: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
++    """Words with back-to-back repeats of a 3+ word phrase removed.
++
++    Returns ``(kept_words, dropped_count)``. Single repeated words
++    ("no no no") and two-word echoes are real speech and are kept.
++    """
++    tokens = [_norm(w) for w in words]
++    keep = [True] * len(words)
++    i = 0
++    n_words = len(words)
++    while i < n_words:
++        best = None
++        for size in range(LOOP_MIN_PHRASE, LOOP_MAX_PHRASE + 1):
++            if i + size * LOOP_MIN_REPEATS > n_words:
++                break
++            phrase = tokens[i:i + size]
++            if not all(phrase):
++                continue
++            repeats = 1
++            j = i + size
++            while j + size <= n_words and tokens[j:j + size] == phrase:
++                repeats += 1
++                j += size
++            if repeats >= LOOP_MIN_REPEATS and (best is None or j - i > best[1] - i):
++                best = (size, j)
++        if best is None:
++            i += 1
++            continue
++        size, end = best
++        for k in range(i + size, end):
++            keep[k] = False
++        i = end
++    kept = [w for w, k in zip(words, keep) if k]
++    return kept, n_words - len(kept)
++
++
++def split_word_spans_phrase(
++    words: List[Dict[str, Any]], max_words: int, pause_break_seconds: float
++) -> List[Tuple[int, int]]:
++    """``(start, stop)`` spans that follow the phrasing of the speech."""
++    if not words:
++        return []
++    max_words = max(1, int(max_words))
++    # 1) Sentences / pause-separated runs.
++    runs: List[Tuple[int, int]] = []
++    start = 0
++    for index in range(len(words)):
++        stop = index + 1
++        last = stop == len(words)
++        if not last:
++            gap = float(words[stop]["start"]) - float(words[index]["end"])
++        if last or _SENTENCE_END.search(str(words[index].get("text", "")).strip()) or gap >= pause_break_seconds:
++            runs.append((start, stop))
++            start = stop
++    # 2) Within a run: break at clause ends when the line has 2+ words,
++    #    else balance the run so no line holds a lone leftover word.
++    spans: List[Tuple[int, int]] = []
++    for run_start, run_stop in runs:
++        cursor = run_start
++        while cursor < run_stop:
++            remaining = run_stop - cursor
++            if remaining <= max_words:
++                spans.append((cursor, run_stop))
++                break
++            # A clause end inside the next max_words words (keeping 2+ per line).
++            cut = None
++            for k in range(cursor + 1, min(cursor + max_words, run_stop - 1)):
++                if _CLAUSE_END.search(str(words[k].get("text", "")).strip()) and k + 1 - cursor >= 2:
++                    cut = k + 1
++            if cut is None:
++                lines = -(-remaining // max_words)
++                cut = cursor + -(-remaining // lines)
++            spans.append((cursor, cut))
++            cursor = cut
++    return spans
+diff --git a/backend/src/media/captions.py b/backend/src/media/captions.py
+index b356888..add39b9 100644
+--- a/backend/src/media/captions.py
++++ b/backend/src/media/captions.py
+@@ -1067,6 +1067,16 @@ def build_assemblyai_ass_subtitles(
+         logger.warning("No words or hook title available for ASS subtitles")
+         return False
+ 
++    from .caption_cleanup import drop_repetition_loops, loop_filter_enabled
++
++    if relevant_words and loop_filter_enabled() and caption_placements is None:
++        # A speech-to-text repetition loop (the same 3+ word phrase back
++        # to back 3+ times over noise) is captioned once, not a dozen
++        # times. Editor renders keep their word grid untouched.
++        relevant_words, looped = drop_repetition_loops(relevant_words)
++        if looped:
++            logger.info("Captions: dropped %d words of a transcription repetition loop", looped)
++
+     if profile_name == ROMANIZE_PROFILE:
+         # Hindi podcast clips burn captions in Roman Hinglish, not the
+         # Devanagari script Whisper returns. The conversion is word by
+@@ -1330,7 +1340,14 @@ def build_assemblyai_ass_subtitles(
+             for start in range(0, len(relevant_words), chunk_size)
+         ]
+     else:
+-        base_spans = split_word_spans_natural(relevant_words, chunk_size)
++        from .caption_cleanup import phrase_split_enabled, split_word_spans_phrase
++
++        if phrase_split_enabled():
++            base_spans = split_word_spans_phrase(
++                relevant_words, chunk_size, CAPTION_PAUSE_BREAK_SECONDS
++            )
++        else:
++            base_spans = split_word_spans_natural(relevant_words, chunk_size)
+     chunk_spans: List[Tuple[int, int, float]] = []
+     for chunk_start, chunk_stop in base_spans:
+         if wrap_lines:
+diff --git a/backend/tests/unit/test_caption_cleanup.py b/backend/tests/unit/test_caption_cleanup.py
+new file mode 100644
+index 0000000..f982142
+--- /dev/null
++++ b/backend/tests/unit/test_caption_cleanup.py
+@@ -0,0 +1,56 @@
++"""Step 5: repetition-loop filter and phrase-split captions (clip1 root cause #6)."""
++from __future__ import annotations
++
++from src.media import caption_cleanup as cc
++
++
++def _words(text: str, step: float = 0.3, gap_after: dict | None = None):
++    out, t = [], 0.0
++    for i, w in enumerate(text.split()):
++        out.append({"text": w, "start": round(t, 3), "end": round(t + step - 0.05, 3)})
++        t += step + (gap_after or {}).get(i, 0.0)
++    return out
++
++
++def test_clip1_loop_is_captioned_once():
++    phrase = "I'm like, I just want to have a war."
++    words = _words("Yes, " + " ".join([phrase] * 6) + " Okay then.")
++    kept, dropped = cc.drop_repetition_loops(words)
++    text = " ".join(w["text"] for w in kept)
++    assert text == "Yes, I'm like, I just want to have a war. Okay then."
++    assert dropped == 9 * 5  # nine-word phrase, five extra repeats
++
++
++def test_real_speech_repeats_are_kept():
++    for text in ("no no no no stop", "go go go", "I said yes, I said yes, okay"):
++        kept, dropped = cc.drop_repetition_loops(_words(text))
++        assert dropped == 0, text
++
++
++def test_phrase_split_never_leaves_an_orphan_word():
++    words = _words("I just want to have a war.")  # 7 words, max 3
++    spans = cc.split_word_spans_phrase(words, 3, 0.6)
++    lines = [" ".join(w["text"] for w in words[a:b]) for a, b in spans]
++    assert all(len(line.split()) >= 2 for line in lines), lines
++    assert lines == ["I just want", "to have", "a war."]
++
++
++def test_phrase_split_breaks_at_commas_and_sentences():
++    words = _words("Yes, I'm like, I just want to win. Okay.")
++    spans = cc.split_word_spans_phrase(words, 3, 0.6)
++    lines = [" ".join(w["text"] for w in words[a:b]) for a, b in spans]
++    assert lines[0] == "Yes, I'm like,"
++    assert "win." in lines[-2] and lines[-1] == "Okay."
++    assert all(not line.endswith(("I", "a", "the", "to")) for line in lines[:-1]), lines
++
++
++def test_phrase_split_breaks_on_long_pause():
++    words = _words("we waited here and then it happened", gap_after={3: 1.0})
++    spans = cc.split_word_spans_phrase(words, 4, 0.6)
++    assert (0, 4) in spans
++
++
++def test_switches_default_off(monkeypatch):
++    monkeypatch.delenv("CAPTION_LOOP_FILTER", raising=False)
++    monkeypatch.delenv("CAPTION_PHRASE_SPLIT", raising=False)
++    assert not cc.loop_filter_enabled() and not cc.phrase_split_enabled()
+diff --git a/tools/phase2/auto_edit.py b/tools/phase2/auto_edit.py
+index 1353c92..e52e94f 100644
+--- a/tools/phase2/auto_edit.py
++++ b/tools/phase2/auto_edit.py
+@@ -132,6 +132,12 @@ async def main_async(a) -> int:
+     })
+     print("keys:", {k: ("present" if keys.get(k) else "not used") for k in STOCK_KEYS + LLM_KEYS}, "| selection model:", a.llm)
+     sys.path.insert(0, str(ROOT / "backend"))
++    # Quality fixes under review (default off in the product until the
++    # owner approves the render, Sanji Q15): the harness renders with them.
++    for _switch, _value in (("EDL_CONTENT_CUTS", "on"), ("FIT_PAD", "ambient"),
++                            ("REFRAME_HIRES_PROBE", "on"), ("CAPTION_LOOP_FILTER", "on"),
++                            ("CAPTION_PHRASE_SPLIT", "on")):
++        os.environ.setdefault(_switch, _value)
+     from src.ai import get_most_relevant_parts_by_transcript
+     from src.auto_director import edl as E
+     from src.media.transcription import get_video_transcript, load_cached_transcript_data
+-- 
+2.56.0.windows.2
+

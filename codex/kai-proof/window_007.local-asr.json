@@ -1,0 +1,63 @@
+{
+  "language": "en",
+  "text": "I got a damn near some of it.",
+  "segments": [
+    {
+      "start": 42.03,
+      "end": 43.23,
+      "text": " I got a damn near some of it.",
+      "no_speech_prob": 0.264404296875,
+      "avg_logprob": -0.5732421974341074,
+      "words": [
+        {
+          "word": " I",
+          "start": 42.03,
+          "end": 42.11,
+          "probability": 0.67041015625
+        },
+        {
+          "word": " got",
+          "start": 42.11,
+          "end": 42.13,
+          "probability": 0.423828125
+        },
+        {
+          "word": " a",
+          "start": 42.13,
+          "end": 42.21,
+          "probability": 0.7314453125
+        },
+        {
+          "word": " damn",
+          "start": 42.21,
+          "end": 42.47,
+          "probability": 0.873046875
+        },
+        {
+          "word": " near",
+          "start": 42.47,
+          "end": 42.69,
+          "probability": 0.8037109375
+        },
+        {
+          "word": " some",
+          "start": 42.69,
+          "end": 42.89,
+          "probability": 0.07012939453125
+        },
+        {
+          "word": " of",
+          "start": 42.89,
+          "end": 43.07,
+          "probability": 0.91552734375
+        },
+        {
+          "word": " it.",
+          "start": 43.07,
+          "end": 43.23,
+          "probability": 0.63818359375
+        }
+      ]
+    }
+  ]
+}

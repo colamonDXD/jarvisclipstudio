@@ -1,0 +1,84 @@
+From 6df5b15858e10aeab8e01fa59d3db82677556458 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 17:03:13 +0530
+Subject: [PATCH 3/4] fix(broll): live evidence runs the SigLIP check like
+ Docker; credit-card concept avoids "terminal"
+
+The owner's first live run filled 4/4 cues with real Pixabay footage; 3 fit
+the words, 1 did not ("credit card payment terminal" -> airport walkway
+tagged "terminal"). Cause: the evidence script did not set
+BROLL_VISION_VETO_ENABLED, which docker-compose sets to true, so the
+relevance check never ran. The script now matches the deployment and
+reports per insert whether the check ran and how many candidates it
+rejected. The credit-card concept no longer searches the ambiguous
+"terminal" and carries an avoid list (airport, escalator, walkway, train).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/auto_director/broll_lexicon.py |  2 +-
+ tools/phase1/broll_live_evidence.py        | 13 ++++++++++---
+ 2 files changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/backend/src/auto_director/broll_lexicon.py b/backend/src/auto_director/broll_lexicon.py
+index 474fffb..53edf99 100644
+--- a/backend/src/auto_director/broll_lexicon.py
++++ b/backend/src/auto_director/broll_lexicon.py
+@@ -48,7 +48,7 @@ investing | finance | investing|investment|investor|portfolio|returns|compound i
+ interest_rate | finance | interest rate|interest rates|federal reserve|rbi|central bank|rate hike | central bank building exterior; interest rate chart on screen | sense=interest:financial
+ bank_fin | finance | bank|banks|banking|bank account|savings account | bank building exterior; atm cash withdrawal | sense=bank:financial ctx=money,account,loan,loans,deposit,savings,credit,interest,cash,pay,paid,salary,transfer,finance,financial
+ loan_debt | finance | loan|loans|debt|mortgage|emi|borrow|borrowing|credit score | signing loan documents; person stressed over bills
+-credit_card | finance | credit card|credit cards|debit card|swipe | credit card payment terminal; paying with credit card
++credit_card | finance | credit card|credit cards|debit card|swipe | paying with credit card; credit card close up in hand; card payment at shop counter | avoid=airport,escalator,walkway,train
+ cash_money | money | money|cash|dollars|rupees|bucks|currency | counting cash money; stack of banknotes | generic avoid=casino,gambling
+ salary | money | salary|paycheck|income|earn|earning|earnings|wages | person receiving salary payment; payday cash in hand | generic
+ budget | money | budget|budgeting|expenses|spending|savings|save money|saving money | budget planning notebook calculator; household budget spreadsheet
+diff --git a/tools/phase1/broll_live_evidence.py b/tools/phase1/broll_live_evidence.py
+index a6d605f..83bf222 100644
+--- a/tools/phase1/broll_live_evidence.py
++++ b/tools/phase1/broll_live_evidence.py
+@@ -60,6 +60,7 @@ def main() -> int:
+     a = ap.parse_args()
+     keys = load_keys(a.env_file)
+     print("keys:", {k: ("present" if keys.get(k) else "MISSING") for k in KEYS})
++    print("SigLIP relevance check: ON (as in the deployed app); first run downloads the open model")
+     if not any(keys.values()):
+         print("No stock key found; nothing to test.")
+         return 2
+@@ -67,6 +68,9 @@ def main() -> int:
+     os.environ.update({k: v for k, v in keys.items() if v})
+     os.environ["TEMP_DIR"] = str(OUT / "temp")          # stock library + cache stay in the dev folder
+     os.environ["BROLL_CADENCE"] = "v3"
++    # Same as the deployed app: docker-compose sets BROLL_VISION_VETO_ENABLED=true
++    # (the SigLIP relevance check). Without it this run would skip the check.
++    os.environ.setdefault("BROLL_VISION_VETO_ENABLED", "true")
+     sys.path.insert(0, str(ROOT / "backend"))
+     sys.path.insert(0, str(ROOT / "tools" / "phase1"))
+ 
+@@ -98,8 +102,10 @@ def main() -> int:
+         ok = render_edl_clip_ffmpeg(src, out, edl)
+         inserts, missing = [], []
+         for i, b in enumerate(edl.get("broll") or []):
++            veto = b.get("vision_veto") or {}
+             item = {"start": b.get("start"), "end": b.get("end"), "spoken": b.get("spoken"), "query": b.get("search_query"),
+-                    "layout": b.get("layout"), "cue_source": b.get("cue_source")}
++                    "layout": b.get("layout"), "cue_source": b.get("cue_source"),
++                    "veto_checked": bool(veto.get("checked")), "veto_rejected": len(veto.get("vetoed") or [])}
+             if b.get("local_path") and Path(str(b["local_path"])).is_file():
+                 t = (float(b["start"]) + float(b["end"])) / 2
+                 frame = OUT / f"{vid}_insert{i}_{t:.1f}s.png"
+@@ -124,9 +130,10 @@ def main() -> int:
+     lines = ["# Live B-roll evidence", ""]
+     for v in report["videos"]:
+         lines += [f"## {v['id']} ({v['niche']}) - inserted {v['inserted']} of {v['planned']}", f"Source: {v['source']}", ""]
+-        lines += ["| time | speaker said | searched | provider | asset | frame |", "|---|---|---|---|---|---|"]
++        lines += ["| time | speaker said | searched | provider | asset | image check | frame |", "|---|---|---|---|---|---|---|"]
+         for i in v["inserts"]:
+-            lines.append(f"| {i['start']}-{i['end']}s | {i['spoken']} | {i['query']} | {i['provider']} | {i['asset_id']} | {i['frame']} |")
++            check = f"ran, rejected {i['veto_rejected']}" if i["veto_checked"] else "did not run"
++            lines.append(f"| {i['start']}-{i['end']}s | {i['spoken']} | {i['query']} | {i['provider']} | {i['asset_id']} | {check} | {i['frame']} |")
+         for m in v["not_inserted"]:
+             lines.append(f"| {m['start']}-{m['end']}s | {m['spoken']} | {m['query']} | NOT INSERTED | {m.get('not_inserted')} | |")
+         lines.append("")
+-- 
+2.56.0.windows.2
+

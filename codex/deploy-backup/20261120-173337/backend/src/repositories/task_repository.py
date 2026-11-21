@@ -1,0 +1,785 @@
+"""
+Task repository - handles all database operations for tasks.
+"""
+
+from .edit_transaction import commit_unless_editing
+from .minute_usage_repository import charged_duration, record_minute_usage, refund_failed_minute_usage
+from sqlalchemy.exc import DBAPIError
+
+
+from uuid import uuid4
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
+from typing import Optional, Dict, Any, List
+from datetime import datetime
+import logging
+import json
+
+logger = logging.getLogger(__name__)
+
+
+class TaskRepository:
+    """Repository for task-related database operations."""
+
+    @staticmethod
+    def _parsed_json(value):
+        if value is None or isinstance(value, dict):
+            return value
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    @staticmethod
+    def _parsed_brief(value):
+        """Stored brief -> normalised v2 dict (v1 rows upgrade at read)."""
+        if value is None:
+            return None
+        try:
+            from ..auto_director.content_requirements import parse_stored_brief
+
+            return parse_stored_brief(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    async def update_brief_report(
+        db: AsyncSession, task_id: str, brief_report: Optional[Dict[str, Any]]
+    ) -> None:
+        """Persist the brief search-outcome report on the task row."""
+        try:
+            async with db.begin_nested():
+                await db.execute(
+                    text(
+                        "UPDATE tasks SET brief_report = :brief_report, "
+                        "updated_at = NOW() WHERE id = :task_id"
+                    ),
+                    {
+                        "task_id": task_id,
+                        "brief_report": (
+                            json.dumps(brief_report) if brief_report is not None else None
+                        ),
+                    },
+                )
+        except DBAPIError as exc:
+            if getattr(exc.orig, "sqlstate", None) != "42703":
+                raise
+            return
+        await commit_unless_editing(db)
+
+    @staticmethod
+    async def update_classification(
+        db: AsyncSession, task_id: str, classification: Optional[Dict[str, Any]]
+    ) -> None:
+        """Persist the auto-niche classification outcome on the task row.
+
+        Mirrors update_brief_report, including the missing-column
+        tolerance: on a database that has not applied the migration
+        yet the write is skipped instead of failing the task.
+        """
+        try:
+            async with db.begin_nested():
+                await db.execute(
+                    text(
+                        "UPDATE tasks SET classification = :classification, "
+                        "updated_at = NOW() WHERE id = :task_id"
+                    ),
+                    {
+                        "task_id": task_id,
+                        "classification": (
+                            json.dumps(classification)
+                            if classification is not None
+                            else None
+                        ),
+                    },
+                )
+        except DBAPIError as exc:
+            if getattr(exc.orig, "sqlstate", None) != "42703":
+                raise
+            return
+        await commit_unless_editing(db)
+
+    @staticmethod
+    async def create_task(
+        db: AsyncSession,
+        user_id: str,
+        source_id: str,
+        status: str = "processing",
+        font_family: Optional[str] = None,
+        font_size: Optional[int] = None,
+        font_color: Optional[str] = None,
+        caption_template: str = "default",
+        include_broll: bool = False,
+        processing_mode: str = "fast",
+        niche_override: Optional[str] = None,
+        music_override: Optional[str] = None,
+        music_mode: Optional[str] = None,
+        template_mode: Optional[str] = None,
+        framing_mode: Optional[str] = None,
+        layout_template: Optional[str] = None,
+        layout_credit: Optional[str] = None,
+        hook_title_enabled: Optional[bool] = None,
+        broll_enabled: Optional[bool] = None,
+        separation_opt_in: bool = False,
+        target_clip_count: Optional[int] = None,
+        creation_mode: Optional[str] = None,
+        manual_ranges_json: Optional[str] = None,
+        source_duration_seconds: Optional[int] = None,
+        charge_minutes: bool = False,
+        content_brief: Optional[str] = None,
+        campaign_id: Optional[str] = None,
+        brand_kit_id: Optional[str] = None,
+        intro_asset: Optional[str] = None,
+        outro_asset: Optional[str] = None,
+    ) -> str:
+        """Create a new task and return its ID."""
+        source_duration_seconds = charged_duration(source_duration_seconds)
+        task_id = str(uuid4())
+        try:
+            result = await db.execute(
+                text("""
+                    INSERT INTO tasks (
+                        id, user_id, source_id, status, font_family, font_size, font_color,
+                        caption_template, include_broll, processing_mode, niche_override,
+                        music_override, music_mode, template_mode, framing_mode, layout_template, layout_credit, hook_title_enabled, broll_enabled, separation_opt_in,
+                        target_clip_count, source_duration_seconds, content_brief, campaign_id,
+                        brand_kit_id, intro_asset, outro_asset, creation_mode, manual_ranges_json,
+                        created_at, updated_at
+                    )
+                    VALUES (
+                        :task_id, :user_id, :source_id, :status, :font_family, :font_size, :font_color,
+                        :caption_template, :include_broll, :processing_mode, :niche_override,
+                        :music_override, :music_mode, :template_mode, :framing_mode, :layout_template, :layout_credit, :hook_title_enabled, :broll_enabled, :separation_opt_in,
+                        :target_clip_count, :source_duration_seconds, :content_brief, :campaign_id,
+                        :brand_kit_id, :intro_asset, :outro_asset, :creation_mode, :manual_ranges_json,
+                        NOW(), NOW()
+                    )
+                    RETURNING id
+                """),
+                {
+                    "task_id": task_id,
+                    "user_id": user_id,
+                    "source_id": source_id,
+                    "status": status,
+                    "font_family": font_family,
+                    "font_size": font_size,
+                    "font_color": font_color,
+                    "caption_template": caption_template,
+                    "include_broll": include_broll,
+                    "processing_mode": processing_mode,
+                    "niche_override": niche_override,
+                    "music_override": music_override,
+                    "music_mode": music_mode,
+                    "template_mode": template_mode,
+                    "framing_mode": framing_mode,
+                    "layout_template": layout_template,
+                    "layout_credit": layout_credit,
+                    "hook_title_enabled": hook_title_enabled,
+                    "broll_enabled": broll_enabled,
+                    "separation_opt_in": separation_opt_in,
+                    "target_clip_count": target_clip_count,
+                    "creation_mode": creation_mode,
+                    "manual_ranges_json": manual_ranges_json,
+                    "source_duration_seconds": source_duration_seconds,
+                    "content_brief": content_brief,
+                    "campaign_id": campaign_id,
+                    "brand_kit_id": brand_kit_id,
+                    "intro_asset": intro_asset,
+                    "outro_asset": outro_asset,
+                },
+            )
+            returned_id = result.scalar()
+            if not returned_id:
+                raise RuntimeError("Failed to create task: no ID returned")
+            if charge_minutes:
+                await record_minute_usage(db, user_id, task_id, source_duration_seconds)
+            # The task and its charge become visible together, before enqueueing.
+            await commit_unless_editing(db)
+        except Exception:
+            await db.rollback()
+            raise
+        logger.info(f"Created task {task_id} for user {user_id}")
+        return str(task_id)
+
+    @staticmethod
+    async def save_source_metadata(db: AsyncSession, task_id: str, metadata: Dict[str, Any]) -> None:
+        try:
+            await db.execute(
+                text("UPDATE tasks SET source_metadata = source_metadata || CAST(:metadata AS JSONB) WHERE id = :task_id"),
+                {"task_id": task_id, "metadata": json.dumps(metadata)},
+            )
+            await commit_unless_editing(db)
+        except BaseException:
+            await db.rollback()
+            raise
+
+    @staticmethod
+    async def load_source_metadata(db: AsyncSession, task_id: str) -> Dict[str, Any]:
+        result = await db.execute(
+            text("SELECT source_metadata FROM tasks WHERE id = :task_id"),
+            {"task_id": task_id},
+        )
+        metadata = result.scalar_one_or_none()
+        return metadata if isinstance(metadata, dict) else {}
+
+    @staticmethod
+    async def find_recent_upload_task(db: AsyncSession, user_id: str, key: str):
+        """In-progress upload task for this request, or one completed in the last 2 minutes."""
+        if not key:
+            return None
+        result = await db.execute(
+            text("""
+                SELECT t.id, t.source_metadata->>'processing_job_id' AS job_id
+                FROM tasks t
+                WHERE t.user_id = :user
+                  AND t.source_metadata->>'upload_request_key' = :key
+                  AND (
+                    t.status IN ('queued', 'processing', 'pending')
+                    OR (t.status = 'completed' AND t.completed_at > NOW() - INTERVAL '2 minutes')
+                  )
+                ORDER BY t.created_at DESC
+                LIMIT 1
+            """),
+            {"user": user_id, "key": key},
+        )
+        return result.first()
+
+    @staticmethod
+    async def get_task_by_id(
+        db: AsyncSession, task_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Get task by ID with source information."""
+        try:
+            async with db.begin_nested():
+                result = await db.execute(
+                    text("""
+                        SELECT t.*, s.title as source_title, s.type as source_type, s.url as source_url
+                        FROM tasks t
+                        LEFT JOIN sources s ON t.source_id = s.id
+                        WHERE t.id = :task_id
+                    """),
+                    {"task_id": task_id},
+                )
+        except DBAPIError as exc:
+            if getattr(exc.orig, "sqlstate", None) != "42703":
+                raise
+            result = await db.execute(
+                text("""
+                    SELECT t.*, s.title as source_title, s.type as source_type
+                    FROM tasks t
+                    LEFT JOIN sources s ON t.source_id = s.id
+                    WHERE t.id = :task_id
+                """),
+                {"task_id": task_id},
+            )
+        row = result.fetchone()
+
+        if not row:
+            return None
+
+        return {
+            "id": row.id,
+            "user_id": row.user_id,
+            "source_id": row.source_id,
+            "source_title": row.source_title,
+            "source_type": row.source_type,
+            "status": row.status,
+            "progress": getattr(row, "progress", None),
+            "progress_message": getattr(row, "progress_message", None),
+            "generated_clips_ids": row.generated_clips_ids,
+            "font_family": row.font_family,
+            "font_size": row.font_size,
+            "font_color": row.font_color,
+            "caption_template": getattr(row, "caption_template", "default"),
+            "include_broll": getattr(row, "include_broll", False),
+            "broll_enabled": getattr(row, "broll_enabled", None),
+            "separation_opt_in": getattr(row, "separation_opt_in", None),
+            "processing_mode": getattr(row, "processing_mode", "fast"),
+            "niche_override": getattr(row, "niche_override", None),
+            "music_override": getattr(row, "music_override", None),
+            "music_mode": getattr(row, "music_mode", None),
+            "template_mode": getattr(row, "template_mode", None),
+            "framing_mode": getattr(row, "framing_mode", None),
+            "layout_template": getattr(row, "layout_template", None),
+            "layout_credit": getattr(row, "layout_credit", None),
+            "hook_title_enabled": getattr(row, "hook_title_enabled", None),
+            "target_clip_count": getattr(row, "target_clip_count", None),
+            "source_duration_seconds": getattr(
+                row, "source_duration_seconds", None
+            ),
+            "content_brief": TaskRepository._parsed_brief(
+                getattr(row, "content_brief", None)
+            ),
+            "brief_report": TaskRepository._parsed_json(
+                getattr(row, "brief_report", None)
+            ),
+            "classification": TaskRepository._parsed_json(
+                getattr(row, "classification", None)
+            ),
+            "campaign_id": getattr(row, "campaign_id", None),
+            "brand_kit_id": getattr(row, "brand_kit_id", None),
+            "intro_asset": getattr(row, "intro_asset", None),
+            "outro_asset": getattr(row, "outro_asset", None),
+            "creation_mode": getattr(row, "creation_mode", None),
+            "manual_ranges_json": getattr(row, "manual_ranges_json", None),
+            "cache_hit": getattr(row, "cache_hit", False),
+            "error_code": getattr(row, "error_code", None),
+            "stage_timings_json": getattr(row, "stage_timings_json", None),
+            "started_at": getattr(row, "started_at", None),
+            "completed_at": getattr(row, "completed_at", None),
+            "completion_notification_sent_at": getattr(
+                row, "completion_notification_sent_at", None
+            ),
+            "source_url": getattr(row, "source_url", None),
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+
+    @staticmethod
+    async def update_task_runtime_metadata(
+        db: AsyncSession,
+        task_id: str,
+        cache_hit: Optional[bool] = None,
+        error_code: Optional[str] = None,
+        stage_timings_json: Optional[str] = None,
+        started_at: Optional[datetime] = None,
+        completed_at: Optional[datetime] = None,
+    ) -> None:
+        params: Dict[str, Any] = {"task_id": task_id}
+        set_parts = []
+
+        if cache_hit is not None:
+            set_parts.append("cache_hit = :cache_hit")
+            params["cache_hit"] = cache_hit
+
+        if error_code is not None:
+            set_parts.append("error_code = :error_code")
+            params["error_code"] = error_code
+
+        if stage_timings_json is not None:
+            set_parts.append("stage_timings_json = :stage_timings_json")
+            params["stage_timings_json"] = stage_timings_json
+
+        if started_at is not None:
+            set_parts.append("started_at = :started_at")
+            params["started_at"] = started_at
+
+        if completed_at is not None:
+            set_parts.append("completed_at = :completed_at")
+            params["completed_at"] = completed_at
+
+        if not set_parts:
+            return
+
+        set_parts.append("updated_at = NOW()")
+        query = f"UPDATE tasks SET {', '.join(set_parts)} WHERE id = :task_id"
+        await db.execute(text(query), params)
+        await commit_unless_editing(db)
+
+    @staticmethod
+    async def get_performance_metrics(db: AsyncSession) -> Dict[str, Any]:
+        result = await db.execute(
+            text(
+                """
+                SELECT
+                    processing_mode,
+                    COUNT(*) AS total_tasks,
+                    AVG(EXTRACT(EPOCH FROM (completed_at - started_at))) AS avg_seconds,
+                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - started_at))) AS p50_seconds,
+                    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - started_at))) AS p95_seconds,
+                    SUM(CASE WHEN cache_hit THEN 1 ELSE 0 END) AS cache_hits
+                FROM tasks
+                WHERE started_at IS NOT NULL AND completed_at IS NOT NULL
+                GROUP BY processing_mode
+                ORDER BY processing_mode
+                """
+            )
+        )
+
+        rows = result.fetchall()
+        metrics = []
+        for row in rows:
+            total = int(row.total_tasks or 0)
+            cache_hits = int(row.cache_hits or 0)
+            metrics.append(
+                {
+                    "processing_mode": row.processing_mode,
+                    "total_tasks": total,
+                    "avg_seconds": float(row.avg_seconds or 0),
+                    "p50_seconds": float(row.p50_seconds or 0),
+                    "p95_seconds": float(row.p95_seconds or 0),
+                    "cache_hit_rate": (cache_hits / total) if total else 0,
+                }
+            )
+
+        return {"modes": metrics}
+
+    @staticmethod
+    async def update_task_settings(
+        db: AsyncSession,
+        task_id: str,
+        font_family: Optional[str],
+        font_size: Optional[int],
+        font_color: Optional[str],
+        caption_template: str,
+        include_broll: bool,
+    ) -> None:
+        """Update task styling settings."""
+        try:
+            async with db.begin_nested():
+                await db.execute(
+                    text(
+                        """
+                        UPDATE tasks
+                        SET font_family = :font_family,
+                            font_size = :font_size,
+                            font_color = :font_color,
+                            caption_template = :caption_template,
+                            include_broll = :include_broll,
+                            updated_at = NOW()
+                        WHERE id = :task_id
+                        """
+                    ),
+                    {
+                        "task_id": task_id,
+                        "font_family": font_family,
+                        "font_size": font_size,
+                        "font_color": font_color,
+                        "caption_template": caption_template,
+                        "include_broll": include_broll,
+                    },
+                )
+        except DBAPIError as exc:
+            if getattr(exc.orig, "sqlstate", None) != "42703":
+                raise
+            await db.execute(
+                text(
+                    """
+                    UPDATE tasks
+                    SET font_family = :font_family,
+                        font_size = :font_size,
+                        font_color = :font_color,
+                        updated_at = NOW()
+                    WHERE id = :task_id
+                    """
+                ),
+                {
+                    "task_id": task_id,
+                    "font_family": font_family,
+                    "font_size": font_size,
+                    "font_color": font_color,
+                },
+            )
+        await commit_unless_editing(db)
+
+    @staticmethod
+    async def update_task_status(
+        db: AsyncSession,
+        task_id: str,
+        status: str,
+        progress: Optional[int] = None,
+        progress_message: Optional[str] = None,
+        expected_statuses: Optional[List[str]] = None,
+    ) -> bool:
+        """Update task status and optional progress."""
+        params = {
+            "task_id": task_id,
+            "status": status,
+            "progress": progress,
+            "progress_message": progress_message,
+        }
+
+        # Build dynamic query based on what's provided
+        set_parts = ["status = :status"]
+
+        if progress is not None:
+            set_parts.append("progress = :progress")
+
+        if progress_message is not None:
+            set_parts.append("progress_message = :progress_message")
+
+        set_parts.append("updated_at = NOW()")
+
+        query = f"UPDATE tasks SET {', '.join(set_parts)} WHERE id = :task_id"
+
+        if expected_statuses is not None:
+            query += " AND status = ANY(:expected_statuses)"
+            params["expected_statuses"] = expected_statuses
+        try:
+            result = await db.execute(text(query), params)
+            changed = result.rowcount != 0
+            if changed and status in {"error", "failed", "cancelled", "canceled"}:
+                await refund_failed_minute_usage(db, task_id)
+            # Publish the terminal state and its refund together. A failed or
+            # stale status update must never refund another attempt's charge.
+            await commit_unless_editing(db)
+        except Exception:
+            await db.rollback()
+            raise
+        if not changed:
+            return False
+        logger.info(
+            f"Updated task {task_id} status to {status}"
+            + (f" (progress: {progress}%)" if progress else "")
+        )
+        return True
+
+    @staticmethod
+    async def update_task_clips(
+        db: AsyncSession, task_id: str, clip_ids: List[str]
+    ) -> None:
+        """Update task with generated clip IDs."""
+        await db.execute(
+            text(
+                "UPDATE tasks SET generated_clips_ids = :clip_ids, updated_at = NOW() WHERE id = :task_id"
+            ),
+            {"clip_ids": clip_ids, "task_id": task_id},
+        )
+        await commit_unless_editing(db)
+        logger.info(f"Updated task {task_id} with {len(clip_ids)} clips")
+
+    @staticmethod
+    async def list_tasks_by_statuses(
+        db: AsyncSession, statuses: List[str], limit: int = 500
+    ) -> List[Dict[str, Any]]:
+        """Lightweight task rows for lifecycle sweeps (no joins, no clips)."""
+        result = await db.execute(
+            text("""
+                SELECT id, user_id, status, created_at, updated_at
+                FROM tasks
+                WHERE status = ANY(:statuses)
+                ORDER BY created_at ASC
+                LIMIT :limit
+            """),
+            {"statuses": statuses, "limit": limit},
+        )
+        return [
+            {
+                "id": row.id,
+                "user_id": row.user_id,
+                "status": row.status,
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+            }
+            for row in result.fetchall()
+        ]
+
+    @staticmethod
+    async def get_user_tasks(
+        db: AsyncSession, user_id: str, limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """Get all tasks for a user."""
+        result = await db.execute(
+            text("""
+                SELECT t.*, s.title as source_title, s.type as source_type, s.url as source_url,
+                       (SELECT COUNT(*) FROM generated_clips WHERE task_id = t.id) as clips_count,
+                       (SELECT MAX(virality_score) FROM generated_clips WHERE task_id = t.id) as top_virality_score,
+                       (SELECT id FROM generated_clips WHERE task_id = t.id
+                        ORDER BY virality_score DESC NULLS LAST, clip_order ASC LIMIT 1) as cover_clip_id
+                FROM tasks t
+                LEFT JOIN sources s ON t.source_id = s.id
+                WHERE t.user_id = :user_id
+                ORDER BY t.created_at DESC
+                LIMIT :limit
+            """),
+            {"user_id": user_id, "limit": limit},
+        )
+
+        tasks = []
+        for row in result.fetchall():
+            tasks.append(
+                {
+                    "id": row.id,
+                    "user_id": row.user_id,
+                    "source_id": row.source_id,
+                    "source_title": row.source_title,
+                    "source_type": row.source_type,
+                    "status": row.status,
+                    "processing_mode": getattr(row, "processing_mode", "fast"),
+                    "niche_override": getattr(row, "niche_override", None),
+                    "music_override": getattr(row, "music_override", None),
+                    "music_mode": getattr(row, "music_mode", None),
+                    "template_mode": getattr(row, "template_mode", None),
+                    "framing_mode": getattr(row, "framing_mode", None),
+                    "layout_template": getattr(row, "layout_template", None),
+                    "layout_credit": getattr(row, "layout_credit", None),
+                    "hook_title_enabled": getattr(row, "hook_title_enabled", None),
+                    "broll_enabled": getattr(row, "broll_enabled", None),
+                    "separation_opt_in": getattr(
+                        row, "separation_opt_in", None
+                    ),
+                    "target_clip_count": getattr(row, "target_clip_count", None),
+                    "source_duration_seconds": getattr(
+                        row, "source_duration_seconds", None
+                    ),
+                    "content_brief": TaskRepository._parsed_brief(
+                        getattr(row, "content_brief", None)
+                    ),
+                    "brief_report": TaskRepository._parsed_json(
+                        getattr(row, "brief_report", None)
+                    ),
+                    "classification": TaskRepository._parsed_json(
+                        getattr(row, "classification", None)
+                    ),
+                    "campaign_id": getattr(row, "campaign_id", None),
+                    "creation_mode": getattr(row, "creation_mode", None),
+                    "completion_notification_sent_at": getattr(
+                        row, "completion_notification_sent_at", None
+                    ),
+                    "clips_count": row.clips_count,
+                    "source_url": row.source_url,
+                    "top_virality_score": row.top_virality_score,
+                    "cover_clip_id": row.cover_clip_id,
+                    "created_at": row.created_at,
+                    "updated_at": row.updated_at,
+                }
+            )
+
+        return tasks
+
+    @staticmethod
+    async def enable_sharing(
+        db: AsyncSession, task_id: str, share_token: str
+    ) -> Optional[str]:
+        """Enable public sharing and return the token.
+
+        The token is stable while sharing stays enabled (repeat calls keep the
+        same URL), but rotates when re-enabling after a revoke so previously
+        leaked links stay dead.
+        """
+        result = await db.execute(
+            text(
+                """
+                UPDATE tasks
+                SET share_token = CASE
+                        WHEN share_enabled THEN COALESCE(share_token, :share_token)
+                        ELSE :share_token
+                    END,
+                    share_enabled = TRUE,
+                    updated_at = NOW()
+                WHERE id = :task_id
+                RETURNING share_token
+                """
+            ),
+            {"task_id": task_id, "share_token": share_token},
+        )
+        await commit_unless_editing(db)
+        row = result.fetchone()
+        return str(row.share_token) if row else None
+
+    @staticmethod
+    async def disable_sharing(db: AsyncSession, task_id: str) -> bool:
+        """Disable an existing share URL without changing private task access."""
+        result = await db.execute(
+            text(
+                """
+                UPDATE tasks
+                SET share_enabled = FALSE,
+                    updated_at = NOW()
+                WHERE id = :task_id
+                RETURNING id
+                """
+            ),
+            {"task_id": task_id},
+        )
+        await commit_unless_editing(db)
+        return result.fetchone() is not None
+
+    @staticmethod
+    async def get_shared_task_id(
+        db: AsyncSession, share_token: str
+    ) -> Optional[str]:
+        """Resolve an enabled opaque share token to its task ID."""
+        result = await db.execute(
+            text(
+                """
+                SELECT id
+                FROM tasks
+                WHERE share_token = :share_token
+                  AND share_enabled = TRUE
+                  AND status = 'completed'
+                LIMIT 1
+                """
+            ),
+            {"share_token": share_token},
+        )
+        row = result.fetchone()
+        return str(row.id) if row else None
+
+    @staticmethod
+    async def user_exists(db: AsyncSession, user_id: str) -> bool:
+        """Check if a user exists in the database."""
+        result = await db.execute(
+            text("SELECT 1 FROM users WHERE id = :user_id"), {"user_id": user_id}
+        )
+        return result.fetchone() is not None
+
+    @staticmethod
+    async def delete_task(db: AsyncSession, task_id: str) -> None:
+        """Delete a task by ID."""
+        await db.execute(
+            text("DELETE FROM tasks WHERE id = :task_id"), {"task_id": task_id}
+        )
+        await commit_unless_editing(db)
+        logger.info(f"Deleted task {task_id}")
+
+    @staticmethod
+    async def get_task_notification_context(
+        db: AsyncSession, task_id: str
+    ) -> Optional[Dict[str, Any]]:
+        result = await db.execute(
+            text(
+                """
+                SELECT
+                    t.id,
+                    u.notify_on_completion,
+                    t.completion_notification_sent_at,
+                    s.title AS source_title,
+                    u.email AS user_email,
+                    u.name AS user_name,
+                    u.first_name AS user_first_name
+                FROM tasks t
+                JOIN users u ON u.id = t.user_id
+                LEFT JOIN sources s ON s.id = t.source_id
+                WHERE t.id = :task_id
+                """
+            ),
+            {"task_id": task_id},
+        )
+        row = result.fetchone()
+        if not row:
+            return None
+
+        return {
+            "task_id": row.id,
+            "notify_on_completion": getattr(row, "notify_on_completion", False),
+            "completion_notification_sent_at": getattr(
+                row, "completion_notification_sent_at", None
+            ),
+            "source_title": getattr(row, "source_title", None),
+            "user_email": getattr(row, "user_email", None),
+            "user_name": getattr(row, "user_name", None),
+            "user_first_name": getattr(row, "user_first_name", None),
+        }
+
+    @staticmethod
+    async def mark_completion_notification_sent(
+        db: AsyncSession, task_id: str
+    ) -> bool:
+        result = await db.execute(
+            text(
+                """
+                UPDATE tasks
+                SET completion_notification_sent_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = :task_id
+                  AND completion_notification_sent_at IS NULL
+                RETURNING completion_notification_sent_at
+                """
+            ),
+            {"task_id": task_id},
+        )
+        await commit_unless_editing(db)
+        return result.fetchone() is not None

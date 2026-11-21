@@ -1,0 +1,163 @@
+{
+ "live": [
+  {
+   "provider": "groq",
+   "cost": "free-tier",
+   "site": "https://console.groq.com",
+   "card_required": false,
+   "limits": "free tier has per-minute and per-day request/token limits that change; check console.groq.com/settings/limits",
+   "env": {
+    "GROQ_API_KEY": "present"
+   },
+   "key_check": "OK",
+   "latency": 0.39,
+   "models_configured": [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b"
+   ],
+   "models_missing_from_provider": [],
+   "verdict": "OK",
+   "inference": "OK",
+   "inference_latency": 0.28,
+   "inference_model": "openai/gpt-oss-120b",
+   "rate_limit_headers": {
+    "x-ratelimit-limit-requests": "1000",
+    "x-ratelimit-limit-tokens": "8000",
+    "x-ratelimit-remaining-requests": "999",
+    "x-ratelimit-remaining-tokens": "7917",
+    "x-ratelimit-reset-requests": "1m26.4s",
+    "x-ratelimit-reset-tokens": "622ms"
+   }
+  },
+  {
+   "provider": "nvidia",
+   "cost": "free-credits",
+   "site": "https://build.nvidia.com",
+   "card_required": false,
+   "limits": "NIM trial access is rate-limited (requests per minute) and may need NVIDIA Developer Program signup",
+   "env": {
+    "NVIDIA_API_KEY": "present"
+   },
+   "key_check": "OK",
+   "latency": 0.09,
+   "models_configured": [
+    "nvidia/nemotron-3-ultra-550b-a55b",
+    "nvidia/nemotron-3-ultra-550b-a55b",
+    "nvidia/nemotron-3.5-super-vl-120b-a12b",
+    "z-ai/glm-5.3-flash",
+    "moonshotai/kimi-k2.6",
+    "mistralai/mistral-large-4-1t-a52b",
+    "qwen/qwen3-235b-a22b",
+    "meta/llama-4-maverick-17b-128e-instruct",
+    "deepseek-ai/deepseek-v4-pro"
+   ],
+   "models_missing_from_provider": [
+    "moonshotai/kimi-k2.6",
+    "qwen/qwen3-235b-a22b",
+    "meta/llama-4-maverick-17b-128e-instruct",
+    "deepseek-ai/deepseek-v4-pro"
+   ],
+   "closest_listed_models": {
+    "moonshotai/kimi-k2.6": [
+     "moonshotai/kimi-k3.1-pro"
+    ],
+    "qwen/qwen3-235b-a22b": [],
+    "meta/llama-4-maverick-17b-128e-instruct": [
+     "nvidia/llama-3.1-nemoguard-8b-topic-control",
+     "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
+     "nvidia/llama-3.2-nemoretriever-1b-vlm-embed-v1",
+     "nvidia/llama-3.2-nv-embedqa-1b-v1"
+    ],
+    "deepseek-ai/deepseek-v4-pro": []
+   },
+   "verdict": "MODEL_NOT_LISTED",
+   "inference": "OK",
+   "inference_latency": 0.5,
+   "inference_model": "nvidia/nemotron-3-ultra-550b-a55b"
+  },
+  {
+   "provider": "openrouter",
+   "cost": "free-only-with-:free-slugs",
+   "site": "https://openrouter.ai",
+   "card_required": false,
+   "limits": "free (:free) models: low daily request cap unless credits were ever bought; verify at openrouter.ai/settings/credits",
+   "env": {
+    "OPENROUTER_API_KEY": "present"
+   },
+   "key_check": "OK",
+   "latency": 0.96,
+   "models_configured": [
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free"
+   ],
+   "models_missing_from_provider": [],
+   "verdict": "OK",
+   "inference": "OK",
+   "inference_latency": 0.81,
+   "inference_model": "nvidia/nemotron-3-ultra-550b-a55b:free"
+  },
+  {
+   "provider": "deepseek",
+   "cost": "METERED",
+   "site": "https://platform.deepseek.com",
+   "card_required": false,
+   "limits": "pay-as-you-go balance; requests fail with 402 when the balance is 0",
+   "env": {
+    "DEEPSEEK_API_KEY": "present"
+   },
+   "key_check": "OK",
+   "latency": 0.2,
+   "models_configured": [
+    "deepseek-v4-pro"
+   ],
+   "models_missing_from_provider": [],
+   "verdict": "OK",
+   "inference": "SKIPPED (metered; pass --allow-metered)"
+  },
+  {
+   "provider": "cloudflare",
+   "cost": "free-allocation",
+   "site": "https://dash.cloudflare.com",
+   "card_required": false,
+   "limits": "Workers AI free allocation is 10,000 Neurons/day on the Workers Free plan",
+   "env": {
+    "CLOUDFLARE_API_KEY": "present",
+    "CLOUDFLARE_ACCOUNT_ID": "present"
+   },
+   "verified_via": "account",
+   "key_check": "OK",
+   "latency": 0.44,
+   "verdict": "OK",
+   "inference": "OK",
+   "inference_latency": 0.81
+  },
+  {
+   "provider": "huggingface",
+   "cost": "free",
+   "site": "https://huggingface.co",
+   "card_required": false,
+   "limits": "needed only for gated models (e.g. pyannote terms click)",
+   "env": {
+    "HF_TOKEN": "present"
+   },
+   "key_check": "OK",
+   "latency": 0.28,
+   "verdict": "OK"
+  },
+  {
+   "provider": "ollama",
+   "cost": "local-free",
+   "site": "https://ollama.com",
+   "card_required": false,
+   "limits": "runs on your GPU/CPU; qwen3:8b needs ~5-6 GB",
+   "env": {},
+   "server": "OK",
+   "models_found": 4,
+   "qwen3_8b": true,
+   "verdict": "OK",
+   "detail": ""
+  }
+ ]
+}

@@ -1,0 +1,36 @@
+From 48dd1e9e0167f05dac7fcd510f4f7752ada0e8a1 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 17:07:40 +0530
+Subject: [PATCH 4/4] docs(phase1): record live B-roll evidence (4/4 relevant
+ with the image check on)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/phase1/BROLL_V3.md | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/docs/phase1/BROLL_V3.md b/docs/phase1/BROLL_V3.md
+index 93c30cb..ac32e94 100644
+--- a/docs/phase1/BROLL_V3.md
++++ b/docs/phase1/BROLL_V3.md
+@@ -83,3 +83,17 @@ The NVENC probe (`media/ffmpeg.py` `check_nvenc_realistic`) passes `-filter_comp
+ removed. On such a build the probe fails and every render silently falls back to the CPU encoder. Production renders pass
+ the graph inline and are unaffected. Fix: pass the probe graph inline; `tests/unit/fake_ffmpeg_shim.py` and
+ `test_nvenc_probe_realistic.py` key on the option and need updating with it. Check which FFmpeg the Docker image ships.
++
++## LIVE evidence (owner-run, real Pixabay/Coverr, 2026-11-17)
++Run 1 (`live_run1_noveto`): SigLIP check OFF by mistake (script did not set `BROLL_VISION_VETO_ENABLED`, which Docker sets).
++4/4 cues filled; 3 relevant, 1 wrong ("credit card payment terminal" -> airport walkway tagged "terminal").
++Run 2 (`live`, after 6df5b15): SigLIP check ON, as deployed. 4/4 cues filled, check ran on all 4.
++| Speaker said | Searched | Pixabay asset | Shot (checked by eye) | Verdict |
++|---|---|---|---|---|
++| "market" | stock market chart screen | 166289 | 3D red bar chart | relevant |
++| "stock market" | stock market trading screen | 259819 | phone with candlestick chart, UP/DOWN | relevant |
++| "claude" (AI talk) | artificial intelligence digital brain | 176794 | neon circuit brain | relevant |
++| "credit cards" | paying with credit card | 304598 | rows of chip cards, one glowing (PiP, face visible) | relevant |
++Result: 4/4 relevant on real footage. Renders 1080x1920, 40 s, H.264 + AAC. Licence: Pixabay Content License.
++Limits: small sample (4 cues, 3 videos); keyless planning (no AI concepts); the check rejected 0 candidates, so its
++rejection path was not exercised in this run (it was calibrated separately: 100 pairs, 1 miss, 6 false vetoes).
+-- 
+2.56.0.windows.2
+

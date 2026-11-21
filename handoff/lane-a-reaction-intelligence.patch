@@ -1,0 +1,3497 @@
+diff --git a/.gitignore b/.gitignore
+index 6cd6785..840b754 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -28,3 +28,6 @@ docs/youtube-provider-registry*.json
+ 
+ _samples/
+ .env
++
++# local test media (never commit)
++test-footage/
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 264d8f4..a5ee94d 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,6 +4,13 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ 
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
++## 2026-11-17
++- **Improved:** Streamer reaction picking now also reads what the streamer says — exclamations like "no, no, no", "what!" or "bro" in English, Spanish and romanised Hindi — and checks the facecam mouth so in-game character dialogue is less likely to be mistaken for the streamer. Words alone never make a clip: they must line up with a facecam or voice reaction.
++- **Fixed:** The second NVIDIA fallback for AI clip selection pointed at DeepSeek V4.1 Flash, which NVIDIA has retired (a live check on 17 November got "gone"), so that fallback step always failed. It now uses Nemotron 3.5 Super, which the same check confirmed working on the free NVIDIA tier. The fallback order is unchanged and no paid model was added.
++- **New:** Streamer reaction clips now come with a hook title that describes what actually happened (for example a streamer laughing at a sudden on-screen blast, never an invented event), clip windows that start on a pause and end after the reaction has died down, caption timing and placement notes that follow the reaction and keep clear of the facecam, and editing suggestions (facecam panel, a gentle punch-in on the reaction, trimming dead time). The suggestions are advisory data for the renderer.
++- **New:** Streamer videos now get their best moments from the streamer's reaction, not just the loudest or most explosive stretch. The picker listens for a raised, shouting or laughing voice (ignoring explosions and engine noise), watches the facecam, and matches each reaction to the on-screen event that caused it. A reaction to something that just happened ranks highest, a funny moment with no visible trigger comes next, and a game event the streamer ignored is no longer picked. Each clip keeps the trigger and the full reaction, and explains why. Set `REACTION_SIGNALS=0` to switch the reaction hints off.
++- **Improved:** Gameplay and other no-speech videos now get their best moments from what happens on screen, not just from the loudest sound. The picker watches for several visible changes at once — flashes, banners, on-screen events, sustained movement, screen shake — keeps the build-up before the action and ends after the payoff, and explains each pick. A loud sound with nothing visible happening (like a distant explosion) no longer outranks a real moment. Set `FRAME_EVIDENCE_SELECTION=0` to switch back to the older sound-and-scene-cut picker.
++
+ ## 2026-11-16
+ - **Fixed:** The hook title and the captions still chose their height clip by clip, so across the clips of one task the title could sit at the top in one clip and lower down in the next, and the captions rode at a different height in every clip. Both heights are now chosen once for the whole task, worked out from every clip's framing together so the shared heights keep text off faces in all of them, and every clip of the task is rendered with those same heights. A clip whose own framing cannot use the shared height places its text the way it did before and notes the difference in its render report. Re-rendering or regenerating a clip reuses the task's saved heights, so its text lands exactly where the original render put it. Tasks created before this change have no saved heights and render exactly as they did. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Improved:** Finance and study clips can now use a "mistake-fix" hook title — one that names the mistake the speaker themselves warns about ("Stop spending your whole salary in the first week"), instead of a general problem or curiosity title. The style is strict about honesty: the title is built only from the warning's own words, so it can never name a mistake the speaker did not raise, and it is only used when the clip also delivers the fix in its first third — a clip that raises a mistake but holds the answer back, or delivers it late, keeps the existing title styles instead. It is available for finance and education clips as a candidate style being tested; the title style those clips use by default is unchanged. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+diff --git a/backend/src/auto_director/edit_recommendations.py b/backend/src/auto_director/edit_recommendations.py
+new file mode 100644
+index 0000000..45dab6b
+--- /dev/null
++++ b/backend/src/auto_director/edit_recommendations.py
+@@ -0,0 +1,173 @@
++"""Editing recommendations for reaction clips, emitted as DATA for the renderer.
++
++This lane decides WHAT should happen; the render lane (Lane B) decides HOW.
++Every recommendation carries a confidence and the evidence it rests on, and the
++whole block is advisory: a renderer may ignore any item.
++
++Document contract (``moment["edit_recommendations"]``), times are clip-relative
++seconds:
++
++{
++  "schema_version": 1,
++  "framing": {"mode": "auto|fit|crop", "layout": "stacked_reactor|pip_preserved|full",
++              "facecam_roi": [x, y, w, h] | null, "reason": str, "confidence": 0-1},
++  "zooms":   [{"start": s, "end": s, "target": "facecam|gameplay", "from_scale": 1.0,
++               "to_scale": 1.12, "ease": "out_cubic", "reason": str}],
++  "pacing":  {"trim_dead_time": [{"start": s, "end": s, "reason": str}],
++              "speed": [{"start": s, "end": s, "rate": 0.6, "reason": str}],
++              "open_on": "reaction|trigger", "reason": str},
++  "sfx_cues": [{"at": s, "kind": "impact|riser", "requires_library": true, "reason": str}]
++}
++"""
++
++from __future__ import annotations
++
++from typing import Any, Optional, Sequence
++
++SCHEMA_VERSION = 1
++_MAX_ZOOM = 1.15
++
++
++def _clip_time(value: Optional[float], window_start: float) -> Optional[float]:
++    return None if value is None else round(max(0.0, float(value) - window_start), 2)
++
++
++def recommend_framing(
++    facecam_roi: Optional[tuple[float, float, float, float]], mtype: str, kind: str
++) -> dict[str, Any]:
++    if facecam_roi is None:
++        return {"mode": "fit", "layout": "full", "facecam_roi": None, "confidence": 0.5,
++                "reason": "no facecam found: keep the full game frame so HUD stays readable"}
++    reaction_led = mtype in ("reaction_to_event", "commentary_reaction")
++    # Layout names follow the Lane A amendment (stacked reactor / PiP-preserved
++    # / full): stacked_reactor = reactor pane on top, gameplay pane below.
++    layout = "stacked_reactor" if reaction_led else "pip_preserved"
++    return {
++        "mode": "fit", "layout": layout, "facecam_roi": [round(v, 3) for v in facecam_roi],
++        "confidence": 0.8 if reaction_led else 0.6,
++        "reason": ("the reaction is the point of the clip: give the facecam its own panel "
++                   "above the game" if reaction_led else
++                   "game-led clip: keep the facecam as a small inset"),
++    }
++
++
++def recommend_zooms(
++    moment: dict[str, Any], window_start: float, window_len: float,
++    facecam_roi: Optional[tuple[float, float, float, float]],
++) -> list[dict[str, Any]]:
++    ev = moment.get("evidence") or {}
++    zooms: list[dict[str, Any]] = []
++    r0, r1 = ev.get("reaction_start_sec"), ev.get("reaction_end_sec")
++    if r0 is None or r1 is None:
++        return zooms
++    a = _clip_time(r0, window_start) or 0.0
++    b = min(window_len, _clip_time(r1, window_start) or 0.0)
++    kind = ev.get("reaction_kind")
++    if b - a >= 0.8:
++        strong = kind in ("shout", "laughter")
++        zooms.append({
++            "start": round(a - 0.15 if a >= 0.15 else a, 2), "end": round(min(window_len, b + 0.4), 2),
++            "target": "facecam" if facecam_roi else "gameplay",
++            "from_scale": 1.0, "to_scale": 1.12 if strong else 1.07, "ease": "out_cubic",
++            "reason": "punch in as the reaction starts, hold through it, release after the payoff"})
++    game = ev.get("game_event")
++    if game:
++        g = _clip_time(game["start_sec"], window_start)
++        if g is not None and g + 0.6 < (a or window_len):
++            zooms.append({
++                "start": g, "end": round(min(window_len, g + 0.9), 2), "target": "gameplay",
++                "from_scale": 1.0, "to_scale": 1.06, "ease": "out_cubic",
++                "reason": "small push on the on-screen trigger so viewers see what the streamer reacts to"})
++    for z in zooms:
++        z["to_scale"] = min(z["to_scale"], _MAX_ZOOM)
++    return zooms
++
++
++def recommend_pacing(
++    moment: dict[str, Any], window_start: float, window_len: float,
++    strength: Optional[Sequence[float]] = None, words: Optional[Sequence[dict[str, Any]]] = None,
++) -> dict[str, Any]:
++    ev = moment.get("evidence") or {}
++    game = ev.get("game_event")
++    r0 = ev.get("reaction_start_sec")
++    pacing: dict[str, Any] = {"trim_dead_time": [], "speed": [], "open_on": "trigger",
++                              "reason": "show the trigger first so the reaction has a cause"}
++    if not game:
++        pacing["open_on"] = "reaction"
++        pacing["reason"] = "no visible trigger: open directly on the reaction"
++    elif r0 is not None and r0 - game["end_sec"] > 4.0:
++        pacing["open_on"] = "reaction"
++        pacing["reason"] = "long gap between trigger and reaction: cold-open on the reaction"
++    # Dead time: stretches of >= 2.5 s with no speech and no reaction/event.
++    if strength is not None and window_len > 6:
++        quiet_start: Optional[int] = None
++        lo, hi = int(window_start), int(window_start + window_len)
++        for t in range(lo, hi + 1):
++            quiet = (t >= len(strength) or strength[t] <= 0)
++            if words:
++                quiet = quiet and not any(float(w["start"]) <= t + 1 and float(w["end"]) >= t for w in words)
++            if game and game["start_sec"] - 1 <= t <= game["end_sec"] + 1:
++                quiet = False
++            if quiet and quiet_start is None:
++                quiet_start = t
++            if (not quiet or t == hi) and quiet_start is not None:
++                if t - quiet_start >= 3:
++                    pacing["trim_dead_time"].append({
++                        "start": round(quiet_start - window_start + 0.4, 2),
++                        "end": round(t - window_start - 0.4, 2),
++                        "reason": "silence with nothing happening on screen"})
++                quiet_start = None
++    if game and ev.get("game_event", {}).get("type") in ("screen_flash_banner", "erratic_motion"):
++        g = _clip_time(game["start_sec"], window_start)
++        if g is not None and r0 is not None and r0 - game["start_sec"] >= 0.8:
++            pacing["speed"].append({
++                "start": g, "end": round(g + 0.8, 2), "rate": 0.6,
++                "reason": "brief slow-down on the trigger before the reaction lands"})
++    return pacing
++
++
++def recommend_sfx(moment: dict[str, Any], window_start: float) -> list[dict[str, Any]]:
++    """Cues only; the app's SFX library ships empty, so every cue says so."""
++    ev = moment.get("evidence") or {}
++    game = ev.get("game_event")
++    if not game:
++        return []
++    return [{"at": _clip_time(game["start_sec"], window_start), "kind": "impact",
++             "requires_library": True, "reason": "accent the on-screen trigger"}]
++
++
++def recommend_edits(
++    moment: dict[str, Any], window_start: float, window_end: float, *,
++    facecam_roi: Optional[tuple[float, float, float, float]] = None,
++    strength: Optional[Sequence[float]] = None,
++    words: Optional[Sequence[dict[str, Any]]] = None,
++) -> dict[str, Any]:
++    ev = moment.get("evidence") or {}
++    mtype = ev.get("moment_type", "")
++    window_len = max(0.0, window_end - window_start)
++    return {
++        "schema_version": SCHEMA_VERSION,
++        "framing": recommend_framing(facecam_roi, mtype, ev.get("reaction_kind", "")),
++        "zooms": recommend_zooms(moment, window_start, window_len, facecam_roi),
++        "pacing": recommend_pacing(moment, window_start, window_len, strength, words),
++        "sfx_cues": recommend_sfx(moment, window_start),
++    }
++
++
++def attach_recommendations(
++    moments: list[dict[str, Any]], *,
++    facecam_roi: Optional[tuple[float, float, float, float]] = None,
++    strength: Optional[Sequence[float]] = None,
++    words: Optional[Sequence[dict[str, Any]]] = None,
++) -> list[dict[str, Any]]:
++    def sec(label: str) -> float:
++        m, x = label.split(":")
++        return int(m) * 60 + int(x)
++
++    for m in moments:
++        if "moment_type" not in (m.get("evidence") or {}):
++            continue
++        m["edit_recommendations"] = recommend_edits(
++            m, sec(m["start_time"]), sec(m["end_time"]),
++            facecam_roi=facecam_roi, strength=strength, words=words)
++    return moments
+diff --git a/backend/src/auto_director/gameplay_moments.py b/backend/src/auto_director/gameplay_moments.py
+new file mode 100644
+index 0000000..418f427
+--- /dev/null
++++ b/backend/src/auto_director/gameplay_moments.py
+@@ -0,0 +1,490 @@
++"""Evidence-fusion moment detection for sources with no usable transcript.
++
++``visual_moments.select_visual_moments`` ranks audio peaks and scene cuts.
++For gameplay that fails in a known way: the loudest sound in a recording is
++often NOT its best moment (a distant explosion, a menu sting), while the real
++moments are mostly quiet changes on screen — a kill feed line appearing, a
++damage flash, a banner, a character tumbling, screen shake.
++
++This module reads the pictures. It samples the video at low resolution and
++measures six game-agnostic signals per second:
++
++* ``motion``   — mean frame-to-frame change
++* ``local``    — change concentrated in a few screen cells (HUD, objects)
++* ``tint``     — whole-frame colour shift (damage / flash / fade)
++* ``shake``    — oscillating global image shift
++* ``text``     — change in edge density of the upper-centre band (banners)
++* ``novelty``  — change versus two seconds ago (things that appear and stay)
++
++Each is turned into a robust z-score against its own local baseline, so a
++game with constant camera motion and a game with a static camera are judged
++against themselves. A second is "eventful" only when SEVERAL signals agree.
++Eventful stretches become episodes; episodes close together become one
++connected sequence. Audio then SUPPORTS an episode (a reaction, an impact) but
++can never create a top-ranked one: an audio-only burst is kept only as a
++low-scored last resort.
++
++Nothing here names a game, a weapon or an event the pixels cannot show. Event
++types are patterns of evidence, e.g. ``hud_event_streak`` ("repeated
++on-screen HUD events with impact flashes"), never "kill".
++"""
++
++from __future__ import annotations
++
++import logging
++import subprocess
++from dataclasses import dataclass, field
++from pathlib import Path
++from typing import Any, Iterator, Optional
++
++import numpy as np
++
++logger = logging.getLogger(__name__)
++
++SAMPLE_FPS = 8
++FRAME_W, FRAME_H = 160, 90
++_GRID_X, _GRID_Y = 8, 6
++FEATURES = ("motion", "local", "tint", "shake", "text", "novelty", "pursuit")
++# Absolute floors for the robust scale, so a perfectly still baseline can
++# not turn noise into a huge z-score.
++_SCALE_FLOOR = {
++    "motion": 0.35, "local": 0.8, "tint": 0.8,
++    "shake": 0.12, "text": 0.004, "novelty": 0.6, "pursuit": 1.0,
++}
++_WEIGHT = {
++    "motion": 1.0, "local": 1.0, "tint": 1.2,
++    "shake": 1.0, "text": 1.2, "novelty": 0.8, "pursuit": 1.0,
++}
++_BASELINE_HALF_WINDOW_SEC = 45
++_ACTIVE_Z = 3.0            # a feature "agrees" above this z
++_MIN_AGREEING = 2          # features that must agree in one second
++_STRONG_SINGLE_Z = 9.0     # ...or one feature this far out
++_PERSIST_Z = 6.0          # one signal this far out...
++_PERSIST_SEC = 4          # ...for this many seconds in a row is an event
++_GAP_MERGE_SEC = 3         # eventful seconds this close are one episode
++_SEQUENCE_MERGE_SEC = 8    # episodes this close are one connected sequence
++_MIN_EPISODE_SEC = 2
++_AUDIO_ONLY_SCORE_CAP = 35.0
++
++
++@dataclass
++class Episode:
++    start: float
++    end: float
++    peak: float
++    strength: float
++    features: dict[str, float]
++    audio_support: float = 0.0
++    escalation: float = 0.0
++    parts: int = 1
++    event_type: str = "visual_change"
++    reason: str = ""
++    score: float = 0.0
++    extra: dict[str, Any] = field(default_factory=dict)
++
++
++# --------------------------------------------------------------------------
++# Frame evidence extraction
++# --------------------------------------------------------------------------
++
++def _stream_frames(video_path: Path | str) -> Iterator[np.ndarray]:
++    """Yield RGB uint8 frames (H, W, 3) at SAMPLE_FPS from ffmpeg."""
++    cmd = [
++        "ffmpeg", "-v", "error", "-i", str(video_path), "-an",
++        "-vf", f"fps={SAMPLE_FPS},scale={FRAME_W}:{FRAME_H}:flags=area,format=rgb24",
++        "-f", "rawvideo", "-",
++    ]
++    size = FRAME_W * FRAME_H * 3
++    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
++    try:
++        assert proc.stdout is not None
++        while True:
++            buf = proc.stdout.read(size)
++            if len(buf) < size:
++                break
++            yield np.frombuffer(buf, dtype=np.uint8).reshape(FRAME_H, FRAME_W, 3)
++    finally:
++        if proc.stdout:
++            proc.stdout.close()
++        proc.kill()
++        proc.wait()
++
++
++def _global_shift(prev: np.ndarray, cur: np.ndarray) -> tuple[float, float]:
++    """Sub-pixel global translation between two gray frames."""
++    import cv2
++
++    (dx, dy), _ = cv2.phaseCorrelate(prev.astype(np.float32), cur.astype(np.float32))
++    return float(dx), float(dy)
++
++
++def _edge_density(gray: np.ndarray) -> float:
++    gx = np.abs(np.diff(gray, axis=1)).mean()
++    gy = np.abs(np.diff(gray, axis=0)).mean()
++    return float(gx + gy) / 255.0
++
++
++def extract_frame_evidence(
++    video_path: Path | str,
++    mask_roi: Optional[tuple[float, float, float, float]] = None,
++) -> dict[str, np.ndarray]:
++    """Per-second raw feature series for a video.
++
++    ``mask_roi`` is a normalised (x, y, w, h) rectangle — a streamer's
++    facecam — that is flattened before measuring, so the streamer moving or
++    laughing is not mistaken for something happening in the game.
++
++    Returns ``{feature: array[seconds]}`` plus ``"duration"`` (seconds).
++    Streaming: memory stays flat for hour-long sources.
++    """
++    import cv2  # noqa: F401  (fail early if OpenCV is missing)
++
++    per_sec: dict[str, list[list[float]]] = {f: [] for f in FEATURES}
++    bucket: dict[str, list[float]] = {f: [] for f in FEATURES}
++    shifts_x: list[float] = []
++    history: list[np.ndarray] = []  # gray frames, ring of SAMPLE_FPS*2
++    prev_gray: Optional[np.ndarray] = None
++    tint_hist: list[np.ndarray] = []
++    band_prev: Optional[float] = None
++    cell_h, cell_w = FRAME_H // _GRID_Y, FRAME_W // _GRID_X
++    n = 0
++
++    def flush() -> None:
++        for f in FEATURES:
++            vals = bucket[f]
++            if f == "shake":
++                # Oscillation: movement back and forth within the second.
++                if len(shifts_x) >= 3:
++                    sx = np.array(shifts_x)
++                    flips = int(np.sum(np.sign(sx[1:]) * np.sign(sx[:-1]) < 0))
++                    amp = float(np.mean(np.abs(sx)))
++                    per_sec[f].append([amp * (1.0 + flips)])
++                else:
++                    per_sec[f].append([0.0])
++            elif vals:
++                agg = float(np.max(vals)) if f in ("local", "tint", "text", "novelty") else float(np.mean(vals))  # pursuit/motion: mean = sustained
++                per_sec[f].append([agg])
++            else:
++                per_sec[f].append([0.0])
++            bucket[f] = []
++        shifts_x.clear()
++
++    mask = None
++    if mask_roi is not None:
++        mx, my, mw, mh = mask_roi
++        mask = (int(my * FRAME_H), int((my + mh) * FRAME_H) + 1,
++                int(mx * FRAME_W), int((mx + mw) * FRAME_W) + 1)
++    for frame in _stream_frames(video_path):
++        if mask is not None:
++            frame = frame.copy()
++            frame[mask[0]:mask[1], mask[2]:mask[3]] = 128
++        gray = frame.astype(np.float32).mean(axis=2)
++        mean_rgb = frame.reshape(-1, 3).mean(axis=0)
++        history.append(gray)
++        if len(history) > SAMPLE_FPS * 2 + 1:
++            history.pop(0)
++        tint_hist.append(mean_rgb)
++        if len(tint_hist) > SAMPLE_FPS * 6:
++            tint_hist.pop(0)
++        if prev_gray is not None:
++            diff = np.abs(gray - prev_gray)
++            bucket["motion"].append(float(diff.mean()))
++            cells = diff[: _GRID_Y * cell_h, : _GRID_X * cell_w].reshape(
++                _GRID_Y, cell_h, _GRID_X, cell_w).mean(axis=(1, 3)).ravel()
++            bucket["local"].append(float(np.percentile(cells, 90) - np.median(cells)))
++            bucket["pursuit"].append(float(cells.max() - np.median(cells)))
++            dx, _dy = _global_shift(prev_gray, gray)
++            shifts_x.append(dx)
++        # Tint: shift of the mean colour versus the 6-second median.
++        if len(tint_hist) >= SAMPLE_FPS:
++            ref = np.median(np.stack(tint_hist[:-1]), axis=0)
++            bucket["tint"].append(float(np.abs(mean_rgb - ref).sum()))
++        # Text/banner band: edge density of the upper-centre region.
++        band = gray[int(FRAME_H * 0.12): int(FRAME_H * 0.42), int(FRAME_W * 0.12): int(FRAME_W * 0.88)]
++        density = _edge_density(band)
++        if band_prev is not None:
++            bucket["text"].append(abs(density - band_prev))
++        band_prev = density
++        # Novelty: change versus ~2 s ago.
++        if len(history) > SAMPLE_FPS * 2:
++            bucket["novelty"].append(float(np.abs(gray - history[0]).mean()))
++        prev_gray = gray
++        n += 1
++        if n % SAMPLE_FPS == 0:
++            flush()
++    if n % SAMPLE_FPS:
++        flush()
++
++    out = {f: np.array([row[0] for row in per_sec[f]], dtype=np.float64) for f in FEATURES}
++    length = min((len(v) for v in out.values()), default=0)
++    out = {f: v[:length] for f, v in out.items()}
++    out["duration"] = np.array([float(n) / SAMPLE_FPS])
++    return out
++
++
++# --------------------------------------------------------------------------
++# Fusion
++# --------------------------------------------------------------------------
++
++def _robust_z(series: np.ndarray, floor: float, rel: float = 0.25) -> np.ndarray:
++    """z-score against a LOCAL robust baseline (median / MAD)."""
++    n = len(series)
++    z = np.zeros(n)
++    half = _BASELINE_HALF_WINDOW_SEC
++    for i in range(n):
++        window = series[max(0, i - half): i + half + 1]
++        med = float(np.median(window))
++        mad = float(np.median(np.abs(window - med))) * 1.4826
++        scale = max(mad, floor, rel * abs(med))
++        z[i] = (series[i] - med) / scale
++    return np.clip(z, -2.0, 12.0)
++
++
++def audio_support_series(beat_grid: Optional[dict[str, Any]], seconds: int) -> np.ndarray:
++    """Per-second audio z-score (peak level above local median). Zeros when
++    there is no audio evidence."""
++    curve = (beat_grid or {}).get("energy_curve") or {}
++    levels = curve.get("levels_db") or []
++    hop = float(curve.get("hop_sec") or 0.05)
++    if len(levels) < 3 or seconds <= 0:
++        return np.zeros(seconds)
++    per_block = max(1, int(round(1.0 / hop)))
++    arr = np.array(levels, dtype=np.float64)
++    blocks = [float(arr[i: i + per_block].max()) for i in range(0, len(arr), per_block)]
++    series = np.array(blocks[:seconds] + [min(blocks)] * max(0, seconds - len(blocks)))
++    return _robust_z(series, 2.0)
++
++
++def fuse_evidence(
++    evidence: dict[str, np.ndarray], audio_z: Optional[np.ndarray] = None
++) -> tuple[np.ndarray, dict[str, np.ndarray]]:
++    """(per-second eventfulness, per-feature z). Eventfulness is the sum of
++    weighted agreeing-feature z's, zero unless enough features agree."""
++    zs = {f: _robust_z(evidence[f], _SCALE_FLOOR[f]) for f in FEATURES}
++    n = min(len(v) for v in zs.values()) if zs else 0
++    event = np.zeros(n)
++    for i in range(n):
++        active = [f for f in FEATURES if zs[f][i] >= _ACTIVE_Z]
++        top = max((zs[f][i] for f in FEATURES), default=0.0)
++        if len(active) >= _MIN_AGREEING or top >= _STRONG_SINGLE_Z:
++            event[i] = sum(_WEIGHT[f] * (zs[f][i] - _ACTIVE_Z + 1.0) for f in active)
++    # A single signal that stays far out for several seconds in a row is an
++    # event too (a character tumbling is one continuous signal, not a flash).
++    for f in FEATURES:
++        run = 0
++        for i in range(n + 1):
++            if i < n and zs[f][i] >= _PERSIST_Z:
++                run += 1
++                continue
++            if run >= _PERSIST_SEC:
++                for j in range(i - run, i):
++                    event[j] = max(event[j], _WEIGHT[f] * (zs[f][j] - _ACTIVE_Z + 1.0))
++            run = 0
++    return event, zs
++
++
++def _classify(ep_feats: dict[str, float], parts: int, duration: float, escalation: float) -> tuple[str, str]:
++    """Event type and a reason fragment, from evidence patterns only."""
++    f = ep_feats
++    if f.get("shake", 0) >= 4 and duration >= 5:
++        return "sustained_escalation", (
++            "sustained intense stretch with screen shake and repeated on-screen changes")
++    if f.get("tint", 0) >= 8 and f.get("text", 0) >= 3:
++        return "screen_flash_banner", (
++            "full-screen colour flash followed by a large on-screen banner")
++    if f.get("pursuit", 0) >= 6 and f.get("text", 0) < 3:
++        return "erratic_motion", (
++            "sustained, erratic movement of an on-screen subject")
++    if f.get("local", 0) >= 5 and (parts >= 2 or f.get("text", 0) >= 3):
++        return "hud_event_streak", (
++            "repeated on-screen HUD events with impact flashes")
++    if f.get("motion", 0) >= 3 or f.get("novelty", 0) >= 3:
++        return "erratic_motion", (
++            "sudden erratic movement of an on-screen subject")
++    return "visual_change", "a distinct on-screen change"
++
++
++def find_episodes(
++    event: np.ndarray, zs: dict[str, np.ndarray], audio_z: Optional[np.ndarray] = None
++) -> list[Episode]:
++    n = len(event)
++    active_secs = [i for i in range(n) if event[i] > 0]
++    groups: list[list[int]] = []
++    for i in active_secs:
++        if groups and i - groups[-1][-1] <= _GAP_MERGE_SEC:
++            groups[-1].append(i)
++        else:
++            groups.append([i])
++    episodes: list[Episode] = []
++    for g in groups:
++        if g[-1] - g[0] + 1 < _MIN_EPISODE_SEC:
++            continue
++        start, end = float(g[0]), float(g[-1] + 1)
++        seg = event[g[0]: g[-1] + 1]
++        peak = float(g[0] + int(np.argmax(seg)))
++        feats = {f: float(np.max(zs[f][g[0]: g[-1] + 1])) for f in FEATURES}
++        # Escalation: later half stronger than the earlier half = build-up
++        # to a payoff rather than a one-off spike.
++        half = max(1, len(seg) // 2)
++        esc = float(seg[half:].mean() - seg[:half].mean()) if len(seg) >= 4 else 0.0
++        support = 0.0
++        if audio_z is not None and len(audio_z):
++            lo, hi = max(0, g[0] - 1), min(len(audio_z), g[-1] + 3)
++            support = float(max(0.0, np.max(audio_z[lo:hi]))) if hi > lo else 0.0
++        strength = float(seg.sum())
++        episodes.append(Episode(
++            start=start, end=end, peak=peak, strength=strength, features=feats,
++            audio_support=support, escalation=esc,
++        ))
++    # Connect close episodes into one sequence (a story, not fragments).
++    merged: list[Episode] = []
++    for ep in episodes:
++        if merged and ep.start - merged[-1].end <= _SEQUENCE_MERGE_SEC:
++            prev = merged[-1]
++            prev.end = ep.end
++            prev.strength += ep.strength
++            prev.parts += 1
++            if ep.strength > 0 and ep.peak:
++                prev.peak = ep.peak if ep.strength >= prev.strength / prev.parts else prev.peak
++            prev.features = {f: max(prev.features[f], ep.features[f]) for f in FEATURES}
++            prev.audio_support = max(prev.audio_support, ep.audio_support)
++            prev.escalation = max(prev.escalation, ep.escalation)
++        else:
++            merged.append(ep)
++    for ep in merged:
++        dur = ep.end - ep.start
++        ep.event_type, frag = _classify(ep.features, ep.parts, dur, ep.escalation)
++        agree = sorted((f for f in FEATURES if ep.features[f] >= _ACTIVE_Z),
++                       key=lambda f: -ep.features[f])
++        audio_txt = (
++            f"; audio reaction supports it (+{ep.audio_support:.1f}σ)" if ep.audio_support >= 2.5
++            else "; no distinct audio reaction")
++        ep.reason = (
++            f"{frag} between {_mmss(ep.start)} and {_mmss(ep.end)} "
++            f"(visual signals agreeing: {', '.join(agree)}{audio_txt})")
++        base = min(100.0, 40.0 + 6.0 * np.sqrt(max(ep.strength, 0.0)))
++        base += min(10.0, 2.5 * max(0.0, ep.escalation) / max(1.0, dur / 4))
++        base += min(8.0, 2.0 * min(ep.audio_support, 4.0))
++        base += min(6.0, 3.0 * (ep.parts - 1))
++        ep.score = float(min(98.0, base))
++    return merged
++
++
++def _mmss(seconds: float) -> str:
++    total = max(0, int(round(seconds)))
++    return f"{total // 60:02d}:{total % 60:02d}"
++
++
++# --------------------------------------------------------------------------
++# Window shaping and selection
++# --------------------------------------------------------------------------
++
++def shape_window(
++    ep: Episode, duration: float, clip_seconds: float, event: np.ndarray
++) -> tuple[float, float, float, float]:
++    """(start, end, lead, tail): lead-in a viewer needs, end on the payoff.
++
++    Lead is a quarter of the action (3–6 s) so the build-up is visible; tail
++    runs to where the eventfulness settles, plus a beat. The window is never
++    shorter than 12 s or longer than 1.6x the target clip length; when the
++    action is longer than that, the window centres on its peak.
++    """
++    action = ep.end - ep.start
++    lead = float(min(6.0, max(3.0, 0.25 * action)))
++    tail = 2.5
++    start, end = ep.start - lead, ep.end + tail
++    max_len = max(clip_seconds * 1.6, 20.0)
++    min_len = min(12.0, duration)
++    if end - start > max_len:
++        start = max(ep.peak - 0.6 * max_len, ep.start - lead)
++        end = start + max_len
++    if end - start < min_len:
++        extra = min_len - (end - start)
++        start -= extra * 0.4
++        end += extra * 0.6
++    start = max(0.0, start)
++    end = min(duration, end)
++    if end - start < min_len:
++        start = max(0.0, end - min_len)
++    return start, end, max(0.0, ep.start - start), max(0.0, end - ep.end)
++
++
++def select_gameplay_moments(
++    video_path: Path | str,
++    duration: float,
++    *,
++    target_count: int,
++    clip_seconds: float,
++    beat_grid: Optional[dict[str, Any]] = None,
++    evidence: Optional[dict[str, np.ndarray]] = None,
++    reason_context: str = "no usable transcript",
++) -> list[dict[str, Any]]:
++    """Pick up to ``target_count`` moments from fused visual + audio evidence.
++
++    Returns segments in the pipeline's shape, each with a reason grounded in
++    the measured evidence and an ``evidence`` block (signals, lead/tail,
++    event type, confidence). Returns [] when the frames cannot be read, so the
++    caller falls back to the audio/scene-cut selector.
++    """
++    duration = float(duration or 0)
++    if duration <= 0 or target_count <= 0:
++        return []
++    try:
++        if evidence is None:
++            evidence = extract_frame_evidence(video_path)
++        seconds = len(evidence["motion"])
++        if seconds < 5:
++            return []
++        audio_z = audio_support_series(beat_grid, seconds)
++        event, zs = fuse_evidence(evidence, audio_z)
++        episodes = find_episodes(event, zs, audio_z)
++    except Exception:
++        logger.warning("Frame-evidence detection failed for %s", video_path, exc_info=True)
++        return []
++
++    clip_seconds = max(1.0, min(float(clip_seconds or 30), duration))
++    moments: list[dict[str, Any]] = []
++    accepted: list[tuple[float, float]] = []
++    for ep in sorted(episodes, key=lambda e: -e.score):
++        start, end, lead, tail = shape_window(ep, duration, clip_seconds, event)
++        if any(min(end, b) - max(start, a) > 0.25 * (end - start) for a, b in accepted):
++            continue
++        accepted.append((start, end))
++        agree = [f for f in FEATURES if ep.features[f] >= _ACTIVE_Z]
++        confidence = float(min(0.95, 0.35 + 0.1 * len(agree) + 0.05 * min(ep.parts, 3)))
++        score = ep.score
++        moments.append({
++            "start_time": _mmss(start),
++            "end_time": _mmss(end),
++            "text": "",
++            "relevance_score": round(min(0.95, score / 100.0), 2),
++            "reasoning": (
++                f"Visual selection ({reason_context}): {ep.reason}; window "
++                f"{_mmss(start)}–{_mmss(end)} keeps {lead:.0f}s of lead-in and "
++                f"{tail:.0f}s after the payoff."),
++            "virality_score": int(round(score)),
++            "hook_score": int(round(score * 0.9)),
++            "engagement_score": int(round(score * 0.7)),
++            "value_score": 0,
++            "shareability_score": int(round(score * 0.6)),
++            "hook_type": ep.event_type,
++            "hook_title": None,
++            "evidence": {
++                "event_type": ep.event_type,
++                "signals": {f: round(ep.features[f], 1) for f in FEATURES},
++                "agreeing_signals": agree,
++                "audio_support_sigma": round(ep.audio_support, 1),
++                "parts": ep.parts,
++                "action_start_sec": round(ep.start, 1),
++                "action_end_sec": round(ep.end, 1),
++                "peak_sec": round(ep.peak, 1),
++                "lead_in_sec": round(lead, 1),
++                "tail_sec": round(tail, 1),
++                "confidence": round(confidence, 2),
++                "detector": "frame_evidence_v1",
++            },
++        })
++        if len(moments) >= target_count:
++            break
++    moments.sort(key=lambda m: m["start_time"])
++    return moments
+diff --git a/backend/src/auto_director/reaction_hooks.py b/backend/src/auto_director/reaction_hooks.py
+new file mode 100644
+index 0000000..a579162
+--- /dev/null
++++ b/backend/src/auto_director/reaction_hooks.py
+@@ -0,0 +1,268 @@
++"""GA2 for reaction clips: grounded hooks, payoff-aware boundaries, caption sync.
++
++Everything here is derived from MEASURED evidence on a moment (the
++``evidence`` block written by ``reaction_moments``) and, when available, the
++transcript's word timings. Nothing names a game, a weapon or an event the
++pictures and sound did not show; a hook never claims more than the evidence
++supports ("a sudden on-screen blast", not "a car explodes").
++
++Pure functions, no I/O: the pipeline and the tests call them directly.
++"""
++
++from __future__ import annotations
++
++import re
++import zlib
++from typing import Any, Optional, Sequence
++
++_TRIGGER_PHRASE = {
++    "screen_flash_banner": "a sudden on-screen blast",
++    "hud_event_streak": "a burst of on-screen action",
++    "erratic_motion": "everything going wildly wrong",
++    "sustained_escalation": "an intense on-screen sequence",
++    "visual_change": "something unexpected on screen",
++}
++_EVENT_HOOKS = {
++    "laughter": ("Streamer loses it laughing at {t}", "Streamer can't stop laughing at {t}",
++                 "Streamer cracks up over {t}"),
++    "shout": ("Streamer screams at {t}", "Streamer erupts after {t}", "Streamer panics at {t}"),
++    "vocal_burst": ("Streamer reacts loudly to {t}", "Streamer can't believe {t}",
++                    "Streamer is stunned by {t}"),
++}
++_COMMENTARY_HOOKS = {
++    "laughter": ("Streamer bursts out laughing mid-stream", "Streamer completely loses it laughing",
++                 "Streamer cracks up out of nowhere"),
++    "shout": ("Streamer suddenly erupts mid-commentary", "Streamer's wild outburst out of nowhere",
++              "Streamer goes off unexpectedly"),
++    "vocal_burst": ("Streamer's unexpected outburst", "Streamer blurts out something unexpected",
++                    "Streamer reacts out of nowhere"),
++}
++_SILENT_HOOKS = ("Streamer's silent reaction says it all", "Streamer goes quiet at the worst moment")
++
++_PROFANITY = re.compile(r"\b(fuck\w*|shit\w*|bitch\w*|asshole|damn|crap|dick)\b", re.I)
++
++
++def mask_profanity(text: str, mode: str = "mask") -> str:
++    """User-configurable profanity handling: keep | mask | drop."""
++    if mode == "keep":
++        return text
++    if mode == "drop":
++        return re.sub(r"\s{2,}", " ", _PROFANITY.sub("", text)).strip()
++    return _PROFANITY.sub(lambda m: m.group(0)[0] + "*" * (len(m.group(0)) - 1), text)
++
++
++def _pick(options: Sequence[str], seed: str) -> str:
++    return options[zlib.crc32(seed.encode()) % len(options)]
++
++
++def reaction_hook_title(moment: dict[str, Any]) -> Optional[str]:
++    """A 3–9 word third-person hook grounded in the moment's evidence, or None
++    when the moment is a plain gameplay pick (those keep their own hooks)."""
++    ev = moment.get("evidence") or {}
++    mtype = ev.get("moment_type")
++    if mtype is None:
++        return None
++    kind = ev.get("reaction_kind") or "vocal_burst"
++    seed = f"{moment.get('start_time')}{mtype}{kind}"
++    if mtype == "reaction_to_event":
++        game = ev.get("game_event") or {}
++        trigger = _TRIGGER_PHRASE.get(game.get("type"), _TRIGGER_PHRASE["visual_change"])
++        title = _pick(_EVENT_HOOKS.get(kind, _EVENT_HOOKS["vocal_burst"]), seed).format(t=trigger)
++    elif mtype == "commentary_reaction":
++        title = _pick(_COMMENTARY_HOOKS.get(kind, _COMMENTARY_HOOKS["vocal_burst"]), seed)
++    elif mtype == "silent_facecam":
++        title = _pick(_SILENT_HOOKS, seed)
++    else:
++        return None
++    return title if 3 <= len(title.split()) <= 9 else " ".join(title.split()[:9])
++
++
++def reaction_quote(words: Sequence[dict[str, Any]], start: float, end: float,
++                   profanity: str = "mask", max_words: int = 6) -> Optional[str]:
++    """The streamer's own words at the reaction (verbatim, never rewritten).
++    Returns None when nobody spoke intelligibly there."""
++    spoken = [w for w in words if start - 0.2 <= float(w["start"]) <= end + 0.2]
++    if len(spoken) < 2:
++        return None  # a lone word ("Come", "Get") is a fragment, not a quote
++    # Centre the quote on the most exclamatory word (a '!' or a known
++    # reaction word); otherwise start at the reaction's first word.
++    from .reaction_moments import _EXCLAIM
++
++    def strength(w: dict[str, Any]) -> int:
++        raw = str(w["text"])
++        core = re.sub(r"[^\w']", "", raw).lower()
++        return 2 * ("!" in raw) + (1 if core and _EXCLAIM.match(core) else 0)
++
++    best = max(range(len(spoken)), key=lambda i: (strength(spoken[i]), -i))
++    lo = max(0, min(best - 2, len(spoken) - max_words))
++    chosen = spoken[lo:lo + max_words]
++    text = " ".join(str(w["text"]) for w in chosen).strip()
++    if len(text.replace(" ", "")) < 5:
++        return None
++    return mask_profanity(text, profanity) or None
++
++
++# --------------------------------------------------------------------------
++# Boundaries
++# --------------------------------------------------------------------------
++
++def refine_window(
++    start: float,
++    end: float,
++    reaction_start: float,
++    reaction_end: float,
++    duration: float,
++    words: Optional[Sequence[dict[str, Any]]] = None,
++    strength: Optional[Sequence[float]] = None,
++) -> tuple[float, float, list[str]]:
++    """Snap a window to speech boundaries and finish on the payoff.
++
++    * never starts or ends inside a spoken word;
++    * starts on a pause (>= 0.3 s gap) found within 2.5 s before ``start``;
++    * ends after the reaction has really died down: it extends while the
++      reaction-strength series is still active (up to 4 s) and then past the
++      last word that begins within a second of that point;
++    * always keeps >= 2 s after the reaction ends.
++    Returns (start, end, notes) — notes name every adjustment made.
++    """
++    notes: list[str] = []
++    s, e = start, end
++    if strength is not None and len(strength):
++        t = int(reaction_end)
++        extra = 0
++        while extra < 4 and t + extra < len(strength) and strength[t + extra] > 0:
++            extra += 1
++        if extra and reaction_end + extra + 1.5 > e:
++            e = reaction_end + extra + 1.5
++            notes.append(f"extended end {extra}s: reaction still active")
++    if e < reaction_end + 2.0:
++        e = reaction_end + 2.0
++        notes.append("kept 2s of payoff after the reaction")
++    if words:
++        ws = [(float(w["start"]), float(w["end"])) for w in words]
++        for ws_, we_ in ws:
++            if ws_ < s < we_:
++                s = ws_
++                notes.append("moved start to the start of the word it cut")
++                break
++        else:
++            gaps = [ws[i + 1][0] for i in range(len(ws) - 1)
++                    if ws[i + 1][0] - ws[i][1] >= 0.3 and s - 2.5 <= ws[i + 1][0] <= s]
++            if gaps:
++                s = max(gaps)
++                notes.append("started on a pause between sentences")
++        for ws_, we_ in ws:
++            if ws_ < e < we_:
++                e = we_ + 0.25
++                notes.append("moved end past the word it cut")
++                break
++    return max(0.0, s), min(float(duration), e), notes
++
++
++# --------------------------------------------------------------------------
++# Caption synchronisation
++# --------------------------------------------------------------------------
++
++def caption_plan(
++    moment: dict[str, Any],
++    window_start: float,
++    words: Optional[Sequence[dict[str, Any]]] = None,
++    facecam_roi: Optional[tuple[float, float, float, float]] = None,
++    profanity: str = "mask",
++) -> dict[str, Any]:
++    """Caption timing/placement data for the renderer (times are clip-relative).
++
++    * emphasis spans sit on the REACTION (measured voice onset), not on the
++      loudest game sound;
++    * an on-screen-event cue is aligned to when the event appears on screen;
++    * placement keeps captions off the facecam rectangle.
++    Words are never altered except for the user's profanity setting.
++    """
++    ev = moment.get("evidence") or {}
++    r0 = ev.get("reaction_start_sec")
++    r1 = ev.get("reaction_end_sec")
++    plan: dict[str, Any] = {"profanity_mode": profanity, "emphasis": [], "event_cue": None,
++                            "words_modified": profanity != "keep"}
++    if r0 is not None and r1 is not None:
++        plan["emphasis"] = [{
++            "start": round(max(0.0, r0 - window_start), 2),
++            "end": round(max(0.0, r1 - window_start), 2),
++            "style": "laugh" if ev.get("reaction_kind") == "laughter" else "shout",
++            "reason": "measured reaction span",
++        }]
++        if words:
++            plan["emphasis_words"] = [
++                {"text": mask_profanity(str(w["text"]), profanity),
++                 "start": round(float(w["start"]) - window_start, 2),
++                 "end": round(float(w["end"]) - window_start, 2)}
++                for w in words if r0 - 0.2 <= float(w["start"]) <= r1 + 0.2]
++    game = ev.get("game_event")
++    if game:
++        plan["event_cue"] = {"at": round(max(0.0, game["start_sec"] - window_start), 2),
++                             "align_to": "event_start", "not_audio_peak": True}
++    from .edit_recommendations import recommend_framing
++
++    layout = recommend_framing(facecam_roi, ev.get("moment_type", ""), ev.get("reaction_kind", ""))["layout"]
++    plan["position"] = caption_position(facecam_roi, layout)
++    return plan
++
++
++def caption_position(roi: Optional[tuple[float, float, float, float]],
++                     layout: Optional[str] = None) -> dict[str, Any]:
++    """Where captions should sit, in the app's own caption presets
++    (``clip_edits.CAPTION_POSITIONS``: top / middle / bottom).
++
++    * stacked_reactor: on the seam between the reactor pane and the gameplay
++      pane (the renderer knows where its seam is; ``middle`` is the fallback);
++    * pip_preserved: the half of the frame away from the facecam inset;
++    * full / no facecam: the app's default bottom band.
++    """
++    if roi is None or layout == "full":
++        return {"anchor": "frame", "preset": "bottom", "avoid": ["hud"],
++                "reason": "no facecam pane: the app's default caption band"}
++    x, y, w, h = roi
++    roi_out = [round(v, 3) for v in roi]
++    if layout == "stacked_reactor":
++        return {"anchor": "pane_seam", "preset": "middle", "avoid": ["facecam", "hud"],
++                "facecam_roi": roi_out,
++                "reason": "two-pane layout: captions sit on the seam between reactor and gameplay"}
++    centre_y = y + h / 2
++    return {"anchor": "frame", "preset": "top" if centre_y > 0.5 else "bottom",
++            "avoid": ["facecam"], "facecam_roi": roi_out,
++            "reason": "keep captions on the half of the frame away from the facecam inset"}
++
++
++def apply_ga2(
++    moments: list[dict[str, Any]],
++    duration: float,
++    *,
++    words: Optional[Sequence[dict[str, Any]]] = None,
++    strength: Optional[Sequence[float]] = None,
++    facecam_roi: Optional[tuple[float, float, float, float]] = None,
++    profanity: str = "mask",
++) -> list[dict[str, Any]]:
++    """Fill hook, refined boundaries and caption plan on reaction moments."""
++    from .gameplay_moments import _mmss
++
++    def sec(label: str) -> float:
++        m, x = label.split(":")
++        return int(m) * 60 + int(x)
++
++    for m in moments:
++        ev = m.get("evidence") or {}
++        if "moment_type" not in ev:
++            continue
++        s, e, notes = refine_window(
++            sec(m["start_time"]), sec(m["end_time"]),
++            ev["reaction_start_sec"], ev["reaction_end_sec"], duration, words, strength)
++        m["start_time"], m["end_time"] = _mmss(s), _mmss(e)
++        ev["boundary_notes"] = notes
++        title = reaction_hook_title(m)
++        if title and not m.get("hook_title"):
++            m["hook_title"] = title
++        if words:
++            q = reaction_quote(words, ev["reaction_start_sec"], ev["reaction_end_sec"], profanity)
++            if q:
++                ev["hook_quote"] = q
++        m["caption_plan"] = caption_plan(m, s, words, facecam_roi, profanity)
++    return moments
+diff --git a/backend/src/auto_director/reaction_moments.py b/backend/src/auto_director/reaction_moments.py
+new file mode 100644
+index 0000000..c827052
+--- /dev/null
++++ b/backend/src/auto_director/reaction_moments.py
+@@ -0,0 +1,716 @@
++"""Streamer-reaction moment detection: what the streamer DOES about the game.
++
++For a streamer VOD the clip is rarely the loudest or most explosive stretch.
++It is the moment a streamer laughs until they cannot talk, screams at a jump
++scare, or delivers a line nobody expected — usually about something that just
++happened in the game, sometimes about nothing at all (chat, a bit, a slip).
++
++Signals (all game-agnostic, all measured, none guessed from a game's name):
++
++voice — measured on the MIXED audio but gated on harmonic, speech-band
++        energy, so explosions, gunfire and engine noise do not count:
++    * ``vocal``    — voiced loudness against the streamer's own baseline
++    * ``pitch``    — pitch rising above the streamer's baseline (shouting)
++    * ``laugh``    — regular, bursty voiced pulses (3–7 Hz) with real depth
++face  — activity inside the facecam rectangle (found with the in-tree YuNet
++        detector): head throw-backs, lunges, covering the face
++game  — the on-screen events of ``gameplay_moments`` (never required)
++
++A reaction is an episode where voice/face signals agree. It is then matched
++to the nearest earlier game event: ``reaction_to_event`` (the product's core
++case), ``commentary_reaction`` (funny, with no visible trigger),
++``silent_facecam`` (only the face moved — weak), or ``silent_action`` (game
++event, no streamer reaction — deliberately ranked low). Loud game audio can
++not fake any of this because every voice signal is z-scored against the
++streamer's own recent baseline and requires voicing.
++"""
++
++from __future__ import annotations
++
++import logging
++import re
++import subprocess
++from pathlib import Path
++from typing import Any, Optional
++
++import numpy as np
++
++from .gameplay_moments import (
++    FEATURES as GAME_FEATURES,
++    Episode,
++    _mmss,
++    _robust_z,
++    extract_frame_evidence,
++    find_episodes as find_game_episodes,
++    fuse_evidence as fuse_game_evidence,
++)
++
++logger = logging.getLogger(__name__)
++
++SR = 16000
++_WIN, _HOP = 640, 160            # 40 ms window, 10 ms hop
++_F0_LO, _F0_HI = 80, 600          # Hz
++_VOICE_BINS = (19, 217)           # ~300–3400 Hz at 1024-point FFT
++VOICE = ("vocal", "pitch", "laugh", "lexical")
++_SCALE_FLOOR = {"vocal": 2.0, "pitch": 18.0, "laugh": 0.12, "face": 0.8, "lexical": 1.0}
++_ACTIVE_Z = 3.0
++_REACT_GAP_SEC = 2
++_MIN_REACT_SEC = 1
++_EVENT_LEAD_SEC = 7.0   # a reaction this soon after a game event is "to" it
++_EVENT_SLACK_SEC = 1.5  # ...or this much before (anticipation / lag)
++_WEIGHT = {"vocal": 1.0, "pitch": 1.0, "laugh": 1.6, "face": 0.8, "lexical": 1.0}
++
++
++# --------------------------------------------------------------------------
++# Voice evidence
++# --------------------------------------------------------------------------
++
++def _decode_blocks(video_path: Path | str, block_sec: int = 120):
++    cmd = ["ffmpeg", "-v", "error", "-i", str(video_path), "-vn", "-ac", "1",
++           "-ar", str(SR), "-f", "s16le", "-"]
++    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
++    size = SR * block_sec * 2
++    try:
++        assert proc.stdout is not None
++        while True:
++            buf = proc.stdout.read(size)
++            if len(buf) < _WIN * 2:
++                break
++            yield np.frombuffer(buf, dtype=np.int16).astype(np.float32) / 32768.0
++    finally:
++        if proc.stdout:
++            proc.stdout.close()
++        proc.kill()
++        proc.wait()
++
++
++_WINDOW_ACF = np.fft.irfft(np.abs(np.fft.rfft(np.hanning(_WIN), n=2048)) ** 2, n=2048)
++_WINDOW_ACF = _WINDOW_ACF / _WINDOW_ACF[0]
++
++
++def _frame_features(x: np.ndarray) -> dict[str, np.ndarray]:
++    """Per 10 ms frame: voiced flag, voice-band dB, f0."""
++    from numpy.lib.stride_tricks import sliding_window_view
++
++    frames = sliding_window_view(x, _WIN)[::_HOP] * np.hanning(_WIN).astype(np.float32)
++    spec = np.fft.rfft(frames, n=2048, axis=1)
++    power = (spec.real ** 2 + spec.imag ** 2)
++    total = power.sum(axis=1) + 1e-12
++    bins = 2048 / 1024  # bins-per-1024-grid factor
++    lo, hi = int(_VOICE_BINS[0] * bins), int(_VOICE_BINS[1] * bins)
++    voice_power = power[:, lo:hi].sum(axis=1)
++    voice_ratio = voice_power / total
++    acf = np.fft.irfft(power, n=2048, axis=1)
++    acf0 = acf[:, :1] + 1e-12
++    lag_lo, lag_hi = int(SR / _F0_HI), int(SR / _F0_LO)
++    # The Hann window shrinks the autocorrelation at long lags (low pitch);
++    # dividing by the window's own autocorrelation removes that bias.
++    seg = acf[:, lag_lo:lag_hi] / acf0 / _WINDOW_ACF[lag_lo:lag_hi]
++    peak = seg.max(axis=1)
++    lag = seg.argmax(axis=1) + lag_lo
++    f0 = SR / lag
++    voice_db = 10 * np.log10(voice_power + 1e-12)
++    voiced = (peak > 0.45) & (voice_ratio > 0.25) & (voice_db > -55)
++    return {"voiced": voiced, "voice_db": voice_db, "f0": f0, "peak": peak,
++            "total_db": 10 * np.log10(total)}
++
++
++def _laugh_score(env: np.ndarray) -> np.ndarray:
++    """Per-second laughter score from the voiced-energy envelope (100 fps):
++    depth of modulation × regularity of the 3–7 Hz pulse train, over a 2 s
++    window centred on each second."""
++    n_sec = len(env) // 100
++    out = np.zeros(n_sec)
++    for s in range(n_sec):
++        a, b = max(0, s * 100 - 50), min(len(env), s * 100 + 150)
++        w = env[a:b]
++        if len(w) < 120 or w.max() <= 1e-6:
++            continue
++        w = w / (w.max() + 1e-9)
++        depth = float(np.clip((w.max() - np.percentile(w, 15)), 0, 1))
++        c = w - w.mean()
++        denom = float((c ** 2).sum()) + 1e-9
++        reg = 0.0
++        for lag in range(14, 34):  # 70–330 ms → 3–7 Hz
++            r = float((c[:-lag] * c[lag:]).sum()) / denom
++            reg = max(reg, r)
++        out[s] = depth * max(0.0, reg)
++    return out
++
++
++def extract_voice_evidence(video_path: Path | str) -> dict[str, np.ndarray]:
++    """Per-second voice features of the mixed audio. Empty dict when the
++    source has no audio."""
++    vloud: list[float] = []
++    f0s: list[float] = []
++    vfrac: list[float] = []
++    total_db: list[float] = []
++    env_all: list[np.ndarray] = []
++    for block in _decode_blocks(video_path):
++        if len(block) < _WIN * 2:
++            continue
++        ff = _frame_features(block)
++        n = (len(ff["voiced"]) // 100) * 100
++        voiced = ff["voiced"][:n].reshape(-1, 100)
++        vdb = ff["voice_db"][:n].reshape(-1, 100)
++        f0 = ff["f0"][:n].reshape(-1, 100)
++        tdb = ff["total_db"][:n].reshape(-1, 100)
++        amp = np.where(ff["voiced"][:n], 10 ** (ff["voice_db"][:n] / 20.0), 0.0)
++        env_all.append(amp)
++        for i in range(voiced.shape[0]):
++            v = voiced[i]
++            vfrac.append(float(v.mean()))
++            vloud.append(float(np.percentile(vdb[i][v], 90)) if v.sum() >= 5 else np.nan)
++            f0s.append(float(np.median(f0[i][v])) if v.sum() >= 5 else np.nan)
++            total_db.append(float(np.percentile(tdb[i], 90)))
++    if not vloud:
++        return {}
++    vloud_a = np.array(vloud)
++    floor = np.nanmin(vloud_a) if np.isfinite(vloud_a).any() else -60.0
++    vloud_a = np.where(np.isnan(vloud_a), floor, vloud_a)
++    f0_a = np.array(f0s)
++    last = 150.0
++    for i in range(len(f0_a)):
++        if np.isnan(f0_a[i]):
++            f0_a[i] = last
++        else:
++            last = f0_a[i]
++    env = np.concatenate(env_all)
++    laugh = _laugh_score(env)
++    n = min(len(vloud_a), len(laugh))
++    return {"vocal": vloud_a[:n], "f0": f0_a[:n], "voiced_frac": np.array(vfrac)[:n],
++            "laugh": laugh[:n], "total_db": np.array(total_db)[:n]}
++
++
++# --------------------------------------------------------------------------
++# Facecam
++# --------------------------------------------------------------------------
++
++def find_facecam(video_path: Path | str, duration: float, samples: int = 14) -> Optional[tuple[float, float, float, float]]:
++    """Normalised (x, y, w, h) of the most consistent face rectangle, found
++    with YuNet on evenly spaced frames, or None. A face that appears in under
++    35% of samples, or that moves around the frame, is not a facecam."""
++    try:
++        import cv2
++        from ..media.face_detection import YuNetFaceDetector
++        det = YuNetFaceDetector()
++    except Exception:
++        logger.info("Face detector unavailable; facecam evidence skipped", exc_info=True)
++        return None
++    boxes: list[tuple[float, float, float, float]] = []
++    probed = 0
++    probe = subprocess.run(
++        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
++         "stream=width,height", "-of", "csv=p=0", str(video_path)],
++        capture_output=True, text=True)
++    try:
++        vw, vh = (int(v) for v in probe.stdout.strip().split(",")[:2])
++    except ValueError:
++        return None
++    for i in range(samples):
++        t = duration * (i + 0.5) / samples
++        proc = subprocess.run(
++            ["ffmpeg", "-v", "error", "-ss", f"{t:.2f}", "-i", str(video_path),
++             "-frames:v", "1", "-vf", "scale=960:-2,format=bgr24", "-f", "rawvideo", "-"],
++            capture_output=True)
++        if proc.returncode != 0 or not proc.stdout:
++            continue
++        w = 960
++        h = int(round(vh * 960 / vw / 2) * 2)
++        if len(proc.stdout) != w * h * 3:
++            continue
++        frame = np.frombuffer(proc.stdout, dtype=np.uint8).reshape(h, w, 3)
++        probed += 1
++        for x, y, fw, fh, _score in det.detect(frame):
++            boxes.append((x / w, y / h, fw / w, fh / h))
++    if probed == 0:
++        return None
++    # A facecam is the face that sits in the SAME place in many frames; in-game
++    # characters wander. Cluster face centres and take the busiest, stable one.
++    clusters: list[list[tuple[float, float, float, float]]] = []
++    for bx in boxes:
++        cx, cy = bx[0] + bx[2] / 2, bx[1] + bx[3] / 2
++        for cl in clusters:
++            ccx = float(np.median([c[0] + c[2] / 2 for c in cl]))
++            ccy = float(np.median([c[1] + c[3] / 2 for c in cl]))
++            if abs(cx - ccx) < 0.05 and abs(cy - ccy) < 0.05:
++                cl.append(bx)
++                break
++        else:
++            clusters.append([bx])
++    if not clusters:
++        return None
++    best = max(clusters, key=len)
++    if len(best) < max(3, int(0.35 * probed)):
++        return None
++    arr = np.array(best)
++    x0, y0 = float(np.median(arr[:, 0])), float(np.median(arr[:, 1]))
++    fw, fh = float(np.median(arr[:, 2])), float(np.median(arr[:, 3]))
++    # Pad: heads move; the reaction is the whole upper body.
++    px, py = fw * 0.9, fh * 0.9
++    x0, y0 = max(0.0, x0 - px), max(0.0, y0 - py)
++    return x0, y0, min(1.0 - x0, fw + 2 * px), min(1.0 - y0, fh + 2 * py)
++
++
++def extract_facecam_activity(video_path: Path | str, roi: tuple[float, float, float, float]) -> np.ndarray:
++    """Per-second motion inside the facecam rectangle (mean abs diff, 8 fps)."""
++    x, y, w, h = roi
++    crop = f"crop=iw*{w:.4f}:ih*{h:.4f}:iw*{x:.4f}:ih*{y:.4f}"
++    cmd = ["ffmpeg", "-v", "error", "-i", str(video_path), "-an", "-vf",
++           f"fps=8,{crop},scale=64:48:flags=area,format=gray", "-f", "rawvideo", "-"]
++    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
++    size = 64 * 48
++    diffs: list[float] = []
++    prev = None
++    try:
++        assert proc.stdout is not None
++        while True:
++            buf = proc.stdout.read(size)
++            if len(buf) < size:
++                break
++            cur = np.frombuffer(buf, dtype=np.uint8).astype(np.float32)
++            if prev is not None:
++                diffs.append(float(np.abs(cur - prev).mean()))
++            prev = cur
++    finally:
++        if proc.stdout:
++            proc.stdout.close()
++        proc.kill()
++        proc.wait()
++    n = len(diffs) // 8
++    return np.array([np.mean(diffs[i * 8:(i + 1) * 8]) for i in range(n)]) if n else np.zeros(0)
++
++
++# --------------------------------------------------------------------------
++# Fusion + correlation
++# --------------------------------------------------------------------------
++
++# Exclamations and reaction words (English, Spanish, romanised Hindi). Only
++# words that are rarely neutral filler; "que"/"kya" count only with ? or !.
++_EXCLAIM = re.compile(
++    r"^(wait|what+|whoa+|wo+w|oh+|ah+|no+|nah+|yo+|bro+|dude|damn|hell|shit+|fuck\w*|holy|jesus|"
++    r"omg|stop|run|haha\w*|hah|lol|lmao|jaja\w*|joder|hostia|ostia|madre|dios|tio|tío|"
++    r"arre|bhai|bhag|abe|oye)$", re.I)
++_EXCLAIM_IF_MARKED = re.compile(r"^(que|qué|kya|why|how|huh)$", re.I)
++
++
++def lexical_series(words: list[dict[str, Any]], seconds: int) -> np.ndarray:
++    """Per-second reaction-word score from transcript words (seconds).
++
++    Counts exclamation words, '!' marks and quick repeats ("no no no").
++    The words themselves are never changed.
++    """
++    out = np.zeros(max(0, seconds))
++    prev: Optional[tuple[str, float]] = None
++    for w in words:
++        t = float(w.get("start", 0.0))
++        i = int(t)
++        if i < 0 or i >= seconds:
++            continue
++        raw = str(w.get("text", ""))
++        core = re.sub(r"[^\w']", "", raw).lower()
++        marked = "!" in raw or "?" in raw
++        score = 0.0
++        if core and _EXCLAIM.match(core):
++            score += 1.0
++        elif core and marked and _EXCLAIM_IF_MARKED.match(core):
++            score += 1.0
++        if "!" in raw:
++            score += 0.75
++        if prev and core and core == prev[0] and t - prev[1] <= 1.5:
++            score += 0.5
++        out[i] += score
++        prev = (core, t)
++    return out
++
++
++def _words_in_seconds(words: Optional[list[dict[str, Any]]], duration: float) -> Optional[list[dict[str, Any]]]:
++    """Accept transcript words in seconds or in milliseconds (the app's
++    cached AssemblyAI/whisper format) and return them in seconds."""
++    if not words:
++        return None
++    ends = [float(w.get("end", w.get("start", 0)) or 0) for w in words]
++    scale = 1000.0 if max(ends) > max(duration, 1.0) * 5 else 1.0
++    return [{"text": w.get("text", ""), "start": float(w.get("start", 0)) / scale,
++             "end": float(w.get("end", w.get("start", 0))) / scale} for w in words]
++
++
++def reaction_series(voice: dict[str, np.ndarray], face: Optional[np.ndarray],
++                    lexical: Optional[np.ndarray] = None) -> tuple[np.ndarray, dict[str, np.ndarray], bool]:
++    """(per-second reaction strength, per-signal z, voice_present)."""
++    n = len(voice["vocal"]) if voice else (len(face) if face is not None else 0)
++    zs: dict[str, np.ndarray] = {}
++    voice_present = bool(voice) and float(np.mean(voice["voiced_frac"])) > 0.02
++    if voice_present:
++        zs["vocal"] = _robust_z(voice["vocal"], _SCALE_FLOOR["vocal"], rel=0.0)  # dB: offset is arbitrary
++        zs["pitch"] = _robust_z(voice["f0"], _SCALE_FLOOR["pitch"], rel=0.05)
++        # Pitch only counts while the streamer is actually voicing loudly.
++        zs["pitch"] = np.where(voice["voiced_frac"] > 0.25, zs["pitch"], 0.0)
++        zs["laugh"] = _robust_z(voice["laugh"], _SCALE_FLOOR["laugh"])
++    if lexical is not None and len(lexical) and float(np.max(lexical)) > 0:
++        zs["lexical"] = _robust_z(lexical, _SCALE_FLOOR["lexical"], rel=0.0)
++    if face is not None and len(face):
++        m = min(n, len(face)) if n else len(face)
++        zs["face"] = _robust_z(face[:m], _SCALE_FLOOR["face"])
++    if not zs:
++        return np.zeros(0), {}, voice_present
++    n = min(len(v) for v in zs.values())
++    zs = {k: v[:n] for k, v in zs.items()}
++    strength = np.zeros(n)
++    for i in range(n):
++        active = [k for k in zs if zs[k][i] >= _ACTIVE_Z]
++        top = max(zs[k][i] for k in zs)
++        voice_active = [k for k in active if k in VOICE]
++        # Agreement: two signals, or a strong laugh on its own. A face-only
++        # or pitch-only second never counts alone.
++        if len(active) >= 2 or (("laugh" in active) and zs["laugh"][i] >= 5.0):
++            if voice_active or len(active) >= 2:
++                strength[i] = sum(_WEIGHT[k] * (zs[k][i] - _ACTIVE_Z + 1.0) for k in active)
++    return strength, zs, voice_present
++
++
++def _episodes(strength: np.ndarray, zs: dict[str, np.ndarray]) -> list[dict[str, Any]]:
++    secs = [i for i in range(len(strength)) if strength[i] > 0]
++    groups: list[list[int]] = []
++    for i in secs:
++        if groups and i - groups[-1][-1] <= _REACT_GAP_SEC:
++            groups[-1].append(i)
++        else:
++            groups.append([i])
++    out = []
++    for g in groups:
++        if g[-1] - g[0] + 1 < _MIN_REACT_SEC:
++            continue
++        a, b = g[0], g[-1] + 1
++        feats = {k: float(np.max(zs[k][a:b])) for k in zs}
++        agree = sorted((k for k in zs if feats[k] >= _ACTIVE_Z), key=lambda k: -feats[k])
++        # Laughter must be corroborated by a loud voice: a regular pulse
++        # pattern alone also appears in ordinary speech.
++        kind = "laughter" if (feats.get("laugh", 0) >= 5 and feats.get("vocal", 0) >= 2) else (
++            "shout" if feats.get("vocal", 0) >= 3 and feats.get("pitch", 0) >= 3 else (
++                "silent_facecam" if not any(k in VOICE and feats.get(k, 0) >= _ACTIVE_Z for k in zs)
++                else "vocal_burst"))
++        out.append({"start": float(a), "end": float(b), "strength": float(strength[a:b].sum()),
++                    "peak": float(a + int(np.argmax(strength[a:b]))), "features": feats,
++                    "agree": agree, "kind": kind})
++    return out
++
++
++# --------------------------------------------------------------------------
++# Whose voice is it? (streamer vs game dialogue)
++# --------------------------------------------------------------------------
++
++_MOUTH_FPS = 8
++_MOUTH_RATIO_MIN = 1.25     # reaction-span mouth movement vs the window's quiet level
++_MOUTH_MIN_COVERAGE = 0.5   # face+landmarks found in at least half the frames
++
++
++def mouth_motion(video_path: Path | str, roi: tuple[float, float, float, float],
++                 t0: float, t1: float) -> Optional[np.ndarray]:
++    """Per-second variability of the facecam mouth opening (YuNet landmarks)
++    between t0 and t1. None when the face is not visible often enough to say."""
++    try:
++        from ..media.active_speaker import mouth_aperture
++        from ..media.face_detection import YuNetFaceDetector
++        det = YuNetFaceDetector()
++    except Exception:
++        return None
++    x, y, w, h = roi
++    size = 256
++    dur = max(1.0, t1 - t0)
++    cmd = ["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t0):.2f}", "-t", f"{dur:.2f}", "-i", str(video_path),
++           "-an", "-vf", f"fps={_MOUTH_FPS},crop=iw*{w:.4f}:ih*{h:.4f}:iw*{x:.4f}:ih*{y:.4f},"
++           f"scale={size}:{size},format=bgr24", "-f", "rawvideo", "-"]
++    proc = subprocess.run(cmd, capture_output=True, timeout=120)
++    raw = proc.stdout
++    n = len(raw) // (size * size * 3)
++    if n < _MOUTH_FPS * 2:
++        return None
++    ap: list[Optional[float]] = []
++    for i in range(n):
++        frame = np.frombuffer(raw[i * size * size * 3:(i + 1) * size * size * 3], dtype=np.uint8).reshape(size, size, 3)
++        faces = det.detect_with_landmarks(frame)
++        if not faces:
++            ap.append(None)
++            continue
++        box, lm = max(faces, key=lambda f: f[0][2] * f[0][3])
++        ap.append(mouth_aperture(box[:4], lm))
++    found = sum(a is not None for a in ap)
++    if found < _MOUTH_MIN_COVERAGE * n:
++        return None
++    per_sec = []
++    for s in range(n // _MOUTH_FPS):
++        vals = [a for a in ap[s * _MOUTH_FPS:(s + 1) * _MOUTH_FPS] if a is not None]
++        per_sec.append(float(np.std(vals)) if len(vals) >= 3 else np.nan)
++    return np.array(per_sec)
++
++
++def voice_is_streamers(mouth: Optional[np.ndarray], span: tuple[int, int]) -> Optional[bool]:
++    """True when the mouth moves clearly more during the reaction span than in
++    the quieter rest of the window; False when it does not; None when unknown."""
++    if mouth is None or not np.isfinite(mouth).any():
++        return None
++    a, b = span
++    inside = mouth[a:b]
++    inside = inside[np.isfinite(inside)]
++    rest = np.concatenate([mouth[:a], mouth[b:]])
++    rest = rest[np.isfinite(rest)]
++    if len(inside) == 0 or len(rest) < 2:
++        return None
++    base = max(float(np.percentile(rest, 25)), 1e-3)
++    return float(np.median(inside)) / base >= _MOUTH_RATIO_MIN
++
++
++def check_voice_source(items: list[dict[str, Any]], video_path: Path | str,
++                       roi: Optional[tuple[float, float, float, float]]) -> None:
++    """Demote voice-led reactions whose voice is probably GAME audio: the
++    facecam mouth does not move with it and the face itself is calm."""
++    if roi is None or not Path(str(video_path)).is_file():
++        return
++    for it in items:
++        if it["type"] not in ("reaction_to_event", "commentary_reaction"):
++            continue
++        feats = it.get("features") or {}
++        if feats.get("face", 0) >= 3.0:
++            it["voice_source"] = "streamer (facecam reacts)"
++            continue
++        t0 = max(0.0, it["start"] - 6.0)
++        mouth = mouth_motion(video_path, roi, t0, it["end"] + 2.0)
++        verdict = voice_is_streamers(mouth, (int(it["start"] - t0), int(it["end"] - t0) + 1))
++        if verdict is False:
++            it["voice_source"] = "likely game audio (facecam mouth still)"
++            it["features"] = {k: (0.0 if k in VOICE else v) for k, v in feats.items()}
++            it["mult"] *= 0.5
++        else:
++            it["voice_source"] = "streamer" if verdict else "unverified"
++
++
++
++def correlate(reactions: list[dict[str, Any]], game_eps: list[Episode], streamer_present: bool) -> list[dict[str, Any]]:
++    """Attach the triggering game event to each reaction; keep unreacted game
++    events as low-ranked ``silent_action`` candidates."""
++    used: set[int] = set()
++    items: list[dict[str, Any]] = []
++    for r in reactions:
++        match: Optional[tuple[int, Episode]] = None
++        for idx, g in enumerate(game_eps):
++            # Event begins before/at the reaction and the reaction starts
++            # within _EVENT_LEAD_SEC of the event's end (or slightly before).
++            if g.start - _EVENT_SLACK_SEC <= r["start"] <= g.end + _EVENT_LEAD_SEC:
++                if match is None or g.end > match[1].end:
++                    match = (idx, g)
++        if match is not None:
++            used.add(match[0])
++            kind = "reaction_to_event" if r["kind"] != "silent_facecam" else "silent_facecam"
++            mult = 1.35 if kind == "reaction_to_event" else 0.6
++            items.append({**r, "type": kind, "event": match[1], "mult": mult})
++        else:
++            if r["kind"] == "silent_facecam":
++                items.append({**r, "type": "silent_facecam", "event": None, "mult": 0.5})
++            else:
++                items.append({**r, "type": "commentary_reaction", "event": None, "mult": 1.0})
++    if streamer_present:
++        for idx, g in enumerate(game_eps):
++            if idx not in used:
++                items.append({"start": g.start, "end": g.end, "strength": g.strength * 0.25,
++                              "peak": g.peak, "features": {}, "agree": [], "kind": "silent_action",
++                              "type": "silent_action", "event": g, "mult": 0.45})
++    return items
++
++
++_VOICE_ONLY_CAP = 55.0
++
++
++def modalities(it: dict[str, Any]) -> set[str]:
++    """Which independent kinds of evidence back this moment."""
++    f = it.get("features") or {}
++    mods: set[str] = set()
++    if any(f.get(k, 0) >= _ACTIVE_Z for k in VOICE):
++        mods.add("voice")
++    if f.get("face", 0) >= 2.5:
++        mods.add("face")
++    if it.get("event") is not None and it["type"] != "silent_action":
++        mods.add("context")
++    return mods
++
++
++def _score(it: dict[str, Any]) -> float:
++    base = 38.0 + 7.0 * float(np.sqrt(max(it["strength"], 0.0)))
++    if it["type"] == "silent_action":
++        return float(min(40.0, base * it["mult"]))
++    kind_bonus = {"laughter": 8.0, "shout": 6.0, "vocal_burst": 3.0, "silent_facecam": 0.0}.get(it["kind"], 0.0)
++    score = float(min(98.0, (base + kind_bonus) * it["mult"]))
++    # Coincidence rule: a top-ranked moment needs at least TWO modalities —
++    # voice, facecam, or a visible context event. One modality alone caps.
++    return min(score, _VOICE_ONLY_CAP) if len(modalities(it)) < 2 else score
++
++
++_REASON = {
++    "reaction_to_event": "the streamer reacts ({kind}) right after something happens on screen",
++    "commentary_reaction": "the streamer has a strong vocal reaction ({kind}) with no visible game trigger — commentary or a bit",
++    "silent_facecam": "the facecam shows a big physical reaction but the streamer stays quiet",
++    "silent_action": "something happens on screen but the streamer does not react",
++}
++
++
++def shape_window(it: dict[str, Any], duration: float, clip_seconds: float) -> tuple[float, float, float, float]:
++    """(start, end, lead, tail). Keep the trigger AND the full reaction."""
++    r_start, r_end = it["start"], it["end"]
++    ev: Optional[Episode] = it.get("event")
++    if it["type"] == "reaction_to_event" and ev is not None:
++        start = min(ev.start, r_start) - 3.5
++    elif it["type"] == "silent_action" and ev is not None:
++        start = ev.start - 4.0
++    else:
++        start = r_start - 6.0  # the setup: what made them say it
++    tail = 3.5 if it["kind"] == "laughter" else 3.0
++    end = r_end + tail
++    max_len = max(clip_seconds * 1.6, 20.0)
++    if end - start > max_len:
++        start = max(start, end - max_len)
++    min_len = min(12.0, duration)
++    if end - start < min_len:
++        start -= (min_len - (end - start)) * 0.6
++        end += (min_len - (end - start)) * 0.4 if end - start < min_len else 0
++    start, end = max(0.0, start), min(duration, end)
++    return start, end, max(0.0, r_start - start), max(0.0, end - r_end)
++
++
++def select_streamer_moments(
++    video_path: Path | str,
++    duration: float,
++    *,
++    target_count: int,
++    clip_seconds: float,
++    voice: Optional[dict[str, np.ndarray]] = None,
++    face: Optional[np.ndarray] = None,
++    facecam_roi: Optional[tuple[float, float, float, float]] = None,
++    game_evidence: Optional[dict[str, np.ndarray]] = None,
++    words: Optional[list[dict[str, Any]]] = None,
++    profanity: str = "mask",
++    reason_context: str = "streamer reaction analysis",
++) -> list[dict[str, Any]]:
++    """Moments where a streamer's reaction makes the clip, with reasons.
++
++    Returns [] when there is no streamer evidence (no voice, no facecam) so the
++    caller can fall back to the gameplay-only selector.
++    """
++    duration = float(duration or 0)
++    if duration <= 0 or target_count <= 0:
++        return []
++    try:
++        if voice is None:
++            voice = extract_voice_evidence(video_path)
++        roi = facecam_roi
++        if face is None:
++            roi = roi or find_facecam(video_path, duration)
++            face = extract_facecam_activity(video_path, roi) if roi else None
++        words_s = _words_in_seconds(words, duration)
++        lexical = lexical_series(words_s, int(duration) + 1) if words_s else None
++        strength, zs, voice_present = reaction_series(voice, face, lexical)
++        streamer_present = voice_present or (face is not None and len(face) > 0)
++        if not streamer_present or len(strength) < 5:
++            return []
++        if game_evidence is None:
++            game_evidence = extract_frame_evidence(video_path, mask_roi=roi)
++        g_event, g_zs = fuse_game_evidence(game_evidence)
++        game_eps = find_game_episodes(g_event, g_zs, None)
++        items = correlate(_episodes(strength, zs), game_eps, streamer_present)
++        check_voice_source(items, video_path, roi)
++    except Exception:
++        logger.warning("Streamer-reaction detection failed for %s", video_path, exc_info=True)
++        return []
++
++    clip_seconds = max(1.0, min(float(clip_seconds or 30), duration))
++    moments: list[dict[str, Any]] = []
++    accepted: list[tuple[float, float]] = []
++    # Game events the streamer ignored are only a last resort: when the
++    # streamer reacted to anything, an unreacted explosion is not a clip.
++    if any(i["type"] in ("reaction_to_event", "commentary_reaction") for i in items):
++        items = [i for i in items if i["type"] != "silent_action"]
++    for it in sorted(items, key=lambda i: -_score(i)):
++        score = _score(it)
++        if it["type"] == "silent_facecam" and score < 45:
++            continue
++        start, end, lead, tail = shape_window(it, duration, clip_seconds)
++        if any(min(end, b) - max(start, a) > 0.25 * (end - start) for a, b in accepted):
++            continue
++        accepted.append((start, end))
++        trig = ""
++        if it.get("event") is not None:
++            trig = f" Trigger: {it['event'].reason.split(' between')[0]}."
++        agree = it.get("agree") or []
++        reason = _REASON[it["type"]].format(kind=it["kind"].replace("_", " "))
++        moments.append({
++            "start_time": _mmss(start), "end_time": _mmss(end), "text": "",
++            "relevance_score": round(min(0.95, score / 100.0), 2),
++            "reasoning": (
++                f"Streamer reaction ({reason_context}): {reason} at {_mmss(it['start'])}"
++                f"{' (signals: ' + ', '.join(agree) + ')' if agree else ''}.{trig} "
++                f"Window {_mmss(start)}–{_mmss(end)} keeps {lead:.0f}s before the reaction and {tail:.0f}s after."),
++            "virality_score": int(round(score)),
++            "hook_score": int(round(score * 0.9)),
++            "engagement_score": int(round(score * 0.8)),
++            "value_score": 0,
++            "shareability_score": int(round(score * 0.7)),
++            "hook_type": it["type"],
++            "hook_title": None,
++            "evidence": {
++                "detector": "streamer_reaction_v1",
++                "moment_type": it["type"], "reaction_kind": it["kind"],
++                "voice_source": it.get("voice_source", "unverified"),
++                "modalities": sorted(modalities(it)),
++                "signals": {k: round(v, 1) for k, v in it.get("features", {}).items()},
++                "reaction_start_sec": round(it["start"], 1), "reaction_end_sec": round(it["end"], 1),
++                "game_event": (None if it.get("event") is None else {
++                    "start_sec": round(it["event"].start, 1), "end_sec": round(it["event"].end, 1),
++                    "type": it["event"].event_type}),
++                "lead_in_sec": round(lead, 1), "tail_sec": round(tail, 1),
++            },
++        })
++        if len(moments) >= target_count:
++            break
++    try:
++        from .edit_recommendations import attach_recommendations
++        from .reaction_hooks import apply_ga2
++
++        apply_ga2(moments, duration, words=words_s, strength=strength,
++                  facecam_roi=roi, profanity=profanity)
++        attach_recommendations(moments, facecam_roi=roi, strength=strength, words=words_s)
++    except Exception:
++        logger.warning("Reaction hook/recommendation pass failed", exc_info=True)
++    moments.sort(key=lambda m: m["start_time"])
++    return moments
++
++
++def build_reaction_hints(
++    video_path: Path | str, duration: float, limit: int = 10,
++    words: Optional[list[dict[str, Any]]] = None,
++) -> str:
++    """Text hints for the transcript ranker: where the streamer reacted, and
++    to what. Same shape as ``build_clip_signal_summary`` lines. Empty string
++    when there is no streamer evidence or anything fails."""
++    if words is None:
++        try:
++            from ..media.transcription import load_cached_transcript_data
++
++            words = (load_cached_transcript_data(Path(video_path)) or {}).get("words")
++        except Exception:
++            words = None
++    moments = select_streamer_moments(
++        video_path, duration, target_count=limit, clip_seconds=30, words=words)
++    moments = [m for m in moments if m["hook_type"] != "silent_action"]
++    if not moments:
++        return ""
++    lines = ["Measured streamer-reaction signals (voice, facecam and on-screen events; "
++             "prefer these over plain loudness):"]
++    for m in sorted(moments, key=lambda m: -m["virality_score"]):
++        ev = m["evidence"]
++        trig = ""
++        if ev["game_event"]:
++            trig = f"; triggered by an on-screen event at {_mmss(ev['game_event']['start_sec'])}"
++        lines.append(
++            f"- [{m['start_time']} - {m['end_time']}] score={m['virality_score'] / 10:.1f}: "
++            f"{ev['moment_type'].replace('_', ' ')} ({ev['reaction_kind'].replace('_', ' ')}) at "
++            f"{_mmss(ev['reaction_start_sec'])}{trig}")
++    return chr(10).join(lines)
+diff --git a/backend/src/auto_director/visual_moments.py b/backend/src/auto_director/visual_moments.py
+index 8fd8360..35d6df4 100644
+--- a/backend/src/auto_director/visual_moments.py
++++ b/backend/src/auto_director/visual_moments.py
+@@ -201,9 +201,16 @@ def select_visual_moments(
+     scene_cuts: Optional[list[float]] = None,
+     energy_peaks: Optional[list[tuple[float, float]]] = None,
+     reason_context: str = "no usable transcript",
++    frame_evidence: bool = False,
+ ) -> list[dict[str, Any]]:
+     """Pick up to ``target_count`` clip windows without a transcript.
+ 
++    With ``frame_evidence=True`` the picture is read first
++    (``gameplay_moments``): moments come from several on-screen signals
++    agreeing, with audio only supporting them. Audio peaks and scene cuts
++    below are then used only when the frames yield nothing — a loud sound
++    with no visible event never outranks a real on-screen moment.
++
+     Candidates, strongest first: the beat grid's drop, audio energy
+     peaks (scored by loudness blended with local prominence, and
+     anchored by shape — a decaying burst ends its clip, a sustained
+@@ -223,6 +230,31 @@ def select_visual_moments(
+     if duration <= 0 or target_count <= 0:
+         return []
+     clip_seconds = max(1.0, min(float(clip_seconds or 30), duration))
++    if frame_evidence:
++        from .gameplay_moments import select_gameplay_moments
++        from .reaction_moments import select_streamer_moments
++
++        streamer = select_streamer_moments(
++            video_path,
++            duration,
++            target_count=target_count,
++            clip_seconds=clip_seconds,
++            reason_context=reason_context,
++        )
++        streamer = [m for m in streamer if m.get("hook_type") != "silent_action"]
++        if streamer:
++            return streamer
++
++        fused = select_gameplay_moments(
++            video_path,
++            duration,
++            target_count=target_count,
++            clip_seconds=clip_seconds,
++            beat_grid=beat_grid,
++            reason_context=reason_context,
++        )
++        if fused:
++            return fused
+     if scene_cuts is None:
+         scene_cuts = detect_scene_cut_times(video_path)
+     if energy_peaks is None and beat_grid is not None:
+diff --git a/backend/src/services/video_service.py b/backend/src/services/video_service.py
+index 14a835a..73a0397 100644
+--- a/backend/src/services/video_service.py
++++ b/backend/src/services/video_service.py
+@@ -3,6 +3,7 @@ Video service - handles video processing business logic.
+ """
+ 
+ import asyncio
++import os
+ from pathlib import Path
+ from types import SimpleNamespace
+ from typing import List, Dict, Any, Optional, Callable, Awaitable, Tuple
+@@ -2774,6 +2775,26 @@ class VideoService:
+                 except Exception as exc:
+                     logger.warning("Clip signal extraction failed: %s", exc)
+                     clip_signals = None
++                # Measured streamer reactions (voice, facecam, game events)
++                # join the ranker's hints; never-fail, opt out with
++                # REACTION_SIGNALS=0.
++                if file_duration and os.getenv("REACTION_SIGNALS", "1").lower() not in ("0", "false", "off"):
++                    try:
++                        from ..auto_director.reaction_moments import (
++                            build_reaction_hints,
++                        )
++
++                        reaction_hints = await run_in_thread(
++                            build_reaction_hints, video_path, float(file_duration)
++                        )
++                        if reaction_hints:
++                            clip_signals = (
++                                clip_signals + "\n" + reaction_hints
++                                if clip_signals
++                                else reaction_hints
++                            )
++                    except Exception as exc:
++                        logger.warning("Reaction signal extraction failed: %s", exc)
+                 # Scene-cut times already computed elsewhere for
+                 # reframing now also hint the selector (never-fail:
+                 # detection returns [] and any error here just means
+@@ -3046,6 +3067,9 @@ class VideoService:
+                             clip_seconds=float(target_seconds),
+                             beat_grid=source_grid,
+                             reason_context=selection_context,
++                            frame_evidence=os.getenv(
++                                "FRAME_EVIDENCE_SELECTION", "1"
++                            ).lower() not in ("0", "false", "off"),
+                         )
+                     except Exception:
+                         logger.warning(
+diff --git a/backend/tests/unit/test_gameplay_moments.py b/backend/tests/unit/test_gameplay_moments.py
+new file mode 100644
+index 0000000..c7218af
+--- /dev/null
++++ b/backend/tests/unit/test_gameplay_moments.py
+@@ -0,0 +1,92 @@
++"""Frame-evidence moment fusion: decoy-proof, multi-signal, context-aware."""
++import numpy as np
++
++from src.auto_director import gameplay_moments as gm
++
++
++def _evidence(seconds=120):
++    rng = np.random.default_rng(7)
++    base = {
++        "motion": 0.4, "local": 0.5, "tint": 1.5, "shake": 0.05,
++        "text": 0.0, "novelty": 1.0, "pursuit": 0.5,
++    }
++    ev = {f: base[f] + rng.normal(0, 0.02 * max(base[f], 0.2), seconds) for f in gm.FEATURES}
++    ev["duration"] = np.array([float(seconds)])
++    return ev
++
++
++def _grid(seconds, bursts):
++    levels = np.full(int(seconds / 0.05), -40.0)
++    for t, db in bursts:
++        levels[int(t / 0.05): int((t + 1.5) / 0.05)] = db
++    return {"energy_curve": {"hop_sec": 0.05, "levels_db": levels.tolist()}, "beat_times": []}
++
++
++def _run(ev, grid=None):
++    seconds = len(ev["motion"])
++    audio = gm.audio_support_series(grid, seconds)
++    event, zs = gm.fuse_evidence(ev, audio)
++    return gm.find_episodes(event, zs, audio)
++
++
++def test_loud_audio_with_no_visual_change_is_not_a_moment():
++    ev = _evidence()
++    assert _run(ev, _grid(120, [(60, -3.0)])) == []
++
++
++def test_one_frame_flash_is_not_a_moment():
++    ev = _evidence()
++    ev["local"][40] += 8
++    assert _run(ev) == []
++
++
++def test_several_agreeing_signals_make_an_episode_audio_only_supports():
++    ev = _evidence()
++    for sec in range(30, 36):
++        ev["tint"][sec] += 12
++        ev["text"][sec] += 0.05
++        ev["local"][sec] += 6
++    quiet = _run(ev)
++    loud = _run(ev, _grid(120, [(31, -8.0)]))
++    assert len(quiet) == 1 and 30 <= quiet[0].start <= 31
++    assert loud[0].score >= quiet[0].score
++    assert quiet[0].audio_support < 2.5
++
++
++def test_single_signal_sustained_for_seconds_counts():
++    ev = _evidence()
++    ev["pursuit"][70:78] += 9
++    eps = _run(ev)
++    assert len(eps) == 1 and eps[0].event_type == "erratic_motion"
++
++
++def test_close_episodes_become_one_connected_sequence():
++    ev = _evidence()
++    for sec in list(range(20, 23)) + list(range(26, 29)):
++        ev["tint"][sec] += 10
++        ev["local"][sec] += 6
++    eps = _run(ev)
++    assert len(eps) == 1 and eps[0].parts == 2
++
++
++def test_window_keeps_lead_in_and_ends_after_payoff():
++    ep = gm.Episode(start=50, end=58, peak=56, strength=40, features={f: 0 for f in gm.FEATURES})
++    start, end, lead, tail = gm.shape_window(ep, 300.0, 30.0, np.zeros(300))
++    assert start < 50 < 58 < end and lead >= 3 and tail >= 2
++    assert 12 <= end - start <= 48
++
++
++def test_selection_returns_reasoned_moments_without_ffmpeg():
++    ev = _evidence()
++    for sec in range(30, 36):
++        ev["tint"][sec] += 12
++        ev["local"][sec] += 6
++    out = gm.select_gameplay_moments("unused.mp4", 120.0, target_count=3, clip_seconds=30, evidence=ev)
++    assert len(out) == 1
++    m = out[0]
++    assert m["evidence"]["detector"] == "frame_evidence_v1" and "agreeing" in m["reasoning"] or "agree" in m["reasoning"]
++    assert m["start_time"] < "00:30" and m["end_time"] > "00:36"
++
++
++def test_unreadable_video_returns_empty_for_fallback():
++    assert gm.select_gameplay_moments("does-not-exist.mp4", 60.0, target_count=2, clip_seconds=30) == []
+diff --git a/backend/tests/unit/test_litellm_gateway_config.py b/backend/tests/unit/test_litellm_gateway_config.py
+index bc84de8..012ef76 100644
+--- a/backend/tests/unit/test_litellm_gateway_config.py
++++ b/backend/tests/unit/test_litellm_gateway_config.py
+@@ -95,7 +95,9 @@ EXISTING_MODELS = [
+     {
+         "model_name": "nim-deepseek",
+         "litellm_params": {
+-            "model": "openai/deepseek-ai/deepseek-v4.1-flash",
++            # 2026-11-17: DeepSeek V4.1 Flash returns HTTP 410 (retired) on
++            # the owner's live NIM probe; the rung moved to a verified model.
++            "model": "openai/nvidia/nemotron-3.5-super-vl-120b-a12b",
+             "api_base": "https://integrate.api.nvidia.com/v1",
+             "api_key": "os.environ/NVIDIA_API_KEY",
+         },
+diff --git a/backend/tests/unit/test_provider_audit.py b/backend/tests/unit/test_provider_audit.py
+new file mode 100644
+index 0000000..d152a01
+--- /dev/null
++++ b/backend/tests/unit/test_provider_audit.py
+@@ -0,0 +1,56 @@
++"""Provider audit helpers: pure logic only, no network, no keys."""
++import importlib.util
++from pathlib import Path
++
++_spec = importlib.util.spec_from_file_location(
++    "audit_providers", Path(__file__).resolve().parents[3] / "tools" / "provider-audit" / "audit_providers.py")
++audit = importlib.util.module_from_spec(_spec)
++_spec.loader.exec_module(audit)
++
++
++def test_classify_statuses():
++    c = audit.classify
++    assert (c(200), c(401), c(402), c(429), c(404), c(503), c(0)) == (
++        "OK", "AUTH_FAILED", "OUT_OF_CREDIT", "RATE_LIMITED_OR_QUOTA", "NOT_FOUND", "PROVIDER_ERROR", "UNREACHABLE")
++
++
++def test_placeholder_keys_count_as_missing():
++    env = {"GROQ_API_KEY": "changeme", "NVIDIA_API_KEY": "nvapi-realish", "X": ""}
++    assert not audit.present(env, "GROQ_API_KEY") and audit.present(env, "NVIDIA_API_KEY") and not audit.present(env, "X")
++
++
++def test_gateway_config_parses_ladder_and_static_audit_has_no_failures():
++    rows = audit.static_audit()
++    assert not [r for r in rows if r["status"] == "FAIL"], rows
++    entries = audit.parse_gateway_config((audit.ROOT / "litellm_config.yaml").read_text(encoding="utf-8"))
++    names = {e["name"] for e in entries}
++    assert {"deepseek-chat", "clip-assured", "local-qwen", "cloudflare-free"} <= names
++    assert all(not e["model"].startswith("openrouter/") or e["model"].endswith(":free") for e in entries)
++
++
++def test_report_never_contains_key_values(tmp_path, monkeypatch):
++    secret = "sk-SUPERSECRET-1234567890"
++    monkeypatch.setattr(audit, "http", lambda *a, **k: (401, "bad", {}, 0.01))
++    rows = audit.live_audit({"GROQ_API_KEY": secret, "DEEPSEEK_API_KEY": secret}, False, False)
++    assert secret not in str(rows)
++    assert [r for r in rows if r["provider"] == "groq"][0]["verdict"] == "AUTH_FAILED"
++
++
++def test_nvidia_probe_reports_working_and_missing_models(monkeypatch):
++    calls = []
++
++    def fake_http(url, key=None, body=None, **kw):
++        if url.endswith("/models"):
++            return 200, '{"data":[{"id":"nvidia/nemotron-3-ultra-550b-a55b"}]}', {}, 0.01
++        calls.append(body["model"])
++        if body["model"] == "nvidia/nemotron-3-ultra-550b-a55b":
++            return 200, '{"choices":[{"message":{"content":"ok"}}]}', {}, 0.2
++        return 404, "not found", {}, 0.1
++
++    monkeypatch.setattr(audit, "http", fake_http)
++    out = audit.probe_nvidia({"NVIDIA_API_KEY": "nvapi-SECRET-123"})
++    by = {r["model"]: r["result"] for r in out["probes"]}
++    assert by["nvidia/nemotron-3-ultra-550b-a55b"] == "WORKS"
++    assert by["deepseek-ai/deepseek-v4.1-flash"] == "NOT_FOUND"
++    assert "nvapi-SECRET-123" not in str(out)
++    assert audit.probe_nvidia({}) == {"verdict": "KEY_MISSING"}
+diff --git a/backend/tests/unit/test_reaction_hooks_and_recs.py b/backend/tests/unit/test_reaction_hooks_and_recs.py
+new file mode 100644
+index 0000000..da400a4
+--- /dev/null
++++ b/backend/tests/unit/test_reaction_hooks_and_recs.py
+@@ -0,0 +1,116 @@
++"""GA2 hooks/boundaries/captions and editing recommendations for reaction clips."""
++from src.auto_director import edit_recommendations as er
++from src.auto_director import reaction_hooks as rh
++
++
++def _moment(mtype="reaction_to_event", kind="laughter", game="screen_flash_banner", r=(40.0, 46.0), g=(36.0, 39.0)):
++    return {"start_time": "00:32", "end_time": "00:50", "evidence": {
++        "moment_type": mtype, "reaction_kind": kind,
++        "reaction_start_sec": r[0], "reaction_end_sec": r[1],
++        "game_event": None if game is None else {"start_sec": g[0], "end_sec": g[1], "type": game}}}
++
++
++def test_event_hook_is_grounded_third_person_and_short():
++    t = rh.reaction_hook_title(_moment())
++    assert 3 <= len(t.split()) <= 9 and t.startswith("Streamer")
++    assert "on-screen" in t and " I " not in f" {t} "
++
++
++def test_hook_never_names_game_events_the_pictures_did_not_show():
++    for game in ("screen_flash_banner", "hud_event_streak", "erratic_motion", "visual_change", None):
++        t = rh.reaction_hook_title(_moment(game=game, mtype="reaction_to_event" if game else "commentary_reaction"))
++        assert not any(w in t.lower() for w in ("gta", "car", "explod", "kill", "crash", "police", "heist"))
++
++
++def test_commentary_has_no_invented_trigger():
++    t = rh.reaction_hook_title(_moment(mtype="commentary_reaction", game=None))
++    assert "on-screen" not in t
++
++
++def test_hooks_vary_across_clips():
++    titles = set()
++    for i in range(12):
++        m = _moment(); m["start_time"] = f"0{i % 10}:{i:02d}"
++        titles.add(rh.reaction_hook_title(m))
++    assert len(titles) >= 2
++
++
++def test_plain_gameplay_moment_gets_no_reaction_hook():
++    assert rh.reaction_hook_title({"evidence": {"detector": "frame_evidence_v1"}}) is None
++
++
++def test_profanity_modes_and_verbatim_quote():
++    words = [{"text": "oh", "start": 40.0, "end": 40.2}, {"text": "shit", "start": 40.3, "end": 40.6}]
++    assert rh.reaction_quote(words, 40, 46, "keep") == "oh shit"
++    assert rh.reaction_quote(words, 40, 46, "mask") == "oh s***"
++    assert rh.reaction_quote(words, 40, 46, "drop") == "oh"
++    assert rh.reaction_quote([], 40, 46) is None
++
++
++def test_boundaries_never_cut_a_word_and_keep_the_payoff():
++    words = [{"text": "wait", "start": 31.5, "end": 32.4}, {"text": "what", "start": 32.5, "end": 33.0},
++             {"text": "haha", "start": 45.6, "end": 46.9}]
++    s, e, notes = rh.refine_window(32.0, 46.3, 40.0, 46.0, 120.0, words)
++    assert s == 31.5 and e >= 46.9 and notes
++
++
++def test_boundaries_extend_while_reaction_still_active():
++    strength = [0.0] * 120
++    for t in range(44, 51):
++        strength[t] = 5.0
++    s, e, notes = rh.refine_window(32.0, 48.0, 44.0, 47.0, 120.0, None, strength)
++    assert e >= 50 + 1.5 and any("extended" in n for n in notes)
++
++
++def test_caption_plan_puts_emphasis_on_reaction_and_event_cue_on_event():
++    words = [{"text": "no", "start": 40.1, "end": 40.3}]
++    plan = rh.caption_plan(_moment(), 32.0, words, (0.7, 0.6, 0.25, 0.3), "keep")
++    assert plan["emphasis"][0]["start"] == 8.0 and plan["emphasis"][0]["style"] == "laugh"
++    assert plan["event_cue"]["at"] == 4.0 and plan["event_cue"]["not_audio_peak"] is True
++    # Reaction-led clip with a facecam -> stacked reactor layout -> captions on the pane seam.
++    assert plan["position"]["anchor"] == "pane_seam" and "facecam" in plan["position"]["avoid"]
++    assert plan["emphasis_words"][0]["text"] == "no"
++
++
++def test_recommendations_contract_and_bounds():
++    m = _moment()
++    rec = er.recommend_edits(m, 32.0, 50.0, facecam_roi=(0.7, 0.6, 0.25, 0.3))
++    assert rec["schema_version"] == 1
++    assert rec["framing"]["layout"] == "stacked_reactor" and rec["framing"]["facecam_roi"]
++    assert all(z["to_scale"] <= 1.15 and z["start"] >= 0 and z["end"] <= 18.0 for z in rec["zooms"])
++    assert rec["pacing"]["open_on"] == "trigger" and rec["sfx_cues"][0]["requires_library"] is True
++
++
++def test_no_facecam_means_fit_game_only():
++    rec = er.recommend_edits(_moment(), 32.0, 50.0, facecam_roi=None)
++    assert rec["framing"]["layout"] == "full" and rec["framing"]["mode"] == "fit"
++    assert all(z["target"] == "gameplay" for z in rec["zooms"])
++
++
++def test_no_trigger_opens_on_reaction():
++    rec = er.recommend_edits(_moment(mtype="commentary_reaction", game=None), 32.0, 50.0)
++    assert rec["pacing"]["open_on"] == "reaction" and rec["sfx_cues"] == []
++
++
++def test_quote_rejects_fragments_and_centres_on_the_exclamation():
++    assert rh.reaction_quote([{"text": "Come", "start": 40.0, "end": 40.2}], 40, 46) is None
++    words = [{"text": t, "start": 40.0 + i * 0.3, "end": 40.2 + i * 0.3} for i, t in
++             enumerate(["so", "I", "was", "going", "there", "and", "what", "the", "hell!", "bro"])]
++    q = rh.reaction_quote(words, 40, 46, "keep")
++    assert "hell!" in q and len(q.split()) <= 6
++
++
++def test_layout_and_caption_vocabulary_match_the_app_and_the_amendment():
++    from src.auto_director.clip_edits import CAPTION_POSITIONS
++
++    layouts = {er.recommend_framing(roi, mt, "shout")["layout"]
++               for roi in (None, (0.7, 0.6, 0.25, 0.3)) for mt in ("reaction_to_event", "silent_action")}
++    assert layouts <= {"stacked_reactor", "pip_preserved", "full"}
++    for roi, layout in ((None, "full"), ((0.7, 0.6, 0.25, 0.3), "stacked_reactor"),
++                        ((0.7, 0.6, 0.25, 0.3), "pip_preserved"), ((0.05, 0.05, 0.2, 0.3), "pip_preserved")):
++        pos = rh.caption_position(roi, layout)
++        assert pos["preset"] in CAPTION_POSITIONS
++    assert rh.caption_position((0.7, 0.6, 0.25, 0.3), "pip_preserved")["preset"] == "top"
++    assert rh.caption_position((0.05, 0.05, 0.2, 0.3), "pip_preserved")["preset"] == "bottom"
++    rec = er.recommend_edits(_moment(), 32.0, 50.0, facecam_roi=(0.7, 0.6, 0.25, 0.3))
++    assert {z["target"] for z in rec["zooms"]} <= {"facecam", "gameplay"}
+diff --git a/backend/tests/unit/test_reaction_moments.py b/backend/tests/unit/test_reaction_moments.py
+new file mode 100644
+index 0000000..abc935a
+--- /dev/null
++++ b/backend/tests/unit/test_reaction_moments.py
+@@ -0,0 +1,149 @@
++"""Streamer-reaction fusion: voice/face agreement, event correlation, no loud-audio fakes."""
++import numpy as np
++
++from src.auto_director import gameplay_moments as gm
++from src.auto_director import reaction_moments as rm
++
++
++def _voice(seconds=120):
++    rng = np.random.default_rng(3)
++    return {
++        "vocal": 30 + rng.normal(0, 0.5, seconds),
++        "f0": 125 + rng.normal(0, 3, seconds),
++        "voiced_frac": np.full(seconds, 0.35),
++        "laugh": np.abs(rng.normal(0.1, 0.02, seconds)),
++        "total_db": np.full(seconds, 40.0),
++    }
++
++
++def _face(seconds=120):
++    return 1.0 + np.abs(np.random.default_rng(4).normal(0, 0.05, seconds))
++
++
++def _game(seconds=120, events=()):
++    rng = np.random.default_rng(5)
++    base = {"motion": 0.4, "local": 0.5, "tint": 1.5, "shake": 0.05,
++            "text": 0.0, "novelty": 1.0, "pursuit": 0.5}
++    ev = {f: base[f] + rng.normal(0, 0.02 * max(base[f], 0.2), seconds) for f in gm.FEATURES}
++    for a, b in events:
++        for s in range(a, b):
++            ev["tint"][s] += 12
++            ev["local"][s] += 6
++    ev["duration"] = np.array([float(seconds)])
++    return ev
++
++
++def _pick(voice, face, game):
++    return rm.select_streamer_moments("x.mp4", 120.0, target_count=5, clip_seconds=30,
++                                      voice=voice, face=face, game_evidence=game)
++
++
++def test_calm_streamer_over_ordinary_gameplay_yields_nothing():
++    assert _pick(_voice(), _face(), _game()) == []
++
++
++def test_loud_game_audio_without_voice_is_not_a_reaction():
++    v = _voice()
++    v["total_db"][50:53] = 80.0           # explosion: loud, but not voiced
++    assert _pick(v, _face(), _game()) == []
++
++
++def test_unreacted_game_event_is_not_selected_when_a_real_reaction_exists():
++    v = _voice(); f = _face()
++    v["vocal"][90:94] += 15; v["f0"][90:94] += 120   # a shout at 90 s
++    f[90:94] += 12
++    out = _pick(v, f, _game(events=[(30, 36), (88, 91)]))
++    types = [m["hook_type"] for m in out]
++    assert types == ["reaction_to_event"]
++    assert "00:30" not in out[0]["start_time"]
++
++
++def test_reaction_to_event_outranks_commentary_and_keeps_trigger_in_window():
++    v = _voice(); f = _face()
++    for a in (40, 90):                                   # same shout twice
++        v["vocal"][a:a + 4] += 15; v["f0"][a:a + 4] += 120; f[a:a + 4] += 12
++    out = _pick(v, f, _game(events=[(37, 40)]))          # only the first has a trigger
++    by_type = {m["hook_type"]: m for m in out}
++    assert by_type["reaction_to_event"]["virality_score"] >= by_type["commentary_reaction"]["virality_score"]
++    m = by_type["reaction_to_event"]
++    assert m["start_time"] <= "00:37" and m["end_time"] > "00:44"
++    assert m["evidence"]["game_event"] is not None
++
++
++def test_silent_facecam_alone_is_weak_and_dropped():
++    f = _face(); f[60:64] += 12
++    out = _pick(_voice(), f, _game(events=[(58, 62)]))
++    # Only the low-scored "game event the streamer ignored" fallback may remain;
++    # visual_moments drops it, so it never becomes a pick on its own.
++    assert [m["hook_type"] for m in out] in ([], ["silent_action"])
++    assert all(m["virality_score"] <= 40 for m in out)
++
++
++def test_no_voice_no_face_returns_empty_for_fallback():
++    assert rm.select_streamer_moments("x.mp4", 60.0, target_count=3, clip_seconds=30,
++                                      voice={}, face=None, game_evidence=_game(60)) == []
++
++
++def test_hints_text_format(monkeypatch):
++    v = _voice(); f = _face()
++    v["vocal"][90:94] += 15; v["f0"][90:94] += 120; f[90:94] += 12
++    monkeypatch.setattr(rm, "extract_voice_evidence", lambda p: v)
++    monkeypatch.setattr(rm, "find_facecam", lambda p, d: (0.7, 0.6, 0.25, 0.3))
++    monkeypatch.setattr(rm, "extract_facecam_activity", lambda p, r: f)
++    monkeypatch.setattr(rm, "extract_frame_evidence", lambda p, mask_roi=None: _game(events=[(88, 91)]))
++    text = rm.build_reaction_hints("x.mp4", 120.0)
++    assert text.startswith("Measured streamer-reaction signals") and "reaction to event" in text
++
++
++def test_single_modality_is_capped_below_corroborated_moments():
++    v = _voice()
++    v["vocal"][90:94] += 15; v["f0"][90:94] += 120          # voice only: no face, no event
++    solo = _pick(v, None, _game())
++    assert solo and solo[0]["virality_score"] <= 55 and solo[0]["evidence"]["modalities"] == ["voice"]
++    f = _face(); f[90:94] += 12
++    backed = _pick(v, f, _game(events=[(88, 91)]))
++    assert backed[0]["virality_score"] > solo[0]["virality_score"]
++    assert set(backed[0]["evidence"]["modalities"]) == {"voice", "face", "context"}
++
++
++def test_voice_source_mouth_rule():
++    still = np.full(14, 0.01)
++    assert rm.voice_is_streamers(still, (6, 10)) is False          # voice rose, mouth did not move
++    moving = still.copy(); moving[6:10] = 0.05
++    assert rm.voice_is_streamers(moving, (6, 10)) is True
++    assert rm.voice_is_streamers(None, (6, 10)) is None             # no face: unknown, fail open
++    assert rm.voice_is_streamers(np.full(14, np.nan), (6, 10)) is None
++
++
++def test_game_audio_voice_is_demoted(monkeypatch, tmp_path):
++    video = tmp_path / "v.mp4"; video.write_bytes(b"x")
++    item = {"type": "commentary_reaction", "start": 40.0, "end": 44.0, "mult": 1.0,
++            "features": {"vocal": 8.0, "pitch": 5.0, "laugh": 0.0, "face": 0.5}}
++    monkeypatch.setattr(rm, "mouth_motion", lambda *a, **k: np.full(14, 0.01))
++    rm.check_voice_source([item], video, (0.1, 0.1, 0.2, 0.3))
++    assert item["voice_source"].startswith("likely game audio") and item["mult"] == 0.5
++    assert item["features"]["vocal"] == 0.0 and "voice" not in rm.modalities(item)
++
++
++def test_lexical_series_counts_reaction_words_and_repeats():
++    words = [{"text": "No,", "start": 10.1}, {"text": "no,", "start": 10.4}, {"text": "no!", "start": 10.7},
++             {"text": "the", "start": 20.0}, {"text": "que", "start": 30.0}, {"text": "¿Qué?", "start": 31.0}]
++    lex = rm.lexical_series(words, 40)
++    assert lex[10] >= 3.5 and lex[20] == 0 and lex[30] == 0 and lex[31] >= 1
++
++
++def test_words_in_milliseconds_are_converted():
++    w = rm._words_in_seconds([{"text": "yo", "start": 12000, "end": 12300}], 60.0)
++    assert w[0]["start"] == 12.0
++
++
++def test_reaction_words_alone_never_make_a_moment_but_corroborate_one():
++    words = [{"text": t, "start": 90.0 + i * 0.3, "end": 90.2 + i * 0.3} for i, t in enumerate(["no", "no", "no", "what!"])]
++    assert _pick(_voice(), _face(), _game()) == []
++    alone = rm.select_streamer_moments("x.mp4", 120.0, target_count=3, clip_seconds=30, voice=_voice(),
++                                       face=_face(), game_evidence=_game(), words=words)
++    assert [m for m in alone if m["hook_type"] != "silent_action"] == []
++    f = _face(); f[90:93] += 12
++    backed = rm.select_streamer_moments("x.mp4", 120.0, target_count=3, clip_seconds=30, voice=_voice(),
++                                        face=f, game_evidence=_game(), words=words)
++    assert backed and backed[0]["evidence"]["signals"].get("lexical", 0) >= 3
+diff --git a/docs/registries/MODEL_REGISTRY.md b/docs/registries/MODEL_REGISTRY.md
+index a04c11c..819be87 100644
+--- a/docs/registries/MODEL_REGISTRY.md
++++ b/docs/registries/MODEL_REGISTRY.md
+@@ -21,7 +21,7 @@ openrouter-free → cloudflare-free → groq-20b → local-qwen**
+ | `deepseek-chat` | DeepSeek direct, `api.deepseek.com` | `deepseek-chat` | Strongest brain; first hop of every chain | Paid metered API (user's key)¹ |
+ | `clip-assured` | Groq | `openai/gpt-oss-120b` | Premium selection pass (sends `reasoning_effort=high`) | Groq free tier² |
+ | `clip-fast` | NVIDIA NIM, `integrate.api.nvidia.com/v1` | `nvidia/nemotron-3-ultra-550b-a55b` | Bulk/fast passes; also the long-form analysis route (~1M context per `.env.example`) | Free NIM endpoint (user's NVIDIA key) |
+-| `nim-deepseek` | NVIDIA NIM | `deepseek-ai/deepseek-v4.1-flash` | Second NIM rung | Free NIM endpoint |
++| `nim-deepseek` | NVIDIA NIM | `nvidia/nemotron-3.5-super-vl-120b-a12b` | Second NIM rung. Route name kept; was `deepseek-ai/deepseek-v4.1-flash` until the 2026-11-17 live probe returned HTTP 410 (retired). Verified WORKS on the owner's key that day | Free NIM endpoint |
+ | `openrouter-free` | OpenRouter | `nvidia/nemotron-3-ultra-550b-a55b:free` | Same Nemotron Ultra via OpenRouter's shared free pool; the `:free` suffix is pinned by test — a non-free fallback slug here once created a live paid-spend risk and must never regress | Free (rate-limited shared pool) |
+ | `or-ultra-free` | OpenRouter | `nvidia/nemotron-3-ultra-550b-a55b:free` | Legacy alias of the same route, kept with its own chain | Free |
+ | `cloudflare-free` | Cloudflare Workers AI, OpenAI-compatible endpoint built from `CLOUDFLARE_ACCOUNT_ID` at call time | `@cf/openai/gpt-oss-120b` | Eligible fallback on independent infrastructure (2026-11-13, owner's Final Directive), at his specified slot: after `openrouter-free`, before `groq-20b`. Slug pinned by test to the free-allocation model — the frontier Workers AI rows (GLM-5.x, Kimi K2.6+, DeepSeek V4) are paid-plan only and are banned from this slug by a pin. Endpoint **UNVERIFIED-LIVE** until the check in `AI_MODEL_ROUTING.md` §5 runs on the user's machine | Free allocation (10,000 Neurons/day, Workers Free plan) |
+diff --git a/litellm_config.yaml b/litellm_config.yaml
+index 71a8ba5..701ed2e 100644
+--- a/litellm_config.yaml
++++ b/litellm_config.yaml
+@@ -10,7 +10,13 @@ model_list:
+       api_key: os.environ/OPENROUTER_API_KEY
+   - model_name: nim-deepseek
+     litellm_params:
+-      model: openai/deepseek-ai/deepseek-v4.1-flash
++      # 2026-11-17 live probe on the owner's NVIDIA key (audit_providers.py
++      # --probe-nvidia): deepseek-ai/deepseek-v4.1-flash answers HTTP 410
++      # (retired from the endpoint), so this rung was dead. Swapped to a
++      # model the probe confirmed WORKS. Route name and ladder position are
++      # unchanged; a different model from clip-fast's Ultra keeps this rung
++      # an independent fallback instead of a duplicate.
++      model: openai/nvidia/nemotron-3.5-super-vl-120b-a12b
+       api_base: https://integrate.api.nvidia.com/v1
+       api_key: os.environ/NVIDIA_API_KEY
+   - model_name: clip-assured
+@@ -77,35 +83,37 @@ model_list:
+   # GET /v1/models first and drops any slug that 404s.
+   - model_name: nim-glm-flash
+     litellm_params:
++      # UNVERIFIED: listed, but timed out (45 s) on the 2026-11-17 probe.
+       model: openai/z-ai/glm-5.3-flash
+       api_base: https://integrate.api.nvidia.com/v1
+       api_key: os.environ/NVIDIA_API_KEY
+   - model_name: nim-kimi-k2
+     litellm_params:
++      # DEAD: HTTP 410 on the 2026-11-17 live probe. Unarmed alias.
+       model: openai/moonshotai/kimi-k2.6
+       api_base: https://integrate.api.nvidia.com/v1
+       api_key: os.environ/NVIDIA_API_KEY
+   - model_name: nim-mistral-large4
+     litellm_params:
++      # LIVE: WORKS on the 2026-11-17 probe. Still unarmed.
+       model: openai/mistralai/mistral-large-4-1t-a52b
+       api_base: https://integrate.api.nvidia.com/v1
+       api_key: os.environ/NVIDIA_API_KEY
+   - model_name: nim-qwen3-235b
+     litellm_params:
+-      # UNVERIFIED slug (offline): probe before use.
++      # DEAD: HTTP 404 on the 2026-11-17 live probe. Unarmed alias.
+       model: openai/qwen/qwen3-235b-a22b
+       api_base: https://integrate.api.nvidia.com/v1
+       api_key: os.environ/NVIDIA_API_KEY
+   - model_name: nim-llama4-maverick
+     litellm_params:
+-      # UNVERIFIED slug (offline): probe before use.
++      # DEAD: HTTP 410 on the 2026-11-17 live probe. Unarmed alias.
+       model: openai/meta/llama-4-maverick-17b-128e-instruct
+       api_base: https://integrate.api.nvidia.com/v1
+       api_key: os.environ/NVIDIA_API_KEY
+   - model_name: nim-deepseek-pro
+     litellm_params:
+-      # PARTIALLY verified slug (offline): a build.nvidia.com page
+-      # exists, but the slug was absent from free-callable listings.
++      # DEAD: HTTP 410 on the 2026-11-17 live probe. Unarmed alias.
+       model: openai/deepseek-ai/deepseek-v4-pro
+       api_base: https://integrate.api.nvidia.com/v1
+       api_key: os.environ/NVIDIA_API_KEY
+diff --git a/tools/gameplay-eval/EVIDENCE.md b/tools/gameplay-eval/EVIDENCE.md
+new file mode 100644
+index 0000000..e6a1368
+--- /dev/null
++++ b/tools/gameplay-eval/EVIDENCE.md
+@@ -0,0 +1,37 @@
++# Lane A evidence (streamer reactions) — 2026-11-17
++
++Labels: **SYNTHETIC** = generated by tools/gameplay-eval/make_*.py, built and tuned by the same author.
++**REAL** = real Twitch VOD sample, private, never committed (test-footage/ is git-ignored).
++
++## SYNTHETIC matrix (326 s, 8 scenarios, cartoon facecam, synthetic voices)
++| selector | positives found (of 5) | false picks |
++|---|---|---|
++| V9 audio-peak picker | 3 | 3 |
++| new reaction detector, tuning set (variant 0) | 4 | 0 |
++| new reaction detector, held-out set (variant 1) | 5 | 0 |
++Facecam position was supplied for the synthetic runs (YuNet does not recognise a cartoon face).
++
++## REAL sample (Twitch VOD, Spanish-speaking streamer, GTA V with facecam; 4 x 5 min + 4 min, 360p)
++* Facecam auto-found on the real streamer (after switching to cluster-based selection; the first version failed here).
++* Reaction picks (by the detector): 3 in ~20 min of footage, plus ignored silent game events.
++* Visual check of the facecam frames at 2 picks: arms-up celebration + laugh; face-palm + animated explaining -> both look like real reactions.
++  Transcript of the second: "...estoy completamente loco chavales" (faster-whisper base, Spanish).
++* Observed failure mode: in one pick the audio was GAME cutscene dialogue (English), not the streamer; the pick was still right
++  because the facecam showed a real reaction, but voice-only evidence can be fooled by game dialogue.
++* NOT measured: precision/recall on real footage (no labels), recall of missed reactions, other games/streamers/languages.
++* Timing: 13-23 s per 300 s of video on this laptop CPU path (voice + facecam + frame evidence); memory/VRAM not measured.
++
++## REAL samples, round 2 (2026-11-17 afternoon) — 9 Twitch samples, ~44 min: Kai Cenat (GTA SA, GTA IV), IShowSpeed (GTA stream), vicens (GTA V, Spanish)
++* Facecam auto-found in 9/9.
++* Weak labels: faster-whisper `base` transcripts (word timestamps). An "exclamation cluster" = >=3 reaction words or '!' within 4 s.
++  These labels are noisy (filler "bro", ASR errors) and are NOT ground truth.
++| version | picks | picks containing an exclamation | exclamation clusters caught |
++|---|---|---|---|
++| audio + facecam only | 20 | 15 (75%) | 5/33 (15%) |
++| + transcript reaction words | 23 | 17 (74%) | 7/33 (21%) |
++* The second row is partly CIRCULAR (the new signal reads the same transcript the labels come from). The honest recall figure is the first row.
++* Reading: picks are mostly real reactions; RECALL IS LOW. Most missed clusters had no agreeing facecam/voice signal, and the
++  two-signal rule (required by the amendment) rejects them. Always-loud streamers (IShowSpeed) rarely stand out acoustically.
++* Mouth-movement check (game dialogue vs streamer): ran on every voice-led pick, demoted none. Not validated on a real
++  game-dialogue false positive.
++* Kai Cenat 04:49 pick (score 95): transcript "What the hell? That shit hurt... AHHHH" — a real scream at an on-screen event.
+diff --git a/tools/gameplay-eval/HANDOFF.md b/tools/gameplay-eval/HANDOFF.md
+new file mode 100644
+index 0000000..1d433ac
+--- /dev/null
++++ b/tools/gameplay-eval/HANDOFF.md
+@@ -0,0 +1,113 @@
++# Lane A handoff — streamer-reaction intelligence (2026-11-17)
++
++Working directory: `D:\SnipNova-Dev\claude-code`  ·  branch `lane-a/ga1-gameplay-moments`
++Git ancestry: **none inherited**. The delivered copy had no `.git`; baseline commit `7e14b3f` is a snapshot of the installed
++tree minus `.env`, made by this agent. It is NOT `20f903b`. Lane A work = `git diff 7e14b3f..HEAD`.
++Nobody has integrated this work. Sanji must apply and verify it.
++
++## What is built (all backend, all in `backend/src/auto_director/` unless noted)
++| file | purpose |
++|---|---|
++| `gameplay_moments.py` | seven per-second visual signals, agreement rule, episodes, windows. Game-agnostic. `mask_roi` flattens the facecam so the streamer's own movement is not read as a game event |
++| `reaction_moments.py` | voice (vocal/pitch/laugh, harmonic-gated), facecam activity (YuNet cluster finder), game-event correlation, coincidence rule (>=2 of voice/face/context else score capped at 55), selection, `build_reaction_hints` for the LLM ranker |
++| `reaction_hooks.py` | grounded hook titles, verbatim quote + profanity mode (keep/mask/drop), word/payoff-aware `refine_window`, `caption_plan`, `apply_ga2` |
++| `edit_recommendations.py` | advisory framing/zoom/pacing/SFX data, schema v1 (documented in the module docstring) |
++| `visual_moments.py` | `select_visual_moments(..., frame_evidence=False)`: when True tries streamer moments, then gameplay moments, then the legacy picker |
++| `services/video_service.py` (HOT FILE) | passes `frame_evidence` (env `FRAME_EVIDENCE_SELECTION`, default on) and appends reaction hints to `clip_signals` (env `REACTION_SIGNALS`, default on). ~25 lines. Needs Sanji's approval |
++| `tools/provider-audit/audit_providers.py` | keyless provider audit |
++| `tools/gameplay-eval/` | fixture generators, scorers, `render_demo.py`, `EVIDENCE.md` |
++
++## Moment contract (additions to the existing segment dict)
++`hook_type` = `reaction_to_event | commentary_reaction | silent_facecam | silent_action` (or `hook_title` filled);
++`evidence`: `{detector, moment_type, reaction_kind (laughter|shout|vocal_burst|silent_facecam), modalities[], signals{}, reaction_start_sec,
++reaction_end_sec, game_event{start_sec,end_sec,type}|null, lead_in_sec, tail_sec, boundary_notes[], hook_quote?}`;
++`caption_plan`: `{profanity_mode, emphasis[{start,end,style}], emphasis_words[], event_cue{at,align_to,not_audio_peak}|null, position{anchor: frame|pane_seam, preset: top|middle|bottom (app's clip_edits.CAPTION_POSITIONS), avoid[], reason}}`;
++`edit_recommendations`: see `edit_recommendations.py` docstring. All times in `caption_plan`/`edit_recommendations` are clip-relative seconds.
++`silent_action` moments are low-score fallbacks; `visual_moments` drops them.
++
++## Test commands (run from `backend/`)
++Windows needs a stub `fcntl` on PYTHONPATH and `NO_PROXY=localhost`; on Linux/Docker neither is needed.
++`python -m pytest tests/unit/test_gameplay_moments.py tests/unit/test_reaction_moments.py tests/unit/test_reaction_hooks_and_recs.py tests/unit/test_provider_audit.py tests/unit/test_visual_moments.py -q --no-cov`
++Eval tools: `python tools/gameplay-eval/make_streamer_vod.py <dir> <seed> <variant>` then `score_streamer.py <dir> 6 --known-roi`.
++
++## Completed vs incomplete (against the Sanji amendment)
++| item | status |
++|---|---|
++| GA1 premise check | DONE (below) |
++| GA1 fusion, coincidence rule, hard-failure reporting | DONE for synthetic + real samples; real precision/recall NOT measured (no labels) |
++| fixture v2 scoring | NOT RUN — fixture v2 never landed in `test-footage/` |
++| GA2 ranking/reason, boundaries, hooks, caption plan, recommendations | DONE as data + tested; NOT wired into captions/render (Lane B / Sanji) |
++| GA3 baseline evaluation on fixture v2 | NOT STARTED (blocked on fixture v2) |
++| A1 chapters, A2 trailer, A3 variants, A4 whole-task edit, A5 calibration, A6 clean audio, A7 emoji audit, A8 speaker harness | NOT STARTED |
++| provider audit | tool DONE and tested; live results NOT VERIFIED (needs owner keys) |
++
++## GA1 premise check (file evidence, tree at 7e14b3f)
++* facecam layout: `media/reaction_layout.py` `find_reactor_face` L33, `measure_reaction_inset` L90, `build_reaction_layout` L135, `choose_reaction_layout` L274; wired at `media/reframe_plan.py` L1241 and `media/reframing.py` L1572/L1595. This is a RENDER layout; it computes no reaction score.
++* active speaker: `media/active_speaker.py` `mouth_aperture` L120, `pearson` L137, `windowed_correlations` L148; gated by `ACTIVE_SPEAKER_TARGETING_ENABLED` (L106-113), default OFF; correlates mouth aperture with speech audio, not reaction strength.
++* no-transcript selection: `auto_director/visual_moments.py` `select_visual_moments` — audio energy peaks, beat-grid "drop" (fixed score 100), scene cuts. No frame content, no face, no voice character. It ranked a loud decoy first on the stand-in fixture.
++* transcript path: `media/timeline.py` `build_clip_signal_summary` L824 — regex triggers, punctuation, speaker turns, top-8 loudest seconds as text hints. No laughter/pitch/face evidence.
++* LLM prompt: `ai.py` L433 "Emotion and energy (15)" — the model is told to look for emotion but is given no measured reaction data.
++Conclusion: reaction evidence did not exist as a ranking signal. This branch adds it.
++
++## Evidence
++* SYNTHETIC matrix (326 s, 8 scenarios): reaction detector found 4/5 (tuning) and 5/5 (held-out) positives, 0 false picks; V9 picker 3/5 with 3 false picks. Facecam position was supplied (YuNet does not recognise the cartoon face).
++* REAL samples (Twitch, private, never committed; `test-footage/` is git-ignored): 8 five-minute samples from three streamers (Spanish GTA V, Kai Cenat GTA SA / GTA IV, IShowSpeed). Facecam auto-found in 8/8. 2-6 picks per sample.
++  Checked by eye + faster-whisper transcript: Kai SA 04:49 "What the hell? That shit hurt... AHHHH" (reaction_to_event, score 95) = real scream at an event; Kai SA 03:56 "My back chair!" = real shouted outburst; vicens 7200@00:03 and @04:37 = arms-up celebration / face-palm (real physical reactions). Doubtful: Kai GTA4 02:17 (transcript was noise), IShowSpeed 02:02 (face motion, calm speech).
++  NOT measured: precision, recall, misses, other games/languages.
++* Rendered demo: `test-footage/renders/kai_scream.mp4`, `kai_my_back.mp4` (540x960, h264+aac, 11 s and 12 s, ffprobe-validated) made by `render_demo.py` from the picks' recommendations. It is a demonstration, not the product renderer; recommended zooms are not applied; the facecam panel is a 360p source upscaled.
++* Timing on this laptop (CPU path): about 13-21 s per 5 min of video.
++
++## Known defects / limits (be honest with the owner)
++1. Game dialogue is voiced speech and can trigger voice signals (seen once). The coincidence rule helps; speaker separation is not built.
++2. The laughter feature is weak on synthetic voices; "laughter" is only claimed when voice loudness corroborates it.
++3. A first-person language model is not used for hooks; hook titles are template-based and generic by design.
++4. `words` (transcript) is accepted by `select_streamer_moments` but the pipeline does not pass it yet.
++5. Thresholds were tuned on the synthetic generator and a handful of real clips. Expect re-tuning on real labelled VODs.
++6. YouTube sample download needs browser cookies (bot check); not used. Only Twitch VOD samples were fetched.
++7. Full backend suite was run on Windows via an `fcntl` stub; see the result line in the final report. CI baseline (Linux) 4,939 passed is NOT re-verified on this branch.
++
++## Remaining tasks for DeepSeek (do not let two agents edit the same files)
++Order: 1. integration wiring, 2. A5/A6/A7 (small, independent), 3. A1, 4. A3/A4, 5. A8.
++1. **Wire `words` and GA2 into the transcript path.** Files: `backend/src/services/video_service.py` (hot — ask Sanji first), `backend/src/auto_director/reaction_moments.py`. After transcription, call `select_streamer_moments(..., words=word_list)` and merge its `hook_title`/`caption_plan`/`edit_recommendations` onto the LLM's chosen segments by time overlap. Accept: a unit test with fake words shows quote + boundary snap on an LLM segment; REACTION_SIGNALS=0 leaves output byte-identical to today.
++2. **A5 calibration** (`auto_director/learning.py`, new `calibration.py`): bounded per-hook-type multipliers incl. the new hook types. Accept: inert below the minimum-posts threshold; clamp and rollback tests.
++3. **A6 clean-audio preset**, **A7 emoji audit** (`emoji_captions.py`): per the v2 brief; need render proof.
++4. **A1 chapters** (new `services/chapter_service.py`, migration, tasks router): per v2 brief; visual-derived chapters may reuse `gameplay_moments.find_episodes`.
++5. **A3 variants / A4 whole-task edit**: reuse ClipPlan + re-render seam; per v2 brief.
++6. **A8 speaker harness**: needs the Bert/Japan fixtures; not in this copy.
++7. **Fixture v2 scoring (GA1/GA3)** when Sanji's fixture and ground truth land: run `score_streamer.py` equivalents against his ground truth, retune thresholds in `reaction_moments.py` constants only.
++Dependencies: none outside the repo (numpy/opencv already installed; faster-whisper optional). Never add paid APIs.
++
++## Integration instructions for Sanji
++1. Fresh tree at the intended base: `git apply --check <patch>` then `git apply <patch>` (patch = `git diff 7e14b3f..HEAD` excluding `.gitignore` noise is fine). Paths are repo-relative.
++2. Review the 25-line `video_service.py` change (hot file). Disable with `FRAME_EVIDENCE_SELECTION=0` / `REACTION_SIGNALS=0`.
++3. Run the five test files above, then the full suite on Linux; update request-shape goldens only if prompt hints change (the LLM prompt text itself is unchanged; only the `clip_signals` argument grows).
++4. Renderer consumers read `moment["edit_recommendations"]`/`["caption_plan"]` as optional advisory data.
++
++## Provider audit — LIVE result, run by the owner on 2026-11-17 (`audit_providers.py --live --infer --allow-metered`, keys never printed)
++| provider | key | 1-token inference | finding |
++|---|---|---|---|
++| Groq | OK | OK | working |
++| OpenRouter | OK | OK (free slug) | working |
++| Cloudflare Workers AI | OK (account token) | OK | working. An earlier AUTH_FAILED was an audit-tool bug (only user-token endpoint tried); fixed in 529a936 |
++| Hugging Face | OK | n/a | working |
++| Ollama (local) | n/a | n/a | up, qwen3:8b present |
++| NVIDIA NIM | OK | OK (first configured model) | 5 configured slugs are NOT in this key's model list: `deepseek-ai/deepseek-v4.1-flash` (route `nim-deepseek`, in the ladder), `moonshotai/kimi-k2.6`, `qwen/qwen3-235b-a22b`, `meta/llama-4-maverick-17b-128e-instruct`, `deepseek-ai/deepseek-v4-pro`. No deepseek/kimi/qwen3 ids listed at all. Those routes will fail over; verify names on build.nvidia.com before relying on them |
++| DeepSeek | OK | **OUT_OF_CREDIT (402)** | balance is zero, so the metered primary `deepseek-chat` cannot answer. Its model list shows `deepseek-flash` and `deepseek-v4-pro`; `deepseek-chat` is NOT listed (may be a retired alias). Not verifiable until credit exists |
++Effective ladder today (verified): deepseek-chat DOWN (no credit) -> Groq 120B UP -> NIM Nemotron Ultra UP -> nim-deepseek DOWN (slug) -> OpenRouter free UP -> Cloudflare free UP -> Groq 20B (same key as Groq, not separately tested) -> local qwen3:8b UP.
++Net: the app runs at zero cost; Groq 120B is the real primary. No new keys are required. Open items (owner/Sanji decisions, not mine): whether to buy DeepSeek credit and rename the route to `deepseek-flash`; replacing the unlisted NIM slugs. `HF_TOKEN` is still not passed through compose.
++
++## Afternoon additions (2026-11-17)
++* `3b6b313` gateway: rung `nim-deepseek` now `nvidia/nemotron-3.5-super-vl-120b-a12b` (DeepSeek V4.1 Flash returned HTTP 410 on the owner's
++  live probe). Ladder order unchanged; `clip-fast` stays Nemotron 3 Ultra. Dead unarmed aliases annotated. Test pin + MODEL_REGISTRY updated.
++* `e4e336f` reaction intelligence: transcript reaction-word signal (`lexical`) and facecam mouth check for game dialogue.
++  `build_reaction_hints` loads the cached transcript words itself — `video_service.py` did not change for this.
++* NVIDIA probe (owner-run): WORKS = nemotron-3-ultra-550b-a55b, nemotron-3.5-super-vl-120b-a12b, nemotron-3.5-lightning-30b-a3b,
++  nemotron-3-nano-omni-30b-a3b-reasoning, nemotron-3.5-bolt-e4b, mistralai/mistral-large-4-1t-a52b. GONE (410): deepseek-v4.1-flash,
++  kimi-k2.6, llama-4-maverick, deepseek-v4-pro. NOT_FOUND: qwen3-235b-a22b. TIMEOUT: z-ai/glm-5.3-flash.
++* Working providers right now: Groq, NVIDIA (models above), OpenRouter free, Cloudflare Workers AI, Hugging Face, local Ollama qwen3:8b.
++  Failing: DeepSeek (no credit; owner will NOT fund it).
++* New DeepSeek-lane task: recall on real streamer VODs is low (see EVIDENCE.md round 2). Needs a labelled real set
++  (start with the owner's own clips) before any threshold change. Do not loosen the two-signal rule without one.
++
++## Vocabulary alignment (2026-11-17, commit after 07f8d4d)
++`edit_recommendations.framing.layout` now uses the amendment's names: `stacked_reactor` (reactor pane on top, gameplay below — Sanji's merged composition), `pip_preserved`, `full`. Zoom `target` is `facecam` or `gameplay`. Caption position uses the app's presets and `anchor: pane_seam` for the stacked layout. Old names (`facecam_split`, `game_with_facecam_inset`, `game_only`, `center`) are gone; nothing had integrated them.
+diff --git a/tools/gameplay-eval/make_fixture.py b/tools/gameplay-eval/make_fixture.py
+new file mode 100644
+index 0000000..6881b5f
+--- /dev/null
++++ b/tools/gameplay-eval/make_fixture.py
+@@ -0,0 +1,133 @@
++"""Generate a stand-in gameplay fixture that follows the Lane A spec.
++
++1280x720, 30 fps, 150 s, h264 + aac, HUD (crosshair, health bar, minimap,
++ammo counter, kill feed), no speech. Ground truth lives in GROUND_TRUTH.
++
++THIS IS NOT THE OFFICIAL SHARED FIXTURE. It is built from the written spec so
++detector work can proceed without it; scored claims must be re-run on the
++official ``gameplay_fixture.mp4`` when it arrives.
++
++Usage: python make_fixture.py <out.mp4>
++"""
++from __future__ import annotations
++
++import subprocess
++import sys
++import tempfile
++from pathlib import Path
++
++GROUND_TRUTH = {
++    "kill": (20.0, 26.0),
++    "death": (47.0, 52.0),
++    "funny": (75.0, 82.0),
++    "decoy": (95.0, 97.5),
++    "clutch": (110.0, 120.0),
++}
++FONT = "C\\:/Windows/Fonts/arial.ttf"
++
++
++def _txt(text, x, y, size, color, t0, t1, box=False):
++    b = ":box=1:boxcolor=black@0.55:boxborderw=8" if box else ""
++    return (
++        f"drawtext=fontfile='{FONT}':text='{text}':x={x}:y={y}:fontsize={size}"
++        f":fontcolor={color}{b}:enable='between(t,{t0},{t1})'"
++    )
++
++
++def video_filters() -> str:
++    f = []
++    # Crosshair
++    f.append("drawbox=x=636:y=356:w=8:h=8:color=white@0.9:t=fill")
++    f.append("drawbox=x=620:y=359:w=40:h=2:color=white@0.7:t=fill")
++    # Health bar: full green, then dark overlay steps as health drains
++    f.append("drawbox=x=38:y=668:w=304:h=24:color=white@0.5:t=2")
++    f.append("drawbox=x=40:y=670:w=300:h=20:color=0x30c050@0.9:t=fill")
++    drains = [
++        # (t0, t1, covered px of the right side)
++        (47.0, 47.3, 100), (47.3, 47.6, 200), (47.6, 48.0, 300),  # death
++        (53.0, 140.0, -1),  # respawn: handled by the restore below
++        (110.0, 112.0, 120), (112.0, 115.0, 200), (115.0, 120.0, 255),  # clutch
++    ]
++    for t0, t1, px in drains:
++        if px < 0:
++            continue
++        end = t1 if t1 < 53 else t1
++        f.append(
++            f"drawbox=x={340 - px}:y=670:w={px}:h=20:color=0x181818@1:t=fill:"
++            f"enable='between(t,{t0},{end if t0 < 100 else 120})'"
++        )
++    # After death the bar stays empty until respawn at 53 (covered above to 48);
++    # keep it empty through 53.
++    f.append("drawbox=x=40:y=670:w=300:h=20:color=0x181818@1:t=fill:enable='between(t,48,53)'")
++    # Minimap
++    f.append("drawbox=x=1050:y=20:w=210:h=210:color=black@0.5:t=fill")
++    f.append("drawbox=x=1050:y=20:w=210:h=210:color=white@0.6:t=2")
++    f.append("drawbox=x=1150:y=120:w=8:h=8:color=cyan@0.9:t=fill")
++    # Ammo counter
++    f.append(_txt("30 / 120", "1090", "672", 28, "white", 0, 150))
++    # Kill feed (top-left)
++    for i, t in enumerate((20.6, 22.6, 24.6)):
++        f.append(_txt(f"YOU ELIMINATED P{i + 1}", 30, 30 + 34 * i, 24, "white", t, t + 3.5, True))
++    for i, t in enumerate((111.5, 114.5, 117.0)):
++        f.append(_txt(f"YOU ELIMINATED E{i + 1}", 30, 30 + 34 * i, 24, "white", t, t + 3.5, True))
++    # Banners
++    f.append(_txt("DOUBLE ELIMINATION", "(w-text_w)/2", 150, 64, "yellow", 22.4, 24.4, True))
++    f.append(_txt("ELIMINATED", "(w-text_w)/2", 150, 80, "red", 48.2, 50.6, True))
++    f.append(_txt("VICTORY", "(w-text_w)/2", 150, 90, "yellow", 118.0, 120.6, True))
++    # Red flash on death, muzzle flashes on kills
++    f.append("drawbox=x=0:y=0:w=1280:h=720:color=red@0.35:t=fill:enable='between(t,47.0,48.2)'")
++    for t in (20.5, 22.5, 24.5, 111.4, 114.4, 116.9):
++        f.append(f"drawbox=x=560:y=300:w=160:h=120:color=white@0.8:t=fill:enable='between(t,{t},{t + 0.12})'")
++    # Decoy: distant explosion at the frame edge (small, off-centre)
++    f.append("drawbox=x=1200:y=300:w=60:h=60:color=orange@0.95:t=fill:enable='between(t,95,96.2)'")
++    f.append("drawbox=x=1215:y=315:w=30:h=30:color=yellow@0.95:t=fill:enable='between(t,95,95.6)'")
++    return ",".join(f)
++
++
++def audio_expr() -> str:
++    terms = ["0.025*(random(0)-0.5)", "0.02*sin(2*PI*110*t)"]
++
++    def burst(t0, amp, decay, freq=None):
++        if freq:
++            return f"if(gte(t,{t0}),{amp}*sin(2*PI*{freq}*t)*exp(-{decay}*(t-{t0})),0)"
++        return f"if(gte(t,{t0}),{amp}*(random(0)-0.5)*2*exp(-{decay}*(t-{t0})),0)"
++
++    for t in (20.5, 22.5, 24.5, 111.4, 114.4, 116.9):
++        terms.append(burst(t, 0.45, 25))
++    terms.append(burst(48.0, 0.4, 6, 90))  # death thud
++    for i in range(8):  # springy blips during the tumble
++        terms.append(burst(75.5 + i * 0.8, 0.3, 14, 500 + 80 * i))
++    terms.append(burst(95.0, 0.98, 2.2))  # DECOY: loudest burst in the file
++    terms.append(burst(118.0, 0.35, 5, 220))  # victory sting
++    return "+".join(terms)
++
++
++def build(out: Path) -> None:
++    vf = video_filters()
++    player = (
++        "[1:v]format=rgba[pl];[0:v]" + vf + "[bg];"
++        "[bg][pl]overlay=x='if(between(t,75,82),610+220*sin(7*t),610)':"
++        "y='if(between(t,75,82),380-130*abs(sin(4.5*t)),380)',"
++        "crop=1240:680:x='20+if(between(t,110,120),14*sin(55*t),0)':"
++        "y='20+if(between(t,110,120),10*cos(47*t),0)',scale=1280:720,format=yuv420p[v]"
++    )
++    with tempfile.TemporaryDirectory() as tmp:
++        script = Path(tmp) / "graph.txt"
++        script.write_text(player, encoding="utf-8")
++        cmd = [
++            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
++            "-f", "lavfi", "-i", "gradients=s=1280x720:r=30:d=150:speed=0.004:c0=0x24384c:c1=0x4a5a34:nb_colors=2",
++            "-f", "lavfi", "-i", "color=c=0xd04040:s=60x60:r=30:d=150",
++            "-f", "lavfi", "-i", f"aevalsrc='{audio_expr()}':s=44100:d=150",
++            "-/filter_complex", str(script),
++            "-map", "[v]", "-map", "2:a",
++            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
++            "-c:a", "aac", "-b:a", "128k", "-t", "150", "-movflags", "+faststart",
++            str(out),
++        ]
++        subprocess.run(cmd, check=True)
++
++
++if __name__ == "__main__":
++    build(Path(sys.argv[1]))
++    print("wrote", sys.argv[1])
+diff --git a/tools/gameplay-eval/make_streamer_vod.py b/tools/gameplay-eval/make_streamer_vod.py
+new file mode 100644
+index 0000000..2b10fd2
+--- /dev/null
++++ b/tools/gameplay-eval/make_streamer_vod.py
+@@ -0,0 +1,272 @@
++"""SYNTHETIC streamer-VOD generator for the reaction test matrix.
++
++NOT real footage. It composes a game view (HUD, flashes, banners, shake), a
++facecam (a cartoon head whose mouth and lean follow the voice) and audio (game
++bed with chord pad + explosions, and synthetic voices: calm speech, excited
++speech, laughter pulses, a scream). It exists to check logic and false
++positives; it can not tell us how real streamers sound. Real-VOD validation is
++a separate, still-open step.
++
++Usage: python make_streamer_vod.py <out_dir> [seed] [variant]
++  variant 0 = tuning set, 1 = held-out set (different pitches/levels/timings)
++"""
++from __future__ import annotations
++
++import json
++import subprocess
++import sys
++import wave
++from pathlib import Path
++
++import cv2
++import numpy as np
++
++W, H, FPS, SR = 640, 360, 24, 16000
++FACE = (470, 226, 160, 120)  # x, y, w, h of the facecam box
++
++# (name, length_sec, role)  role: pos_corr | pos_comm | pos_masked | neg | weak
++PLAN = [
++    ("ordinary_a", 40, "neg"),
++    ("action_no_reaction", 28, "neg"),
++    ("laugh_at_event", 28, "pos_corr"),
++    ("ordinary_b", 25, "neg"),
++    ("facecam_silent", 28, "weak"),
++    ("scream_shock", 28, "pos_corr"),
++    ("funny_commentary", 28, "pos_comm"),
++    ("ordinary_c", 25, "neg"),
++    ("masked_laugh", 28, "pos_masked"),
++    ("unrelated_laugh", 28, "pos_comm"),
++    ("ordinary_d", 40, "neg"),
++]
++
++
++def _harm(f0, t, n=14, tilt=1.0, formants=((700, 400), (1800, 600))):
++    """Harmonic stack with simple formant emphasis. f0 may be an array."""
++    phase = 2 * np.pi * np.cumsum(f0) / SR
++    out = np.zeros_like(t)
++    for k in range(1, n + 1):
++        fk = f0 * k
++        g = 1.0 / (k ** tilt)
++        for fc, bw in formants:
++            g = g * (1 + 2.0 * np.exp(-((fk - fc) / bw) ** 2)) if False else g
++        env = sum(np.exp(-((fk - fc) / bw) ** 2) for fc, bw in formants) + 0.15
++        out += g * env * np.sin(k * phase)
++    return out / max(1e-6, np.abs(out).max())
++
++
++def voice(kind, dur, rng, var):
++    n = int(dur * SR)
++    t = np.arange(n) / SR
++    shift = 1.0 if var == 0 else 1.18  # held-out: a different speaker
++    if kind == "calm":
++        f0 = (122 * shift) + 8 * np.sin(2 * np.pi * 0.6 * t)
++        syll = np.clip(np.sin(2 * np.pi * (3.8 + 0.4 * var) * t) + 0.25, 0, 1) ** 0.8
++        words = (np.sin(2 * np.pi * 0.35 * t + rng.uniform(0, 6)) > -0.4).astype(float)
++        return 0.11 * _harm(f0, t) * syll * np.convolve(words, np.ones(400) / 400, "same")
++    if kind == "excited":
++        f0 = (185 * shift) + 38 * np.sin(2 * np.pi * 0.9 * t) + 25 * t / dur
++        syll = np.clip(np.sin(2 * np.pi * 4.6 * t) + 0.35, 0, 1) ** 0.7
++        return (0.26 + 0.1 * t / dur) * _harm(f0, t) * syll
++    if kind == "laugh":
++        rate = 5.2 if var == 0 else 4.6
++        f0 = (250 * shift) - 40 * (t / dur) + 12 * np.sin(2 * np.pi * 7 * t)
++        phase = (t * rate) % 1.0
++        pulse = np.exp(-phase * 9.0) * (phase < 0.6)
++        ramp = np.minimum(1, t / 0.4) * (1 - 0.35 * t / dur)
++        breath = rng.normal(0, 0.08, n) * pulse
++        return 0.34 * (_harm(f0, t, 10) * pulse * ramp + breath)
++    if kind == "scream":
++        f0 = (640 * shift) + 120 * t / dur + 18 * np.sin(2 * np.pi * 6 * t)
++        env = np.minimum(1, t / 0.2) * np.minimum(1, (dur - t) / 0.5)
++        return 0.48 * _harm(f0, t, 9, 0.7) * env
++    raise ValueError(kind)
++
++
++def game_audio(dur, rng, var):
++    n = int(dur * SR)
++    t = np.arange(n) / SR
++    pad = 0.025 * (np.sin(2 * np.pi * 220 * t) + np.sin(2 * np.pi * 277 * t) + np.sin(2 * np.pi * 330 * t))
++    hum = 0.025 * np.sin(2 * np.pi * 95 * t) * (1 + 0.2 * np.sin(2 * np.pi * 0.3 * t))
++    noise = np.convolve(rng.normal(0, 1, n), np.ones(8) / 8, "same") * 0.012
++    return 0.45 * (pad + hum + noise)
++
++
++def boom(dur, amp, rng):
++    n = int(dur * SR)
++    t = np.arange(n) / SR
++    x = rng.normal(0, 1, n)
++    x = np.convolve(x, np.ones(12) / 12, "same")  # low-passed noise: not voiced
++    return amp * x * np.exp(-t * 3.0) * 2.2
++
++
++def draw_scene(frame, t_local, ev, shake):
++    """frame: BGR canvas already holding the base scene."""
++    out = frame.copy()
++    # HUD
++    cv2.rectangle(out, (10, 330), (150, 345), (60, 190, 80), -1)
++    cv2.rectangle(out, (520, 8), (632, 100), (40, 40, 40), 1)
++    cv2.putText(out, "30/120", (360, 350), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
++    for kind, a, b in ev:
++        if not (a <= t_local <= b):
++            continue
++        if kind == "flash":
++            cv2.rectangle(out, (0, 0), (W, H), (60, 60, 255), -1) if False else None
++            out[:] = (0.6 * out + 0.4 * np.array([70, 70, 255])).astype(np.uint8)
++        elif kind == "banner":
++            cv2.putText(out, "WASTED", (150, 110), cv2.FONT_HERSHEY_SIMPLEX, 2.0, (40, 40, 255), 5)
++        elif kind == "feed":
++            cv2.putText(out, "VEHICLE DESTROYED", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
++        elif kind == "boomflash":
++            cv2.circle(out, (300, 190), 70, (80, 160, 255), -1)
++        elif kind == "tumble":
++            x = int(300 + 120 * np.sin(8 * t_local)); y = int(200 - 70 * abs(np.sin(5 * t_local)))
++            cv2.rectangle(out, (x, y), (x + 40, y + 40), (60, 60, 210), -1)
++    if shake:
++        M = np.float32([[1, 0, 8 * np.sin(55 * t_local)], [0, 1, 6 * np.cos(47 * t_local)]])
++        out = cv2.warpAffine(out, M, (W, H))
++    return out
++
++
++def draw_face(frame, openness, lean, bob, covered):
++    x0, y0, w, h = FACE
++    cv2.rectangle(frame, (x0, y0), (x0 + w, y0 + h), (90, 80, 70), -1)
++    cx = int(x0 + w / 2 + bob * 6)
++    cy = int(y0 + h / 2 + 4 - lean * 10)
++    rx, ry = int(30 + lean * 10), int(38 + lean * 12)
++    cv2.ellipse(frame, (cx, cy), (rx, ry), 0, 0, 360, (140, 180, 225), -1)
++    cv2.circle(frame, (cx - 12, cy - 10), 4, (30, 30, 30), -1)
++    cv2.circle(frame, (cx + 12, cy - 10), 4, (30, 30, 30), -1)
++    mh = int(2 + openness * 22)
++    cv2.ellipse(frame, (cx, cy + 16), (11 + int(openness * 6), mh), 0, 0, 360, (30, 30, 120), -1)
++    if covered:
++        cv2.rectangle(frame, (cx - 30, cy - 20), (cx + 30, cy + 25), (120, 150, 200), -1)
++
++
++def build(out_dir: Path, seed: int, var: int):
++    rng = np.random.default_rng(seed)
++    out_dir.mkdir(parents=True, exist_ok=True)
++    total = sum(p[1] for p in PLAN)
++    audio = np.zeros(int(total * SR) + SR)
++    truth = []
++    # per-scenario plan: events (game), face timeline callbacks, voice placements
++    frames_meta = []  # list of (t_abs, ev, shake, faceparams fn)
++    t0 = 0.0
++    sc = []
++    for name, length, role in PLAN:
++        a0 = int(t0 * SR)
++        n = int(length * SR)
++        audio[a0:a0 + n] += game_audio(length, rng, var)
++        ev, shake, face = [], [], []   # face: (a, b, kind)
++        voices = []  # (rel_start, kind, dur, gain)
++        gt = None  # (rel_start, rel_end) of the thing that should be clipped
++        if name.startswith("ordinary"):
++            for s in range(2, int(length) - 8, 11):
++                voices.append((s + rng.uniform(0, 2), "calm", 7.0, 1.0))
++        elif name == "action_no_reaction":
++            ev = [("feed", 10, 14), ("flash", 10, 10.3), ("banner", 11, 13.5), ("boomflash", 17, 18.4), ("flash", 17, 17.2)]
++            shake = [(10, 14)]
++            audio[a0 + int(10 * SR): a0 + int(10 * SR) + int(1.6 * SR)] += boom(1.6, 0.9, rng)[: int(1.6 * SR)]
++            audio[a0 + int(17 * SR): a0 + int(17 * SR) + int(1.6 * SR)] += boom(1.6, 1.0, rng)[: int(1.6 * SR)]
++            voices.append((3, "calm", 20, 1.0))
++            gt = (9, 18.5)
++        elif name == "laugh_at_event":
++            ev = [("feed", 9, 13), ("flash", 9, 9.3), ("banner", 9.5, 12), ("tumble", 9.5, 13)]
++            audio[a0 + int(9 * SR): a0 + int(9 * SR) + int(1.6 * SR)] += boom(1.6, 0.8, rng)[: int(1.6 * SR)]
++            voices += [(2, "calm", 6.5, 1.0), (10.6, "laugh", 6.0, 1.0)]
++            face = [(10.6, 16.6, "laugh")]
++            gt = (10.6, 16.6)
++        elif name == "scream_shock":
++            ev = [("flash", 10, 10.5), ("boomflash", 10, 11.5), ("shake", 10, 12)]
++            shake = [(10, 12.5)]
++            audio[a0 + int(10 * SR): a0 + int(10 * SR) + int(1.8 * SR)] += boom(1.8, 0.95, rng)[: int(1.8 * SR)]
++            voices += [(2, "calm", 6.0, 1.0), (10.4, "scream", 2.6, 1.0), (13.2, "excited", 4.0, 1.0)]
++            face = [(10.4, 13.0, "scream")]
++            gt = (10.4, 13.0)
++        elif name == "funny_commentary":
++            voices += [(2, "calm", 7.0, 1.0), (10, "excited", 7.0, 1.0), (13.5, "laugh", 2.5, 0.7)]
++            face = [(10, 16, "laugh")]
++            gt = (10, 16)
++        elif name == "unrelated_laugh":
++            voices += [(2, "calm", 7.0, 1.0), (12, "laugh", 4.5, 0.9)]
++            face = [(12, 16.5, "laugh")]
++            gt = (12, 16.5)
++        elif name == "facecam_silent":
++            ev = [("feed", 10, 14), ("flash", 10, 10.3), ("banner", 11, 13)]
++            face = [(10.4, 13.5, "lunge")]
++            voices.append((2, "calm", 6.0, 1.0))
++            gt = (10.4, 13.5)
++        elif name == "masked_laugh":
++            ev = [("boomflash", 8, 22), ("flash", 8, 8.2)]
++            shake = [(8, 14)]
++            for s in np.arange(8, 21, 1.1):
++                i = a0 + int(s * SR)
++                audio[i:i + int(1.5 * SR)] += boom(1.5, 0.55, rng)[: len(audio[i:i + int(1.5 * SR)])]
++            voices += [(2, "calm", 5.0, 1.0), (11, "laugh", 6.0, 0.6)]
++            face = [(11, 17, "laugh")]
++            gt = (11, 17)
++        for rel, kind, dur, gain in voices:
++            seg = voice(kind, dur, rng, var) * gain * 1.6
++            i = a0 + int(rel * SR)
++            audio[i:i + len(seg)] += seg[: len(audio[i:i + len(seg)])]
++        sc.append(dict(name=name, role=role, t0=t0, length=length, ev=ev, shake=shake, face=face, voices=voices))
++        if gt:
++            truth.append(dict(name=name, role=role, start=t0 + gt[0], end=t0 + gt[1]))
++        else:
++            truth.append(dict(name=name, role=role, start=t0, end=t0 + length))
++        t0 += length
++
++    audio = np.clip(audio * 0.9, -1, 1)
++    wav = out_dir / "vod.wav"
++    with wave.open(str(wav), "wb") as f:
++        f.setnchannels(1); f.setsampwidth(2); f.setframerate(SR)
++        f.writeframes((audio[: int(total * SR)] * 32767).astype(np.int16).tobytes())
++
++    # video
++    base = np.zeros((H, W, 3), np.uint8)
++    yy, xx = np.mgrid[0:H, 0:W]
++    base[..., 0] = (60 + 40 * xx / W).astype(np.uint8)
++    base[..., 1] = (80 + 40 * yy / H).astype(np.uint8)
++    base[..., 2] = 60
++    mp4 = out_dir / "vod.mp4"
++    proc = subprocess.Popen(
++        ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}",
++         "-r", str(FPS), "-i", "-", "-i", str(wav), "-c:v", "libx264", "-preset", "veryfast",
++         "-crf", "22", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-shortest", str(mp4)],
++        stdin=subprocess.PIPE)
++    for s in sc:
++        nfr = int(s["length"] * FPS)
++        for k in range(nfr):
++            t = k / FPS
++            drift = np.roll(base, int(t * 3) % W, axis=1)
++            fr = draw_scene(drift, t, s["ev"], any(a <= t <= b for a, b in s["shake"]))
++            openness, lean, bob, covered = 0.1, 0.0, 0.0, False
++            # mouth follows whichever voice is active
++            for rel, kind, dur, gain in s["voices"]:
++                if rel <= t < rel + dur:
++                    tt = t - rel
++                    if kind == "calm":
++                        openness = 0.15 + 0.25 * max(0, np.sin(2 * np.pi * 3.8 * tt))
++                    elif kind == "excited":
++                        openness = 0.3 + 0.35 * max(0, np.sin(2 * np.pi * 4.6 * tt))
++                    elif kind == "laugh":
++                        openness = 0.5 + 0.5 * max(0, np.sin(2 * np.pi * 5.2 * tt))
++                    elif kind == "scream":
++                        openness = 1.0
++            for a, b, kind in s["face"]:
++                if a <= t <= b:
++                    if kind == "laugh":
++                        lean = 0.6 * np.sin(2 * np.pi * 2.3 * (t - a)); bob = np.sin(2 * np.pi * 5.0 * (t - a))
++                    elif kind == "scream":
++                        lean = 1.0
++                    elif kind == "lunge":
++                        lean = 1.0 if (t - a) < 1.5 else 0.2; covered = (t - a) > 1.8; openness = 0.1
++            draw_face(fr, openness, lean, bob, covered)
++            proc.stdin.write(fr.tobytes())
++    proc.stdin.close(); proc.wait()
++    (out_dir / "truth.json").write_text(json.dumps(dict(seed=seed, variant=var, total=total, plan=truth), indent=1))
++    print("wrote", mp4, f"{total}s")
++
++
++if __name__ == "__main__":
++    build(Path(sys.argv[1]), int(sys.argv[2]) if len(sys.argv) > 2 else 1,
++          int(sys.argv[3]) if len(sys.argv) > 3 else 0)
+diff --git a/tools/gameplay-eval/render_demo.py b/tools/gameplay-eval/render_demo.py
+new file mode 100644
+index 0000000..b675ba1
+--- /dev/null
++++ b/tools/gameplay-eval/render_demo.py
+@@ -0,0 +1,21 @@
++"""DEMONSTRATION render of a reaction pick using its edit_recommendations
++(stacked facecam-over-game, 540x960). NOT the product renderer (that is Lane B);
++it exists so a human can look at what the recommendations describe.
++Usage: render_demo.py <video> <picks.json key> <pick index> <out.mp4>"""
++import json, subprocess, sys
++video, key, idx, out = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
++pk = json.load(open("test-footage/real_picks_all.json"))[key][idx]
++sec = lambda s: int(s.split(":")[0]) * 60 + int(s.split(":")[1])
++a, b = sec(pk["start_time"]), sec(pk["end_time"])
++roi = pk["edit_recommendations"]["framing"]["facecam_roi"]
++x, y, w, h = roi
++zooms = pk["edit_recommendations"]["zooms"]
++# facecam panel: crop ROI, scale to 540x400; game panel: centre crop 4:3-ish to 540x560
++fc = f"[0:v]crop=iw*{w}:ih*{h}:iw*{x}:ih*{y},scale=540:400:force_original_aspect_ratio=increase,crop=540:400[face]"
++game = "[0:v]crop=ih*0.9:ih:(iw-ih*0.9)/2:0,scale=540:560[game]"
++graph = f"{fc};{game};[face][game]vstack[v]"
++cmd = ["ffmpeg", "-v", "error", "-y", "-ss", str(a), "-t", str(b - a), "-i", video,
++       "-filter_complex", graph, "-map", "[v]", "-map", "0:a", "-c:v", "libx264", "-preset", "veryfast",
++       "-crf", "21", "-c:a", "aac", out]
++subprocess.run(cmd, check=True)
++print("window", pk["start_time"], pk["end_time"], "title:", pk.get("hook_title"), "zooms recommended:", len(zooms), "(not applied by this demo)")
+diff --git a/tools/gameplay-eval/score_baseline.py b/tools/gameplay-eval/score_baseline.py
+new file mode 100644
+index 0000000..22f5340
+--- /dev/null
++++ b/tools/gameplay-eval/score_baseline.py
+@@ -0,0 +1,15 @@
++"""Run the CURRENT no-transcript selector on a gameplay fixture and score it
++against the Lane A ground truth. Usage: python score_baseline.py <video> [clip_seconds] [count]"""
++import sys, json
++sys.path.insert(0, "backend")
++from pathlib import Path
++from src.auto_director.beat_grid import analyse_audio_beats
++from src.auto_director.visual_moments import select_visual_moments
++from truth import GROUND_TRUTH, score_moments
++
++video = Path(sys.argv[1]); clip = float(sys.argv[2]) if len(sys.argv) > 2 else 30
++count = int(sys.argv[3]) if len(sys.argv) > 3 else 5
++grid = analyse_audio_beats(video)
++moments = select_visual_moments(video, 150.0, target_count=count, clip_seconds=clip, beat_grid=grid)
++for m in moments: print(m["start_time"], m["end_time"], m["reasoning"][:110])
++print(json.dumps(score_moments(moments), indent=1))
+diff --git a/tools/gameplay-eval/score_new.py b/tools/gameplay-eval/score_new.py
+new file mode 100644
+index 0000000..76aa5ff
+--- /dev/null
++++ b/tools/gameplay-eval/score_new.py
+@@ -0,0 +1,20 @@
++"""Run the frame-evidence detector and score it. Usage: score_new.py <video> [clip_s] [count] [--dump]"""
++import sys, json, time
++sys.path.insert(0, "backend"); sys.path.insert(0, "tools/gameplay-eval")
++from pathlib import Path
++from src.auto_director import gameplay_moments as gm
++from src.auto_director.beat_grid import analyse_audio_beats
++from truth import score_moments
++video = Path(sys.argv[1]); clip = float(sys.argv[2]) if len(sys.argv) > 2 else 30
++count = int(sys.argv[3]) if len(sys.argv) > 3 else 5
++t0 = time.time(); ev = gm.extract_frame_evidence(video); t1 = time.time()
++grid = analyse_audio_beats(video)
++if "--dump" in sys.argv:
++    az = gm.audio_support_series(grid, len(ev["motion"])); ev_s, zs = gm.fuse_evidence(ev, az)
++    for i in range(len(ev_s)):
++        if ev_s[i] > 0 or az[i] > 3:
++            print(i, f"ev={ev_s[i]:.1f}", " ".join(f"{f[:3]}={zs[f][i]:.1f}" for f in gm.FEATURES), f"aud={az[i]:.1f}")
++ms = gm.select_gameplay_moments(video, float(ev["duration"][0]), target_count=count, clip_seconds=clip, beat_grid=grid, evidence=ev)
++print(f"extract {t1-t0:.1f}s")
++for m in ms: print(m["start_time"], m["end_time"], m["virality_score"], m["hook_type"], m["reasoning"][:150])
++print(json.dumps(score_moments(ms)))
+diff --git a/tools/gameplay-eval/score_streamer.py b/tools/gameplay-eval/score_streamer.py
+new file mode 100644
+index 0000000..d9a09d4
+--- /dev/null
++++ b/tools/gameplay-eval/score_streamer.py
+@@ -0,0 +1,47 @@
++"""Score selectors on the SYNTHETIC streamer-VOD matrix.
++Usage: score_streamer.py <vod_dir> [count] [--dump]
++Reports, per selector, which scenario each pick landed in and the verdicts."""
++import sys, json, time
++sys.path.insert(0, "backend"); sys.path.insert(0, "tools/gameplay-eval")
++from pathlib import Path
++from src.auto_director import reaction_moments as rm, gameplay_moments as gm, visual_moments as vm
++from src.auto_director.beat_grid import analyse_audio_beats
++
++d = Path(sys.argv[1]); count = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else 6
++truth = json.loads((d / "truth.json").read_text()); plan = truth["plan"]; dur = float(truth["total"]); vod = d / "vod.mp4"
++def sec(s): m, x = s.split(":"); return int(m) * 60 + int(x)
++
++def where(m):
++    s, e = sec(m["start_time"]), sec(m["end_time"])
++    best = max(plan, key=lambda p: max(0, min(e, p["end"]) - max(s, p["start"])))
++    ov = max(0, min(e, best["end"]) - max(s, best["start"]))
++    return best, ov
++
++def report(label, ms, t):
++    print(f"\n== {label}  ({t:.1f}s)")
++    pos_hit, fp = set(), []
++    for m in sorted(ms, key=lambda m: -m["virality_score"]):
++        p, ov = where(m); good = p["role"].startswith("pos") and ov >= 0.5 * (p["end"] - p["start"])
++        if good: pos_hit.add(p["name"])
++        elif p["role"] in ("neg", "weak") or not good: fp.append(p["name"])
++        print(f"  {m['start_time']}-{m['end_time']} score={m['virality_score']:>3} -> {p['name']:<20} role={p['role']:<10} {'HIT' if good else 'MISS/FP'}  [{m.get('hook_type','')}]")
++    pos = [p["name"] for p in plan if p["role"].startswith("pos")]
++    print(f"  positives found {len(pos_hit)}/{len(pos)}: {sorted(pos_hit)}; missed {sorted(set(pos)-pos_hit)}; false-positive picks: {fp}")
++    return {"found": len(pos_hit), "of": len(pos), "fp": len(fp), "n": len(ms)}
++
++res = {}
++t = time.time(); grid = analyse_audio_beats(vod)
++ms = vm.select_visual_moments(vod, dur, target_count=count, clip_seconds=30, beat_grid=grid)
++res["baseline(audio peaks)"] = report("BASELINE: audio peaks + cuts (V9)", ms, time.time() - t)
++t = time.time(); ms = gm.select_gameplay_moments(vod, dur, target_count=count, clip_seconds=30, beat_grid=grid, evidence=gm.extract_frame_evidence(vod))
++res["GA1 gameplay-only"] = report("GA1: gameplay frame-evidence only (no streamer model)", ms, time.time() - t)
++t = time.time(); voice = rm.extract_voice_evidence(vod); tv = time.time() - t
++t = time.time(); roi = (470/640, 226/360, 160/640, 120/360) if '--known-roi' in sys.argv else rm.find_facecam(vod, dur); face = rm.extract_facecam_activity(vod, roi) if roi else None; tf = time.time() - t
++print(f"\nvoice extract {tv:.1f}s, facecam {tf:.1f}s, roi={None if roi is None else [round(x,2) for x in roi]}")
++if "--dump" in sys.argv:
++    st, zs, vp = rm.reaction_series(voice, face)
++    for i in range(len(st)):
++        if st[i] > 0: print(i, f"str={st[i]:.1f}", " ".join(f"{k[:3]}={zs[k][i]:.1f}" for k in zs))
++t = time.time(); ms = rm.select_streamer_moments(vod, dur, target_count=count, clip_seconds=30, voice=voice, face=face, facecam_roi=roi)
++res["streamer reaction"] = report("NEW: streamer-reaction + event correlation", ms, time.time() - t)
++print(json.dumps(res))
+diff --git a/tools/gameplay-eval/truth.py b/tools/gameplay-eval/truth.py
+new file mode 100644
+index 0000000..a584461
+--- /dev/null
++++ b/tools/gameplay-eval/truth.py
+@@ -0,0 +1,30 @@
++"""Ground truth + scoring shared by baseline and new-detector runs."""
++GROUND_TRUTH = {"kill": (20.0, 26.0), "death": (47.0, 52.0), "funny": (75.0, 82.0), "clutch": (110.0, 120.0)}
++DECOY = (95.0, 97.5)
++
++def _sec(s):
++    m, x = s.split(":"); return int(m) * 60 + int(x)
++
++def score_moments(moments):
++    """A moment hits an event if its window contains >=50% of the event span.
++    Precision = moments that hit a real event / moments. Decoy fails if any
++    moment's window contains the decoy span AND hits no real event, or the
++    top-ranked (first by virality) moment is decoy-only."""
++    wins = [(_sec(m["start_time"]), _sec(m["end_time"]), m) for m in moments]
++    hit, useful = {}, 0
++    for name, (a, b) in GROUND_TRUTH.items():
++        for s, e, _ in wins:
++            ov = max(0, min(e, b) - max(s, a))
++            if ov >= 0.5 * (b - a): hit[name] = (s, e); break
++    for s, e, _ in wins:
++        if any(max(0, min(e, b) - max(s, a)) >= 0.5 * (b - a) for a, b in GROUND_TRUTH.values()): useful += 1
++    decoy_only = [(s, e) for s, e, _ in wins
++                  if max(0, min(e, DECOY[1]) - max(s, DECOY[0])) > 0
++                  and not any(max(0, min(e, b) - max(s, a)) >= 0.5 * (b - a) for a, b in GROUND_TRUTH.values())]
++    ranked = sorted(wins, key=lambda w: -w[2].get("virality_score", 0))
++    top = ranked[0] if ranked else None
++    top_is_decoy = bool(top) and (top[0], top[1]) in decoy_only
++    return {"events_hit": sorted(hit), "recall": len(hit) / len(GROUND_TRUTH),
++            "precision": (useful / len(wins)) if wins else 0.0, "n_moments": len(wins),
++            "decoy_selected": bool(decoy_only), "decoy_is_top_ranked": top_is_decoy,
++            "decoy_verdict": "FAIL" if top_is_decoy else ("WARN-selected-lower" if decoy_only else "PASS")}
+diff --git a/tools/provider-audit/audit_providers.py b/tools/provider-audit/audit_providers.py
+new file mode 100644
+index 0000000..2c6d8cf
+--- /dev/null
++++ b/tools/provider-audit/audit_providers.py
+@@ -0,0 +1,365 @@
++"""Keyless-safe provider audit for SnipNova's AI ladder.
++
++Never prints, logs or writes a key value. Only reports present / missing,
++status codes and a verdict. Free checks only: model-list and key-validity
++endpoints cost nothing. A real inference call is OFF unless you pass --infer,
++and the metered DeepSeek route additionally needs --allow-metered.
++
++  python audit_providers.py --static                # repo/config checks, no network
++  python audit_providers.py --live                  # key + model checks (free endpoints)
++  python audit_providers.py --live --infer          # + one 1-token request per FREE provider
++  python audit_providers.py --live --infer --allow-metered   # + DeepSeek (spends a fraction of a cent)
++  python audit_providers.py --env-file C:\\path\\.env  # read keys from a file instead of the environment
++
++Run it on the machine that holds the real keys (the installed app's .env).
++Exit code 0 = no FAIL. Output: a table plus audit_report.json (no secrets).
++"""
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import re
++import sys
++import time
++import urllib.error
++import urllib.request
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[2]
++
++# name -> (env vars, model-list URL builder, free?, notes)
++PROVIDERS = {
++    "groq": dict(env=["GROQ_API_KEY"], models="https://api.groq.com/openai/v1/models",
++                 chat="https://api.groq.com/openai/v1/chat/completions", cost="free-tier",
++                 site="https://console.groq.com", card=False,
++                 limits="free tier has per-minute and per-day request/token limits that change; check console.groq.com/settings/limits"),
++    "nvidia": dict(env=["NVIDIA_API_KEY"], models="https://integrate.api.nvidia.com/v1/models",
++                   chat="https://integrate.api.nvidia.com/v1/chat/completions", cost="free-credits",
++                   site="https://build.nvidia.com", card=False,
++                   limits="NIM trial access is rate-limited (requests per minute) and may need NVIDIA Developer Program signup"),
++    "openrouter": dict(env=["OPENROUTER_API_KEY"], models="https://openrouter.ai/api/v1/models",
++                       chat="https://openrouter.ai/api/v1/chat/completions", cost="free-only-with-:free-slugs",
++                       site="https://openrouter.ai", card=False,
++                       limits="free (:free) models: low daily request cap unless credits were ever bought; verify at openrouter.ai/settings/credits"),
++    "deepseek": dict(env=["DEEPSEEK_API_KEY"], models="https://api.deepseek.com/models",
++                     chat="https://api.deepseek.com/chat/completions", cost="METERED",
++                     site="https://platform.deepseek.com", card=False,
++                     limits="pay-as-you-go balance; requests fail with 402 when the balance is 0"),
++    "cloudflare": dict(env=["CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID"], models=None, chat=None,
++                       cost="free-allocation", site="https://dash.cloudflare.com", card=False,
++                       limits="Workers AI free allocation is 10,000 Neurons/day on the Workers Free plan"),
++    "huggingface": dict(env=["HF_TOKEN"], models=None, chat=None, cost="free", site="https://huggingface.co",
++                        card=False, limits="needed only for gated models (e.g. pyannote terms click)"),
++    "ollama": dict(env=[], models="http://localhost:11434/api/tags", chat=None, cost="local-free",
++                   site="https://ollama.com", card=False, limits="runs on your GPU/CPU; qwen3:8b needs ~5-6 GB"),
++}
++
++
++def load_env(path: str | None) -> dict[str, str]:
++    env = dict(os.environ)
++    if path:
++        for line in Path(path).read_text(encoding="utf-8", errors="ignore").splitlines():
++            m = re.match(r"\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$", line)
++            if m and not line.lstrip().startswith("#"):
++                env[m.group(1)] = m.group(2).strip().strip('"').strip("'")
++    return env
++
++
++def present(env: dict[str, str], name: str) -> bool:
++    v = env.get(name, "")
++    return bool(v) and v.lower() not in ("changeme", "your_key_here", "xxx")
++
++
++def http(url: str, key: str | None = None, body: dict | None = None, timeout: int = 20, headers: dict | None = None):
++    req = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(),
++                                 method="POST" if body is not None else "GET")
++    req.add_header("User-Agent", "snipnova-provider-audit")
++    if body is not None:
++        req.add_header("Content-Type", "application/json")
++    if key:
++        req.add_header("Authorization", f"Bearer {key}")
++    for k, v in (headers or {}).items():
++        req.add_header(k, v)
++    t0 = time.time()
++    try:
++        with urllib.request.urlopen(req, timeout=timeout) as r:
++            return r.status, r.read().decode("utf-8", "ignore"), dict(r.headers), time.time() - t0
++    except urllib.error.HTTPError as e:
++        return e.code, e.read().decode("utf-8", "ignore")[:400], dict(e.headers or {}), time.time() - t0
++    except Exception as e:  # network down, DNS, timeout
++        return 0, f"{type(e).__name__}", {}, time.time() - t0
++
++
++def classify(status: int, body: str = "") -> str:
++    """Plain verdict for an HTTP status. Pure, unit-tested."""
++    if status == 0:
++        return "UNREACHABLE"
++    if 200 <= status < 300:
++        return "OK"
++    if status in (401, 403):
++        return "AUTH_FAILED"
++    if status == 402:
++        return "OUT_OF_CREDIT"
++    if status == 429:
++        return "RATE_LIMITED_OR_QUOTA"
++    if status == 404:
++        return "NOT_FOUND"
++    if status >= 500:
++        return "PROVIDER_ERROR"
++    return f"HTTP_{status}"
++
++
++# ---- static audit ---------------------------------------------------------
++
++def parse_gateway_config(text: str) -> list[dict]:
++    """Minimal parser for litellm_config.yaml's model_list (no PyYAML needed)."""
++    entries, cur = [], None
++    for raw in text.splitlines():
++        line = raw.split("#", 1)[0].rstrip()
++        m = re.match(r"\s*-\s*model_name:\s*(\S+)", line)
++        if m:
++            cur = {"name": m.group(1), "model": "", "key_env": None, "api_base": None}
++            entries.append(cur)
++            continue
++        if cur is None:
++            continue
++        for field, rx in (("model", r"\s*model:\s*(\S+)"), ("api_base", r"\s*api_base:\s*(\S+)"),
++                          ("key_env", r"\s*api_key:\s*os\.environ/(\S+)")):
++            mm = re.match(rx, line)
++            if mm and not cur.get(field):
++                cur[field] = mm.group(1)
++    return entries
++
++
++def static_audit() -> list[dict]:
++    out = []
++    cfg = ROOT / "litellm_config.yaml"
++    if not cfg.exists():
++        return [dict(check="gateway config", status="FAIL", detail="litellm_config.yaml not found")]
++    entries = parse_gateway_config(cfg.read_text(encoding="utf-8"))
++    out.append(dict(check="gateway routes parsed", status="OK", detail=f"{len(entries)} routes: " + ", ".join(e["name"] for e in entries)))
++    for e in entries:
++        m = e["model"].lower()
++        if "gemini" in m or "gemini" in e["name"].lower():
++            out.append(dict(check=f"{e['name']}: no Gemini", status="FAIL", detail="Gemini route present (banned)"))
++        if m.startswith("openrouter/") and not m.endswith(":free"):
++            out.append(dict(check=f"{e['name']}: OpenRouter free only", status="FAIL", detail=f"paid slug {e['model']}"))
++        if e["key_env"] and e["key_env"] not in sum((p["env"] for p in PROVIDERS.values()), []):
++            out.append(dict(check=f"{e['name']}: key variable known", status="WARN", detail=f"reads {e['key_env']} (not in audit table)"))
++    names = [e["name"] for e in entries]
++    expect = ["deepseek-chat", "clip-assured", "clip-fast", "nim-deepseek", "openrouter-free", "cloudflare-free", "groq-20b", "local-qwen"]
++    missing = [n for n in expect if n not in names]
++    out.append(dict(check="ladder routes present", status="OK" if not missing else "FAIL",
++                    detail="all 8 ladder routes defined" if not missing else f"missing: {missing}"))
++    # where do app services read the keys?
++    readers = {}
++    for p in (ROOT / "backend" / "src").rglob("*.py"):
++        t = p.read_text(encoding="utf-8", errors="ignore")
++        for var in ("GROQ_API_KEY", "DEEPSEEK_API_KEY", "NVIDIA_API_KEY", "OPENROUTER_API_KEY", "CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "HF_TOKEN"):
++            if var in t:
++                readers.setdefault(var, []).append(p.name)
++    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8", errors="ignore") + (ROOT / "compose.override.yml").read_text(encoding="utf-8", errors="ignore")
++    for var in ("GROQ_API_KEY", "DEEPSEEK_API_KEY", "NVIDIA_API_KEY", "OPENROUTER_API_KEY", "CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "HF_TOKEN"):
++        in_compose = var in compose
++        in_cfg = any(e["key_env"] == var for e in entries)
++        used = in_cfg or var in readers
++        out.append(dict(check=f"{var} wired", status="OK" if (in_compose and used) else "WARN",
++                        detail=f"gateway-config={in_cfg} app-code={'yes' if var in readers else 'no'} compose-passes-it={in_compose}"))
++    return out
++
++
++# ---- live audit -----------------------------------------------------------
++
++def gateway_models() -> dict[str, list[str]]:
++    cfg = ROOT / "litellm_config.yaml"
++    by = {"groq": [], "nvidia": [], "openrouter": [], "deepseek": [], "cloudflare": []}
++    for e in parse_gateway_config(cfg.read_text(encoding="utf-8")):
++        m = e["model"]
++        if m.startswith("groq/"):
++            by["groq"].append(m[len("groq/"):])
++        elif m.startswith("openrouter/"):
++            by["openrouter"].append(m[len("openrouter/"):])
++        elif (e.get("api_base") or "").startswith("https://integrate.api.nvidia.com"):
++            by["nvidia"].append(m[len("openai/"):])
++        elif (e.get("api_base") or "").startswith("https://api.deepseek.com"):
++            by["deepseek"].append(m[len("openai/"):])
++        elif "cloudflare" in m:
++            by["cloudflare"].append(m)
++    return by
++
++
++def live_audit(env: dict[str, str], infer: bool, allow_metered: bool) -> list[dict]:
++    rows = []
++    wanted = gateway_models()
++    for name, p in PROVIDERS.items():
++        row = dict(provider=name, cost=p["cost"], site=p["site"], card_required=p["card"], limits=p["limits"],
++                   env={v: ("present" if present(env, v) else "MISSING") for v in p["env"]})
++        if p["env"] and not all(present(env, v) for v in p["env"]):
++            row.update(verdict="KEY_MISSING", detail=f"set {', '.join(p['env'])} in the installed app's .env")
++            rows.append(row)
++            continue
++        key = env.get(p["env"][0]) if p["env"] else None
++        if name == "cloudflare":
++            acct = env["CLOUDFLARE_ACCOUNT_ID"]
++            # Account-owned tokens verify at the account endpoint; user-owned
++            # tokens at /user. Try both so a valid token is never called bad.
++            st, body, _h, dt = http(f"https://api.cloudflare.com/client/v4/accounts/{acct}/tokens/verify", key)
++            row["verified_via"] = "account"
++            if st != 200:
++                st_u, body_u, _h_u, dt_u = http("https://api.cloudflare.com/client/v4/user/tokens/verify", key)
++                if st_u == 200:
++                    st, body, dt, row["verified_via"] = st_u, body_u, dt_u, "user"
++            row.update(key_check=classify(st), latency=round(dt, 2))
++            if st != 200:
++                row["detail"] = ("neither account nor user token verification accepted this token; if it is the old "
++                                 "'Global API Key' it will not work: create an API TOKEN with Workers AI permission")
++            row["verdict"] = "OK" if st == 200 else classify(st)
++            if st == 200 and infer:
++                model = "@cf/openai/gpt-oss-120b"
++                st2, body2, _h2, dt2 = http(f"https://api.cloudflare.com/client/v4/accounts/{acct}/ai/v1/chat/completions", key,
++                                            {"model": model, "messages": [{"role": "user", "content": "Reply with: ok"}], "max_tokens": 5})
++                row.update(inference=classify(st2), inference_latency=round(dt2, 2))
++        elif name == "huggingface":
++            st, body, _h, dt = http("https://huggingface.co/api/whoami-v2", key)
++            row.update(key_check=classify(st), latency=round(dt, 2), verdict="OK" if st == 200 else classify(st))
++        elif name == "ollama":
++            st, body, _h, dt = http(p["models"])
++            tags = []
++            try:
++                tags = [m["name"] for m in json.loads(body).get("models", [])]
++            except Exception:
++                pass
++            has = any(t.startswith("qwen3:8b") for t in tags)
++            row.update(server=classify(st), models_found=len(tags), qwen3_8b=has,
++                       verdict="OK" if has else ("MODEL_MISSING" if st == 200 else "UNREACHABLE"),
++                       detail="" if has else "run: ollama pull qwen3:8b (about 5 GB)")
++        else:
++            st, body, hdr, dt = http(p["models"], key)
++            row.update(key_check=classify(st, body), latency=round(dt, 2))
++            ids = []
++            try:
++                ids = [m["id"] for m in json.loads(body).get("data", [])]
++            except Exception:
++                pass
++            missing = [m for m in wanted.get(name, []) if ids and m not in ids]
++            row["models_configured"] = wanted.get(name, [])
++            row["models_missing_from_provider"] = missing
++            if missing and ids:
++                # Public model names only (never secrets): the closest ids the provider does list.
++                row["closest_listed_models"] = {
++                    m: [i for i in ids if m.split("/")[-1].split("-")[0].lower() in i.lower()][:8] for m in missing}
++                if name == "deepseek":
++                    row["provider_lists"] = ids[:30]
++            row["verdict"] = "OK" if st == 200 and not missing else ("MODEL_NOT_LISTED" if st == 200 else classify(st))
++            if name == "openrouter":
++                for m in wanted["openrouter"]:
++                    if not m.endswith(":free"):
++                        row["verdict"] = "FAIL_PAID_SLUG"
++            if infer and st == 200 and wanted.get(name) and (name != "deepseek" or allow_metered):
++                m = wanted[name][0]
++                st2, body2, hdr2, dt2 = http(p["chat"], key, {"model": m, "messages": [{"role": "user", "content": "Reply with: ok"}], "max_tokens": 8})
++                ok = False
++                try:
++                    ok = bool(json.loads(body2)["choices"][0])
++                except Exception:
++                    pass
++                row.update(inference=classify(st2) if not (st2 == 200 and not ok) else "EMPTY_RESPONSE",
++                           inference_latency=round(dt2, 2), inference_model=m)
++                rl = {k: v for k, v in hdr2.items() if "ratelimit" in k.lower() or "retry-after" in k.lower()}
++                if rl:
++                    row["rate_limit_headers"] = rl
++            elif infer and name == "deepseek" and not allow_metered:
++                row["inference"] = "SKIPPED (metered; pass --allow-metered)"
++        rows.append(row)
++    return rows
++
++
++NVIDIA_CANDIDATES = [  # names seen on build.nvidia.com; probed, never assumed
++    "nvidia/nemotron-3-ultra-550b-a55b",
++    "nvidia/nemotron-3.5-super-vl-120b-a12b",
++    "nvidia/nemotron-3.5-lightning-30b-a3b",
++    "deepseek-ai/deepseek-v4.1-flash",
++]
++
++
++def probe_nvidia(env: dict[str, str]) -> dict:
++    """Send one 8-token request to every NIM slug in the gateway config plus the
++    known candidates, and report which ones THIS account can actually call.
++    Free-tier traffic only; key never printed."""
++    key = env.get("NVIDIA_API_KEY", "")
++    if not key:
++        return {"verdict": "KEY_MISSING"}
++    cfg_ids = gateway_models()["nvidia"]
++    st, body, _h, _dt = http("https://integrate.api.nvidia.com/v1/models", key)
++    listed = []
++    try:
++        listed = [m["id"] for m in json.loads(body).get("data", [])]
++    except Exception:
++        pass
++    family = [i for i in listed if any(w in i.lower() for w in ("nemotron", "deepseek", "kimi", "glm", "qwen3", "mistral-large", "maverick"))
++              and "embed" not in i.lower() and "guard" not in i.lower() and "retriever" not in i.lower()]
++    todo = list(dict.fromkeys(cfg_ids + NVIDIA_CANDIDATES + family[:10]))
++    rows = []
++    for m in todo:
++        st2, body2, hdr2, dt2 = http("https://integrate.api.nvidia.com/v1/chat/completions", key,
++                                    {"model": m, "messages": [{"role": "user", "content": "Reply with: ok"}], "max_tokens": 8}, timeout=45)
++        ok = False
++        try:
++            ok = st2 == 200 and bool(json.loads(body2)["choices"])
++        except Exception:
++            pass
++        rows.append({"model": m, "in_config": m in cfg_ids, "listed_by_/v1/models": m in listed,
++                     "result": "WORKS" if ok else classify(st2, body2), "http": st2, "seconds": round(dt2, 1)})
++    return {"models_listed_total": len(listed), "family_listed": family[:25], "probes": rows}
++
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--static", action="store_true")
++    ap.add_argument("--live", action="store_true")
++    ap.add_argument("--infer", action="store_true")
++    ap.add_argument("--allow-metered", action="store_true")
++    ap.add_argument("--probe-nvidia", action="store_true", help="test every NIM slug with a real 8-token call")
++    ap.add_argument("--env-file")
++    ap.add_argument("--out", default="audit_report.json")
++    a = ap.parse_args()
++    if not (a.static or a.live):
++        a.static = True
++    report = {}
++    fails = 0
++    if a.static:
++        report["static"] = static_audit()
++        print("== STATIC (no network, no keys read)")
++        for r in report["static"]:
++            print(f"  [{r['status']:<4}] {r['check']}: {r['detail']}")
++            fails += r["status"] == "FAIL"
++    if a.live:
++        env = load_env(a.env_file)
++        report["live"] = live_audit(env, a.infer, a.allow_metered)
++        print("== LIVE (key values are never printed)")
++        for r in report["live"]:
++            print(f"  {r['provider']:<12} {r['verdict']:<16} env={r['env']} cost={r['cost']}")
++            for k in ("key_check", "verified_via", "inference", "models_missing_from_provider",
++                      "closest_listed_models", "provider_lists", "detail"):
++                if r.get(k):
++                    print(f"      {k}: {r[k]}")
++            fails += r["verdict"].startswith(("AUTH", "FAIL", "OUT_OF"))
++    if a.probe_nvidia:
++        report["nvidia_probe"] = probe_nvidia(load_env(a.env_file))
++        pr = report["nvidia_probe"]
++        print("== NVIDIA PROBE (real 8-token call per model; keys never printed)")
++        if "probes" in pr:
++            print(f"  models listed by your key: {pr['models_listed_total']}")
++            for r in pr["probes"]:
++                print(f"  {r['result']:<22} {r['model']}  (in_config={r['in_config']}, listed={r['listed_by_/v1/models']}, {r['seconds']}s)")
++        else:
++            print("  ", pr)
++    Path(a.out).write_text(json.dumps(report, indent=1))
++    print(f"\nreport written to {a.out} (contains no secrets)")
++    return 1 if fails else 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tools/provider-audit/audit_static_report.json b/tools/provider-audit/audit_static_report.json
+new file mode 100644
+index 0000000..8b1d4fe
+--- /dev/null
++++ b/tools/provider-audit/audit_static_report.json
+@@ -0,0 +1,49 @@
++{
++ "static": [
++  {
++   "check": "gateway routes parsed",
++   "status": "OK",
++   "detail": "15 routes: clip-fast, or-ultra-free, nim-deepseek, clip-assured, groq-20b, local-qwen, deepseek-chat, openrouter-free, cloudflare-free, nim-glm-flash, nim-kimi-k2, nim-mistral-large4, nim-qwen3-235b, nim-llama4-maverick, nim-deepseek-pro"
++  },
++  {
++   "check": "ladder routes present",
++   "status": "OK",
++   "detail": "all 8 ladder routes defined"
++  },
++  {
++   "check": "GROQ_API_KEY wired",
++   "status": "OK",
++   "detail": "gateway-config=True app-code=yes compose-passes-it=True"
++  },
++  {
++   "check": "DEEPSEEK_API_KEY wired",
++   "status": "OK",
++   "detail": "gateway-config=True app-code=no compose-passes-it=True"
++  },
++  {
++   "check": "NVIDIA_API_KEY wired",
++   "status": "OK",
++   "detail": "gateway-config=True app-code=no compose-passes-it=True"
++  },
++  {
++   "check": "OPENROUTER_API_KEY wired",
++   "status": "OK",
++   "detail": "gateway-config=True app-code=yes compose-passes-it=True"
++  },
++  {
++   "check": "CLOUDFLARE_API_KEY wired",
++   "status": "OK",
++   "detail": "gateway-config=True app-code=no compose-passes-it=True"
++  },
++  {
++   "check": "CLOUDFLARE_ACCOUNT_ID wired",
++   "status": "WARN",
++   "detail": "gateway-config=False app-code=no compose-passes-it=True"
++  },
++  {
++   "check": "HF_TOKEN wired",
++   "status": "WARN",
++   "detail": "gateway-config=False app-code=no compose-passes-it=False"
++  }
++ ]
++}
+\ No newline at end of file

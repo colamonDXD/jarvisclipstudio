@@ -1,0 +1,68 @@
+# Use Python 3.11 slim image
+FROM python:3.11.17-slim-trixie
+
+# Install system dependencies including ffmpeg and unzip (for deno).
+# Noto provides fallback glyphs for multilingual captions (including Hindi)
+# and colour emoji. libass/fontconfig selects them when a chosen font lacks glyphs.
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    curl \
+    unzip \
+    fonts-noto-core \
+    fonts-noto-cjk \
+    fonts-noto-color-emoji \
+    fontconfig \
+    && fc-cache -f \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install deno (required by yt-dlp for YouTube JS challenge solving)
+RUN curl -fsSL https://deno.land/install.sh | sh
+ENV DENO_DIR=/root/.deno
+ENV PATH="/root/.deno/bin:${PATH}"
+
+# Install uv package manager
+RUN pip install uv
+
+# Set working directory
+WORKDIR /app
+
+# Copy pyproject.toml and uv.lock for dependency installation
+COPY pyproject.toml uv.lock* ./
+
+# New self-hosted setups can select CPU wheels without changing legacy builds.
+ARG BACKEND_CPU_ONLY=false
+RUN uv venv .venv && \
+    if [ "$BACKEND_CPU_ONLY" = "true" ]; then \
+      uv sync --frozen --extra cpu; \
+    else \
+      uv sync --frozen --extra cuda; \
+    fi
+
+# spaCy's English model, needed by Kokoro's phonemiser (misaki): without
+# it the first voiceover synthesis would try to download the model at
+# runtime. Build-time download, like deno above; the Kokoro weights
+# themselves (~315 MB) still fetch once on first voiceover use into the
+# uploads volume (see src/media/voiceover.py).
+RUN .venv/bin/python -m spacy download en_core_web_sm
+
+# yt-dlp and its PO-token plugin are installed from uv.lock above.
+
+# Copy source code
+COPY src/ ./src/
+
+# Copy fonts and transitions directories (only font files: libass tries to
+# load every file in the fonts dir as a font and chokes on README.md /
+# SOURCES.md — on some builds that fails the whole subtitles filter)
+COPY fonts/*.ttf fonts/*.otf ./fonts/
+COPY transitions/ ./transitions/
+
+# Create necessary directories for video processing
+RUN mkdir -p /app/uploads /app/clips /app/logs /tmp
+
+# Expose the port FastAPI will run on
+EXPOSE 8000
+
+# Activate virtual environment and start the application
+CMD [".venv/bin/uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

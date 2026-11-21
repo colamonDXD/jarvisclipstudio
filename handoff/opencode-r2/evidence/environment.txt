@@ -1,0 +1,15 @@
+Lane B Round 2 - environment
+============================
+
+Date:            2026-11-18
+Workspace:       D:\SnipNova-Dev\opencode
+Branch:          lane-b/round2 (created from lane-b/render-basics)
+Base commit:     b0965c8 (test(export): scope two pins to what they were written for)
+Python:          3.11.17 (backend\.venv)
+FFmpeg:          N-125365-g9a01c1cb6a-20260630
+FFprobe:         N-125365-g9a01c1cb6a-20260630
+Test environment: NO_PROXY=localhost, stub fcntl.py on PYTHONPATH,
+                  --no-cov
+
+No merge, rebase or push was performed. frontend/ and every prohibited
+file were left untouched.

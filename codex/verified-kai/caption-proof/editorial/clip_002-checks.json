@@ -1,0 +1,19 @@
+{
+  "sha256": {
+    "old": "9f90d985ccb75fc2304761d637e1c4722eb360ae9f57cfd1320c82837b0acf0b",
+    "new": "b1e43608700fc849920cc9e324bec02c5e77e04f6d02f390cc11459e1991011f",
+    "source": "709d63ec96f3b9f77bc8944f72cb50e09c956f51f838cc9bf3421a6be2fa70da"
+  },
+  "source_audio_checks": [
+    {
+      "at": 0.82,
+      "offset_ms": 0,
+      "correlation": 0.9998
+    },
+    {
+      "at": 12.07,
+      "offset_ms": 0,
+      "correlation": 0.9996
+    }
+  ]
+}

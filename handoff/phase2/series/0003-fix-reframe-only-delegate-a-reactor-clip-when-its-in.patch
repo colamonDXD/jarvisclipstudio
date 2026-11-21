@@ -1,0 +1,346 @@
+From 2b116b426dd5af86be897791b3a30e3a8365a183 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 19:20:26 +0530
+Subject: [PATCH 03/22] fix(reframe): only delegate a reactor clip when its
+ inset is measurable
+
+A two-pane video-call podcast has a small, still face in an upper corner
+and another face lower down, so find_reactor_face fired and the EDL
+planner delegated the clip to the plain path. The plain path could not
+measure a facecam rectangle either and fell back to a small-faces fit.
+With the source path, build_reframe_plan now asks for the same two-part
+evidence as choose_reaction_layout (face + measurable inset), sampled
+inside the clip's ranges. Callers without a source path keep the old
+face-only check; REFRAME_REACTOR_NEEDS_INSET=0 restores it everywhere.
+
+Proof: podcast 1oXjtK5Nsjw clip 2 now renders as split (both faces
+large) instead of fit; the facecam fixture still delegates.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                                  |   1 +
+ backend/src/media/reaction_layout.py          |  10 +-
+ backend/src/media/reframe_plan.py             |  70 +++++++-
+ .../tests/unit/test_reframe_reactor_inset.py  | 154 ++++++++++++++++++
+ 4 files changed, 230 insertions(+), 5 deletions(-)
+ create mode 100644 backend/tests/unit/test_reframe_reactor_inset.py
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index cb367da..0711168 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,7 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-17
++- **Fixed:** Video-call podcasts (each person in their own window) sometimes came out as the whole call shrunk into the middle of the vertical frame, with small faces. A still face in a top corner was being mistaken for a streamer's facecam. Now a facecam also needs a camera frame the app can actually measure; otherwise the clip gets the normal layout, which shows both people large, one above the other. Set `REFRAME_REACTOR_NEEDS_INSET=0` to restore the previous check.
+ - **Fixed:** On a computer with an NVIDIA graphics card but without the CUDA libraries installed (common outside the Docker image), transcription crashed or hung. It now switches to the processor once and remembers that for the rest of the run. `WHISPER_DEVICE=cpu` forces the processor.
+ - **Improved:** Clip quality checks can now flag a clip that is far from the -14 LUFS loudness short-form platforms use, and a clip that opens or ends mid-sentence or cuts a word. Both are warnings only and run when the pipeline supplies the loudness target and transcript.
+ - **Improved:** Talking videos now get roughly twice the stock B-roll, placed where it helps. Finance, podcast, education, vlog, travel and true-crime clips plan cutaways at 3–4.5 per minute instead of about one per clip, and each cutaway is chosen from what the speaker is actually saying ("interest rates" shows a central bank, not a random building). Words used as names ("Tim Cook", "Steve Jobs") and passing mentions no longer trigger footage. While the speaker says "look at this" the original picture stays on screen, and during a live reaction (laughing, "wow!") the stock shot appears as a framed picture-in-picture so the face stays visible. A stock search that fails because of a rejected key is now recorded as a provider error instead of "nothing found". Set `BROLL_CADENCE=legacy` to keep the previous behaviour.
+diff --git a/backend/src/media/reaction_layout.py b/backend/src/media/reaction_layout.py
+index a3c4a99..bc94507 100644
+--- a/backend/src/media/reaction_layout.py
++++ b/backend/src/media/reaction_layout.py
+@@ -89,17 +89,23 @@ def _source_pair(faces: Sequence[Box], width: int) -> Optional[List[Box]]:
+ 
+ def measure_reaction_inset(
+     path: Path, width: int, height: int, duration: float, face: Box,
++    times: Optional[Sequence[float]] = None,
+ ) -> Optional[Box]:
+     """Locate the two inner edges of a top-corner camera rectangle.
+ 
+     Median edge contrast over several times suppresses moving faces, chat,
+     and cuts in the underlying source. No video-specific pixel positions are
+-    supplied by the caller.
++    supplied by the caller. ``times`` (seconds in ``path``) overrides the
++    default six evenly spaced reads over ``[0, duration]`` -- the reframe
++    planner passes times inside the clip's ranges of the full source.
+     """
+     cap = cv2.VideoCapture(str(path))
+     frames = []
++    sample_times = (
++        list(times) if times else np.linspace(0, max(0., duration - .2), 6)
++    )
+     try:
+-        for t in np.linspace(0, max(0., duration - .2), 6):
++        for t in sample_times:
+             cap.set(cv2.CAP_PROP_POS_MSEC, float(t) * 1000)
+             ok, frame = cap.read()
+             if ok and frame.shape[:2] == (height, width):
+diff --git a/backend/src/media/reframe_plan.py b/backend/src/media/reframe_plan.py
+index c9d151c..5efed17 100644
+--- a/backend/src/media/reframe_plan.py
++++ b/backend/src/media/reframe_plan.py
+@@ -1196,10 +1196,58 @@ def _tracks_blurred_by_fit(
+     )
+ 
+ 
++def reactor_needs_inset() -> bool:
++    """REFRAME_REACTOR_NEEDS_INSET (default on): only delegate a clip to the
++    plain path when the reactor's camera rectangle can actually be measured.
++
++    Off (``0``/``false``/``no``/``off``) restores the face-only check.
++    """
++    return os.getenv("REFRAME_REACTOR_NEEDS_INSET", "1").strip().lower() not in {
++        "0", "false", "no", "off",
++    }
++
++
++def _inset_probe_times(
++    ranges: Sequence[Tuple[float, float]], count: int = 6
++) -> List[float]:
++    """``count`` source times spread evenly over the kept ranges."""
++    total = sum(end - start for start, end in ranges)
++    times: List[float] = []
++    if total <= 0:
++        return times
++    for index in range(count):
++        position = (index + 0.5) / count * total
++        for start, end in ranges:
++            span = end - start
++            if position <= span:
++                times.append(start + position)
++                break
++            position -= span
++    return times
++
++
++def _reactor_inset_measurable(
++    source_path: Path,
++    width: int,
++    height: int,
++    ranges: Sequence[Tuple[float, float]],
++    face: Tuple[float, float, float, float],
++) -> bool:
++    from .reaction_layout import measure_reaction_inset
++
++    times = _inset_probe_times(ranges)
++    duration = max((end for _, end in ranges), default=0.0)
++    return (
++        measure_reaction_inset(source_path, width, height, duration, face, times=times)
++        is not None
++    )
++
++
+ def build_reframe_plan(
+     analysis: Dict[str, Any],
+     keep_ranges: Sequence[Tuple[float, float]],
+     clip_duration: float,
++    source_path: Optional[Path] = None,
+ ) -> Optional[Dict[str, Any]]:
+     """Per-shot reframe plan on the compacted timeline, or None to skip.
+ 
+@@ -1209,6 +1257,12 @@ def build_reframe_plan(
+     reaction-dominant clip: the EDL graph cannot compose a reactor inset,
+     so the clip keeps rendering through the plain path's layout stack
+     instead of being centre-cropped by the EDL.
++
++    With ``source_path`` (and REFRAME_REACTOR_NEEDS_INSET on), a
++    reactor-like corner face only delegates when the inset rectangle is
++    measurable, the same two-part test the plain path's reaction layout
++    applies. A two-pane video call has a still corner face too, but no
++    facecam rectangle; delegating it only bought a small-faces fit.
+     """
+     width = int(analysis.get("width") or 0)
+     height = int(analysis.get("height") or 0)
+@@ -1240,12 +1294,22 @@ def build_reframe_plan(
+         try:
+             from .reaction_layout import find_reactor_face
+ 
+-            if find_reactor_face(width, height, clip_samples) is not None:
++            reactor = find_reactor_face(width, height, clip_samples)
++            if reactor is not None and (
++                source_path is None
++                or not reactor_needs_inset()
++                or _reactor_inset_measurable(source_path, width, height, ranges, reactor)
++            ):
+                 logger.info(
+                     "Reframe plan: persistent reactor inset detected; "
+                     "delegating this clip to the plain layout path"
+                 )
+                 return {"delegate": "plain", "shots": []}
++            if reactor is not None:
++                logger.info(
++                    "Reframe plan: still corner face but no measurable inset "
++                    "rectangle; keeping the regular planner"
++                )
+         except Exception as exc:
+             logger.debug("Reactor check unavailable: %s", exc)
+ 
+@@ -3337,11 +3401,11 @@ def _attach_reframe_plan(
+     elif framing == "crop":
+         plan = build_plain_reframe_plan(analysis, ranges, duration, framing="crop")
+     elif framing == "auto":
+-        plan = build_reframe_plan(analysis, ranges, duration)
++        plan = build_reframe_plan(analysis, ranges, duration, source_path=source_path)
+     elif plain:
+         plan = build_plain_reframe_plan(analysis, ranges, duration)
+     else:
+-        plan = build_reframe_plan(analysis, ranges, duration)
++        plan = build_reframe_plan(analysis, ranges, duration, source_path=source_path)
+     if plan is None:
+         return False
+     # The plain GEOMETRY (a real Plain plan, or a framing="crop" plan)
+diff --git a/backend/tests/unit/test_reframe_reactor_inset.py b/backend/tests/unit/test_reframe_reactor_inset.py
+new file mode 100644
+index 0000000..bf4d776
+--- /dev/null
++++ b/backend/tests/unit/test_reframe_reactor_inset.py
+@@ -0,0 +1,154 @@
++"""A still corner face only delegates to the plain path with a real inset.
++
++Phase 2 found a two-pane video-call podcast (host top-left, guest
++bottom-right) whose host face passed ``find_reactor_face``: small, still,
++upper corner, another face lower down. The EDL planner then delegated the
++clip to the plain path, which could not measure a facecam rectangle either
++and fell back to a small-faces fit. With the source path available, the
++planner now asks for the same two-part evidence the plain path's reaction
++layout needs (face + measurable inset) before delegating.
++"""
++
++from __future__ import annotations
++
++import shutil
++import subprocess
++from unittest.mock import patch
++
++import pytest
++
++from src.media import reaction_layout, reframe_plan
++
++W, H = 1920, 1080
++REACTOR = (1640.0, 90.0, 120.0, 120.0)  # small, static, top-right
++SUBJECT = (860.0, 600.0, 200.0, 240.0)  # main content below
++
++
++def _analysis(width=W, height=H, faces=(REACTOR, SUBJECT), count=12):
++    return {
++        "width": width,
++        "height": height,
++        "samples": [(i / 3.0, list(faces)) for i in range(count)],
++        "cuts": [],
++        "context": [],
++    }
++
++
++@pytest.fixture(autouse=True)
++def _default_switch(monkeypatch):
++    monkeypatch.delenv("REFRAME_REACTOR_NEEDS_INSET", raising=False)
++
++
++def test_without_a_source_path_the_face_alone_still_delegates():
++    plan = reframe_plan.build_reframe_plan(_analysis(), [(0.0, 4.0)], 4.0)
++    assert plan == {"delegate": "plain", "shots": []}
++
++
++def test_measurable_inset_delegates(tmp_path):
++    with patch.object(reaction_layout, "measure_reaction_inset", return_value=(1500.0, 0.0, 420.0, 300.0)):
++        plan = reframe_plan.build_reframe_plan(
++            _analysis(), [(0.0, 4.0)], 4.0, source_path=tmp_path / "s.mp4"
++        )
++    assert plan == {"delegate": "plain", "shots": []}
++
++
++def test_no_inset_rectangle_keeps_the_regular_planner(tmp_path):
++    with patch.object(reaction_layout, "measure_reaction_inset", return_value=None) as measure:
++        plan = reframe_plan.build_reframe_plan(
++            _analysis(), [(0.0, 4.0)], 4.0, source_path=tmp_path / "s.mp4"
++        )
++    assert measure.called
++    assert plan is not None
++    assert plan["delegate"] is None
++    assert plan["shots"]
++
++
++@pytest.mark.parametrize("value", ["0", "false", "off", "no"])
++def test_off_switch_restores_the_face_only_check(tmp_path, monkeypatch, value):
++    monkeypatch.setenv("REFRAME_REACTOR_NEEDS_INSET", value)
++    with patch.object(reaction_layout, "measure_reaction_inset", return_value=None) as measure:
++        plan = reframe_plan.build_reframe_plan(
++            _analysis(), [(0.0, 4.0)], 4.0, source_path=tmp_path / "s.mp4"
++        )
++    assert plan == {"delegate": "plain", "shots": []}
++    assert not measure.called
++
++
++def test_probe_times_spread_over_every_kept_range():
++    times = reframe_plan._inset_probe_times([(10.0, 12.0), (20.0, 24.0)], count=6)
++    assert times == pytest.approx([10.5, 11.5, 20.5, 21.5, 22.5, 23.5])
++    assert reframe_plan._inset_probe_times([]) == []
++
++
++def test_measure_reads_the_given_source_times(tmp_path):
++    seen = []
++
++    class FakeCapture:
++        def __init__(self, _path):
++            pass
++
++        def set(self, _prop, msec):
++            seen.append(round(msec / 1000.0, 3))
++
++        def read(self):
++            return False, None
++
++        def release(self):
++            pass
++
++    with patch.object(reaction_layout.cv2, "VideoCapture", FakeCapture):
++        assert reaction_layout.measure_reaction_inset(
++            tmp_path / "s.mp4", 640, 360, 100.0, (536.0, 25.0, 32.0, 42.0), times=[40.0, 41.5]
++        ) is None
++    assert seen == [40.0, 41.5]
++
++
++# --- Real sources: a facecam inset vs a two-pane call ---------------------------
++
++SMALL_W, SMALL_H = 640, 360
++
++
++def _render(path, graph):
++    subprocess.run(
++        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", graph,
++         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)],
++        check=True, capture_output=True,
++    )
++
++
++@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
++def test_real_facecam_inset_is_delegated_and_two_pane_call_is_not(tmp_path):
++    # Facecam: a red camera rectangle in the top-right corner over content.
++    facecam = tmp_path / "facecam.mp4"
++    _render(
++        facecam,
++        f"color=blue:size={SMALL_W}x{SMALL_H}:rate=10:duration=8,"
++        "drawbox=x=0:y=0:w=320:h=360:color=green:t=fill,"
++        "drawbox=x=480:y=0:w=160:h=120:color=red:t=fill",
++    )
++    reactor = (536.0, 25.0, 32.0, 42.0)
++    content = (200.0, 140.0, 90.0, 100.0)
++    plan = reframe_plan.build_reframe_plan(
++        _analysis(SMALL_W, SMALL_H, (reactor, content), count=18),
++        [(2.0, 6.0)], 4.0, source_path=facecam,
++    )
++    assert plan == {"delegate": "plain", "shots": []}
++
++    # Video call: two wide panes on a flat background, host top-left, guest
++    # bottom-right. The host face is small and still in the upper corner, but
++    # there is no facecam rectangle around it.
++    call = tmp_path / "call.mp4"
++    _render(
++        call,
++        f"color=orange:size={SMALL_W}x{SMALL_H}:rate=10:duration=8,"
++        "drawbox=x=15:y=15:w=305:h=170:color=gray:t=fill,"
++        "drawbox=x=320:y=170:w=305:h=170:color=white:t=fill",
++    )
++    host = (90.0, 40.0, 40.0, 50.0)
++    guest = (450.0, 220.0, 45.0, 55.0)
++    analysis = _analysis(SMALL_W, SMALL_H, (host, guest), count=18)
++    from src.media.reaction_layout import find_reactor_face
++
++    assert find_reactor_face(SMALL_W, SMALL_H, analysis["samples"]) == host
++    plan = reframe_plan.build_reframe_plan(analysis, [(2.0, 6.0)], 4.0, source_path=call)
++    assert plan is not None and plan["delegate"] is None
+-- 
+2.56.0.windows.2
+

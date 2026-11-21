@@ -1,0 +1,63 @@
+Reading the video's details
+Downloading the audio only (11.6 h)
+Listening for reactions: 1/24 parts (1785 s read)
+Listening for reactions: 2/24 parts (1785 s read)
+Listening for reactions: 3/24 parts (1785 s read)
+Listening for reactions: 4/24 parts (1785 s read)
+Listening for reactions: 5/24 parts (1785 s read)
+Listening for reactions: 6/24 parts (1785 s read)
+Listening for reactions: 7/24 parts (1785 s read)
+Listening for reactions: 8/24 parts (1785 s read)
+Listening for reactions: 9/24 parts (1785 s read)
+Listening for reactions: 10/24 parts (1785 s read)
+Listening for reactions: 11/24 parts (1785 s read)
+Listening for reactions: 12/24 parts (1785 s read)
+Listening for reactions: 13/24 parts (1785 s read)
+Listening for reactions: 14/24 parts (1785 s read)
+Listening for reactions: 15/24 parts (1785 s read)
+Listening for reactions: 16/24 parts (1785 s read)
+Listening for reactions: 17/24 parts (1785 s read)
+Listening for reactions: 18/24 parts (1785 s read)
+Listening for reactions: 19/24 parts (1785 s read)
+Listening for reactions: 20/24 parts (1785 s read)
+Listening for reactions: 21/24 parts (1785 s read)
+Listening for reactions: 22/24 parts (1785 s read)
+Listening for reactions: 23/24 parts (1785 s read)
+Listening for reactions: 24/24 parts (352 s read)
+Reading what was said: 5/9 moments
+Reading what was said: 9/9 moments
+Picking the clips most likely to go viral
+Making clip 1/3
+queued
+rendering
+Caption coverage: 1.65s of speech has no caption over it: [(4.5, 6.15)]
+Command failed (exit status 255): ffmpeg -hide_banner -loglevel error -f lavfi -i color=size=256x256:rate=1 -frames:v 1 -c:v h264_nvenc -f null -
+[h264_nvenc @ 0x63f162f14e00] Cannot load libnvidia-encode.so.1
+[h264_nvenc @ 0x63f162f14e00] The minimum required Nvidia driver for nvenc is 530.41.03 or newer
+[vost#0:0/h264_nvenc @ 0x63f162f30200] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.
+[vf#0:0 @ 0x63f162f4b300] Error sending frames to consumers: Operation not permitted
+[vf#0:0 @ 0x63f162f4b300] Task finished with error code: -1 (Operation not permitted)
+[vf#0:0 @ 0x63f162f4b300] Terminating thread with return code -1 (Operation not permitted)
+[vost#0:0/h264_nvenc @ 0x63f162f30200] Could not open encoder before EOF
+[vost#0:0/h264_nvenc @ 0x63f162f30200] Task finished with error code: -22 (Invalid argument)
+[vost#0:0/h264_nvenc @ 0x63f162f30200] Terminating thread with return code -22 (Invalid argument)
+[out#0/null @ 0x63f162f2fac0] Nothing was written into output file, because at least one of its streams received no packets.
+
+NVENC probe failed at the one-frame encode stage: ation not permitted)
+[vf#0:0 @ 0x63f162f4b300] Terminating thread with return code -1 (Operation not permitted)
+[vost#0:0/h264_nvenc @ 0x63f162f30200] Could not open encoder before EOF
+[vost#0:0/h264_nvenc @ 0x63f162f30200] Task finished with error code: -22 (Invalid argument)
+[vost#0:0/h264_nvenc @ 0x63f162f30200] Terminating thread with return code -22 (Invalid argument)
+[out#0/null @ 0x63f162f2fac0] Nothing was written into output file, because at least one of its streams received no packets.
+ready
+Making clip 2/3
+queued
+rendering
+Caption coverage: 1.85s of speech has no caption over it: [(0.0, 0.1), (11.0, 12.75)]
+ready
+Making clip 3/3
+queued
+rendering
+Caption coverage: 15.70s of speech has no caption over it: [(5.75, 9.35), (25.8, 25.85), (26.1, 29.1), (32.6, 35.65), (38.85, 39.55)]
+ready
+Done: 3 clips in 19 min

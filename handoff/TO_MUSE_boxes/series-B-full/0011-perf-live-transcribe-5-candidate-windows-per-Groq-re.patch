@@ -1,0 +1,129 @@
+From 3cbcc80314ca28661ffc698578ae6219637b52ca Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 16:39:51 +0530
+Subject: [PATCH 11/27] perf(live): transcribe 5 candidate windows per Groq
+ request (free tier is 20 requests/min)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/live/vod.py             | 60 +++++++++++++++++++++++++++--
+ backend/tests/unit/test_live_vod.py | 26 +++++++++++++
+ 2 files changed, 82 insertions(+), 4 deletions(-)
+
+diff --git a/backend/src/live/vod.py b/backend/src/live/vod.py
+index 5cbb3be..5372518 100644
+--- a/backend/src/live/vod.py
++++ b/backend/src/live/vod.py
+@@ -183,6 +183,52 @@ def transcribe_window(audio: Path, start: float, end: float) -> List[Dict[str, A
+     return words
+ 
+ 
++BATCH = 5            # windows per Groq request (free tier: 20 requests/min)
++GAP_SEC = 2.0        # silence between joined windows
++
++
++def transcribe_windows(audio: Path, windows: Sequence[tuple]) -> List[List[Dict[str, Any]]]:
++    """Words per window, transcribing several windows in ONE request.
++
++    The windows are joined into one audio file with short silences between
++    them; each word is mapped back to its window by its offset. Groq's free
++    tier allows 20 requests a minute, so 30 single requests hit the limit.
++    """
++    from .groq_transcribe import groq_enabled, groq_transcribe_file
++
++    if not windows:
++        return []
++    with tempfile.TemporaryDirectory(prefix="vod_batch_") as tmp:
++        parts, offsets, cursor = [], [], 0.0
++        for i, (start, end) in enumerate(windows):
++            part = Path(tmp) / f"p{i}.wav"
++            subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{start:.2f}", "-t", f"{end - start:.2f}", "-i", str(audio),
++                            "-vn", "-ac", "1", "-ar", "16000", "-af", f"apad=pad_dur={GAP_SEC}", str(part)], capture_output=True)
++            parts.append(part)
++            offsets.append(cursor)
++            cursor += (end - start) + GAP_SEC
++        listing = Path(tmp) / "list.txt"
++        listing.write_text("".join(f"file '{p.as_posix()}'" + chr(10) for p in parts), encoding="utf-8")
++        joined = Path(tmp) / "joined.mp3"
++        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
++                        "-ac", "1", "-ar", "16000", "-b:a", "48k", str(joined)], capture_output=True)
++        result = groq_transcribe_file(joined) if groq_enabled() and joined.is_file() else None
++        if result is None:
++            return [transcribe_window(audio, s, e) for s, e in windows]
++    out: List[List[Dict[str, Any]]] = [[] for _ in windows]
++    for seg in result.get("segments") or []:
++        for w in seg.get("words") or []:
++            t = float(w.get("start", 0))
++            idx = max(i for i, off in enumerate(offsets) if off <= t + 0.01) if t >= 0 else 0
++            start, end = windows[idx]
++            rel = t - offsets[idx]
++            if rel > (end - start) + 0.5:
++                continue  # inside the silence gap
++            out[idx].append({"text": str(w.get("word", "")).strip(), "start": start + rel,
++                             "end": start + float(w.get("end", t)) - offsets[idx]})
++    return out
++
++
+ def _local_transcribe(clip: Path) -> Optional[Dict[str, Any]]:
+     try:
+         from faster_whisper import WhisperModel
+@@ -397,12 +443,18 @@ class VodSession:
+         if not candidates:
+             raise RuntimeError("no reactions found in the audio")
+         for i, c in enumerate(candidates):
++            c["id"] = i + 1
++        windows = [(max(0.0, c["onset"] + CANDIDATE_WINDOW[0]), min(duration, c["onset"] + CANDIDATE_WINDOW[1]))
++                   for c in candidates]
++        for batch_start in range(0, len(candidates), BATCH):
+             if self._stop.is_set():
+                 return
+-            self._progress(f"Reading what was said: {i + 1}/{len(candidates)} moments", duration)
+-            c["id"] = i + 1
+-            c["words"] = transcribe_window(audio, max(0.0, c["onset"] + CANDIDATE_WINDOW[0]),
+-                                           min(duration, c["onset"] + CANDIDATE_WINDOW[1]))
++            self._progress(f"Reading what was said: {min(batch_start + BATCH, len(candidates))}/{len(candidates)} moments",
++                           duration)
++            batch = list(range(batch_start, min(batch_start + BATCH, len(candidates))))
++            words = transcribe_windows(audio, [windows[i] for i in batch])
++            for i, w in zip(batch, words):
++                candidates[i]["words"] = w
+         self._progress("Picking the clips most likely to go viral", duration)
+         picks = llm_pick(candidates, want) or signal_pick(candidates, series.get("voiced_frac") or [], want)
+         logger.info("VOD %s: %d candidates -> %d picks in %.0fs", s.url, len(candidates), len(picks), time.time() - t0)
+diff --git a/backend/tests/unit/test_live_vod.py b/backend/tests/unit/test_live_vod.py
+index c286b1c..53c153b 100644
+--- a/backend/tests/unit/test_live_vod.py
++++ b/backend/tests/unit/test_live_vod.py
+@@ -106,3 +106,29 @@ def test_session_runs_audio_first_and_downloads_only_the_picks(monkeypatch, tmp_
+     assert all(m["reason"].startswith("[") for m in moments)  # video position, not wall clock
+     assert "onset_wall" not in moments[0]
+     assert any("Done: 2 clips" in (e.get("progress") or "") for e in events)
++
++
++def test_several_windows_go_in_one_request_and_words_map_back(monkeypatch, tmp_path):
++    import subprocess
++
++    audio = tmp_path / "a.wav"
++    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=300:duration=200", str(audio)],
++                   check=True)
++    import src.live.groq_transcribe as G
++
++    calls = []
++
++    def fake_groq(path):
++        calls.append(path)
++        # window 0 = 10-70 s (offset 0), window 1 = 100-160 s (offset 62 = 60 + 2 s gap)
++        return {"segments": [{"start": 0, "end": 200, "words": [
++            {"word": "first", "start": 5.0, "end": 5.5},
++            {"word": "gap", "start": 61.0, "end": 61.2},     # inside the silence: dropped
++            {"word": "second", "start": 64.0, "end": 64.4}]}]}
++
++    monkeypatch.setattr(G, "groq_enabled", lambda: True)
++    monkeypatch.setattr(G, "groq_transcribe_file", fake_groq)
++    out = V.transcribe_windows(audio, [(10.0, 70.0), (100.0, 160.0)])
++    assert len(calls) == 1
++    assert [w["text"] for w in out[0]] == ["first"] and abs(out[0][0]["start"] - 15.0) < 0.01
++    assert [w["text"] for w in out[1]] == ["second"] and abs(out[1][0]["start"] - 102.0) < 0.01
+-- 
+2.56.0.windows.2
+

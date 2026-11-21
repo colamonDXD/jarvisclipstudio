@@ -1,0 +1,284 @@
+﻿SnipNova (JarvisClipStudio) - Consolidated v5 release post-install verification (read-only, changes nothing)
+Project folder: D:\EditedTool\JarvisClipStudio
+
+PASS: Project folder exists - D:\EditedTool\JarvisClipStudio
+PASS: Migration file in tree: 20260302_0001_performance_schema.sql
+PASS: Migration file in tree: 20260319_0002_generated_clips_task_order_unique.sql
+PASS: Migration file in tree: 20260503_0001_app_settings.sql
+PASS: Migration file in tree: 20260503_0002_app_settings_preference.sql
+PASS: Migration file in tree: 20260507_0001_task_processing_columns.sql
+PASS: Migration file in tree: 20260628_0001_api_keys.sql
+PASS: Migration file in tree: 20260704_0001_clip_hook_title.sql
+PASS: Migration file in tree: 20260722_0001_task_share_tokens.sql
+PASS: Migration file in tree: 20260901_0001_social_publishing.sql
+PASS: Migration file in tree: 20261011_0001_task_source_metadata.sql
+PASS: Migration file in tree: 20261013_0001_media_deletions.sql
+PASS: Migration file in tree: 20261013_0002_service_statuses.sql
+PASS: Migration file in tree: 20261014_0001_media_storage_recovery.sql
+PASS: Migration file in tree: 20261016_0001_email_deliveries.sql
+PASS: Migration file in tree: 20261018_0001_pricing_minutes_legacy_hd.sql
+PASS: Migration file in tree: 20261021_0001_stream_source_types.sql
+PASS: Migration file in tree: 20261023_0001_rejected_source_attempts.sql
+PASS: Migration file in tree: 20261025_0001_clip_exports.sql
+PASS: Migration file in tree: 20261025_0002_minute_usage_ledger.sql
+PASS: Migration file in tree: 20261025_0003_pending_plan_upgrade.sql
+PASS: Migration file in tree: 20261025_0004_default_clip_length.sql
+PASS: Migration file in tree: 20261025_0004_product_update_preferences.sql
+PASS: Migration file in tree: 20261029_0001_upload_idempotency.sql
+PASS: Migration file in tree: 20261029_0002_upload_idempotency_keys.sql
+PASS: Migration file in tree: 20261103_0001_task_processing_checkpoints.sql
+PASS: Migration file in tree: 20261105_0001_ai_edit_usage.sql
+PASS: Migration file in tree: 20261105_0004_feature_flags.sql
+PASS: Migration file in tree: 20261107_0001_niche_override.sql
+PASS: Migration file in tree: 20261108_0001_music_override.sql
+PASS: Migration file in tree: 20261108_0002_clip_qc.sql
+PASS: Migration file in tree: 20261108_0003_learning_engine.sql
+PASS: Migration file in tree: 20261108_0004_provider_manager.sql
+PASS: Migration file in tree: 20261108_0005_clip_plan.sql
+PASS: Migration file in tree: 20261108_0006_hook_previews.sql
+PASS: Migration file in tree: 20261108_0007_target_clip_count.sql
+PASS: Migration file in tree: 20261109_0001_publishing.sql
+PASS: Migration file in tree: 20261109_0002_content_requirements.sql
+PASS: Migration file in tree: 20261109_0002_task_music_mode.sql
+PASS: Migration file in tree: 20261109_0003_watch_folder.sql
+PASS: Migration file in tree: 20261109_0004_brand_kit.sql
+PASS: Migration file in tree: 20261109_0005_creation_modes.sql
+PASS: Migration file in tree: 20261109_0006_watch_folder_music_mode.sql
+PASS: Migration file in tree: 20261110_0001_task_classification.sql
+PASS: Migration file in tree: 20261110_0002_task_template_mode.sql
+PASS: Migration file in tree: 20261110_0002_task_separation_opt_in.sql
+PASS: Migration file in tree: 20261111_0001_channel_monitoring.sql
+PASS: Migration file in tree: 20261111_0002_channel_monitoring_stage2.sql
+PASS: Migration file in tree: 20261112_0001_task_broll_enabled.sql
+PASS: Migration file in tree: 20261115_0001_recipes.sql
+PASS: Migration file in tree: 20261115_0002_watch_folder_recipe_id.sql
+PASS: Migration file in tree: 20261116_0001_task_framing_mode.sql
+PASS: Migration file in tree: 20261117_0001_task_layout_template.sql
+PASS: Feature present: Viral Intelligence planner
+PASS: Feature present: Beat-grid engine
+PASS: Feature present: Visual moment selection
+PASS: Feature present: Hook-variant previews
+PASS: Feature present: Studio look overrides (grade/VFX)
+PASS: Feature present: Reference Style user profiles
+PASS: Feature present: Publishing workspace API
+PASS: Feature present: Reference Styles API
+PASS: Feature present: Local voiceover engine (Kokoro)
+PASS: Feature present: Watch-folder autopilot API
+PASS: Feature present: Brand Kit API
+PASS: Feature present: Four creation modes engine
+PASS: Feature present: Brand Kit engine
+PASS: Feature present: Watch-folder repository
+PASS: Feature present: Brand Kit repository
+PASS: Feature present: Campaign content requirements
+PASS: Feature present: RTX 4050 benchmark pack
+PASS: Feature present: Creation modes (frontend)
+PASS: Feature present: Auto-niche classifier (fixed chain)
+PASS: Feature present: SFX upload - your own effects
+PASS: Feature present: EDL renderer (info-card text fix)
+PASS: Feature present: Reframe planner (face-in-blur guard)
+PASS: Feature present: Reference Styles label confidence (frontend)
+PASS: Feature present: Scored cover-frame selection
+PASS: Feature present: Task service (Find Moments auto-pick)
+PASS: Feature present: Studio editor document (per-lane hide/lock)
+PASS: Feature present: Overlay lane compositing
+PASS: Feature present: Plain template mode (just cuts)
+PASS: Feature present: B-roll word-sense gating
+PASS: Feature present: Voice/music separation engine
+PASS: Feature present: Branded deliverable bundle (hook previews)
+PASS: Feature present: VRAM stage telemetry + build-lite guards
+PASS: Feature present: YouTube channel monitoring service
+PASS: Feature present: Channel monitoring API
+PASS: Feature present: Channel monitoring settings UI
+PASS: Feature present: Reference caption-look measurement
+PASS: Feature present: Third-person hook-title guardrail
+PASS: Feature present: Caption/title face guard
+PASS: Feature present: B-roll vision veto (SigLIP, opt-in)
+PASS: Feature present: Split source-border trim
+PASS: Feature present: Active-speaker targeting (opt-in)
+PASS: Feature present: Brief-from-screenshot OCR ingestion
+PASS: Feature present: Brief screenshot upload UI
+PASS: Feature present: Multi-provider gateway ladder (LiteLLM config)
+PASS: Feature present: B-roll per-task ON/OFF setting (Slice 1/toggle)
+PASS: Feature present: Coverr stock source (B-roll source #2)
+PASS: Feature present: Stock library with licence manifest
+PASS: Feature present: Pixabay stock resolver v2 (concepts + photos)
+PASS: Feature present: B-roll review surface (editor panel)
+PASS: Feature present: Eco render mode (bounded ffmpeg threads)
+PASS: Feature present: Task repository (settings read-back fix)
+PASS: Feature present: Task-page degradation notice
+PASS: Feature present: Framing mode setting (auto/fit/crop)
+PASS: Feature present: Person detection (YOLOX, face-evidence stack)
+PASS: Feature present: Streamer Reaction journey (create preset)
+PASS: Feature present: Reaction moment picker (face/voice/gameplay fusion)
+PASS: Feature present: Gameplay moment detection
+PASS: Feature present: Reaction hook titles
+PASS: Feature present: Edit recommendations
+PASS: Feature present: Facecam rectangle detection
+PASS: Feature present: Gaming layout templates (face on top, game below)
+PASS: Feature present: Gaming layout picker (create page)
+PASS: Feature present: Galaxy starfield background
+PASS: Feature present: Bundled music bed - calm
+PASS: Feature present: Bundled music bed - comedy
+PASS: Feature present: Bundled music bed - corporate
+PASS: Feature present: Bundled music bed - energetic
+PASS: Feature present: Bundled music bed - funk
+PASS: Feature present: Bundled music bed - phonk
+PASS: Feature present: Bundled music bed - upbeat
+PASS: Feature present: Bundled SFX - ding
+PASS: Feature present: Bundled SFX - impact
+PASS: Feature present: Bundled SFX - pop
+PASS: Feature present: Bundled SFX - riser
+PASS: Feature present: Bundled SFX - sting
+PASS: Feature present: Bundled SFX - whoosh
+PASS: Your .env is in place
+PASS: Your compose.override.yml is in place (short name - correct)
+
+--- docker compose ps ---
+powershell : time="2026-11-18T19:14:34+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. 
+Defaulting to a blank string."
+At line:1 char:446
++ ... y_log.txt'; powershell -NoProfile -ExecutionPolicy Bypass -Command "f ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (time="2026-11-1... blank string.":String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+time="2026-11-18T19:14:34+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:14:34+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+NAME                         IMAGE                                 COMMAND                  SERVICE     CREATED         STATUS                        PORTS
+jarvisclipstudio-litellm-1   ghcr.io/berriai/litellm:main-latest   "docker/prod_entrypo…"   litellm     3 minutes ago   Up 3 minutes (healthy)        4000/tcp
+supoclip-ai-worker           jarvisclipstudio-ai-worker            ".venv/bin/arq src.w…"   ai-worker   3 minutes ago   Up 3 minutes (healthy)        8000/tcp
+supoclip-backend             jarvisclipstudio-backend              ".venv/bin/uvicorn s…"   backend     3 minutes ago   Up 3 minutes (healthy)        127.0.0.1:8000->8000/tcp
+supoclip-frontend            jarvisclipstudio-frontend             "docker-entrypoint.s…"   frontend    3 minutes ago   Up About a minute (healthy)   127.0.0.1:3107->3107/tcp
+supoclip-mcp                 jarvisclipstudio-mcp                  "/app/.venv/bin/supo…"   mcp         3 minutes ago   Up About a minute (healthy)   127.0.0.1:9100->9100/tcp
+supoclip-postgres            postgres:15-alpine                    "docker-entrypoint.s…"   postgres    3 minutes ago   Up 3 minutes (healthy)        5432/tcp
+supoclip-redis               redis:7-alpine                        "docker-entrypoint.s…"   redis       3 minutes ago   Up 3 minutes (healthy)        127.0.0.1:6379->6379/tcp
+supoclip-worker              jarvisclipstudio-worker               ".venv/bin/arq src.w…"   worker      3 minutes ago   Up About a minute (healthy)   8000/tcp
+-------------------------
+time="2026-11-18T19:14:35+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:14:35+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:14:35+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+PASS: Container running: postgres - state: running
+time="2026-11-18T19:14:36+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:14:36+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:14:36+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+PASS: Container running: redis - state: running
+time="2026-11-18T19:14:36+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:14:36+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:14:36+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+PASS: Container running: backend - state: running
+time="2026-11-18T19:14:37+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:14:37+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:14:37+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+PASS: Container running: worker - state: running
+time="2026-11-18T19:14:38+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:14:38+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:14:38+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+PASS: Container running: ai-worker - state: running
+time="2026-11-18T19:14:39+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:14:39+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:14:39+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+PASS: Container running: frontend - state: running
+time="2026-11-18T19:14:40+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:14:40+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:14:40+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+PASS: Container running: litellm - state: running
+PASS: GPU visible to the AI worker (torch.cuda.is_available()) - docker.exe : time="2026-11-18T19:14:41+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set.
+time="2026-11-18T19:14:57+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:14:57+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:14:57+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+PASS: NVENC hardware encoder works in the worker (256x256 test encode)
+PASS: Long-form analysis pacing reaches the worker (ANALYSIS_LONGFORM_TPM) - live value: 120000
+PASS: Voiceover toggle state - voiceover is OFF (the default; VOICEOVER_ENABLED not set to true)
+time="2026-11-18T19:15:05+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:15:05+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+time="2026-11-18T19:15:05+05:30" level=warning msg="The \"ANTHROPIC_API_KEY\" variable is not set. Defaulting to a 
+blank string."
+PASS: Migration applied in the database: 20260302_0001_performance_schema.sql
+PASS: Migration applied in the database: 20260319_0002_generated_clips_task_order_unique.sql
+PASS: Migration applied in the database: 20260503_0001_app_settings.sql
+PASS: Migration applied in the database: 20260503_0002_app_settings_preference.sql
+PASS: Migration applied in the database: 20260507_0001_task_processing_columns.sql
+PASS: Migration applied in the database: 20260628_0001_api_keys.sql
+PASS: Migration applied in the database: 20260704_0001_clip_hook_title.sql
+PASS: Migration applied in the database: 20260722_0001_task_share_tokens.sql
+PASS: Migration applied in the database: 20260901_0001_social_publishing.sql
+PASS: Migration applied in the database: 20261011_0001_task_source_metadata.sql
+PASS: Migration applied in the database: 20261013_0001_media_deletions.sql
+PASS: Migration applied in the database: 20261013_0002_service_statuses.sql
+PASS: Migration applied in the database: 20261014_0001_media_storage_recovery.sql
+PASS: Migration applied in the database: 20261016_0001_email_deliveries.sql
+PASS: Migration applied in the database: 20261018_0001_pricing_minutes_legacy_hd.sql
+PASS: Migration applied in the database: 20261021_0001_stream_source_types.sql
+PASS: Migration applied in the database: 20261023_0001_rejected_source_attempts.sql
+PASS: Migration applied in the database: 20261025_0001_clip_exports.sql
+PASS: Migration applied in the database: 20261025_0002_minute_usage_ledger.sql
+PASS: Migration applied in the database: 20261025_0003_pending_plan_upgrade.sql
+PASS: Migration applied in the database: 20261025_0004_default_clip_length.sql
+PASS: Migration applied in the database: 20261025_0004_product_update_preferences.sql
+PASS: Migration applied in the database: 20261029_0001_upload_idempotency.sql
+PASS: Migration applied in the database: 20261029_0002_upload_idempotency_keys.sql
+PASS: Migration applied in the database: 20261103_0001_task_processing_checkpoints.sql
+PASS: Migration applied in the database: 20261105_0001_ai_edit_usage.sql
+PASS: Migration applied in the database: 20261105_0004_feature_flags.sql
+PASS: Migration applied in the database: 20261107_0001_niche_override.sql
+PASS: Migration applied in the database: 20261108_0001_music_override.sql
+PASS: Migration applied in the database: 20261108_0002_clip_qc.sql
+PASS: Migration applied in the database: 20261108_0003_learning_engine.sql
+PASS: Migration applied in the database: 20261108_0004_provider_manager.sql
+PASS: Migration applied in the database: 20261108_0005_clip_plan.sql
+PASS: Migration applied in the database: 20261108_0006_hook_previews.sql
+PASS: Migration applied in the database: 20261108_0007_target_clip_count.sql
+PASS: Migration applied in the database: 20261109_0001_publishing.sql
+PASS: Migration applied in the database: 20261109_0002_content_requirements.sql
+PASS: Migration applied in the database: 20261109_0002_task_music_mode.sql
+PASS: Migration applied in the database: 20261109_0003_watch_folder.sql
+PASS: Migration applied in the database: 20261109_0004_brand_kit.sql
+PASS: Migration applied in the database: 20261109_0005_creation_modes.sql
+PASS: Migration applied in the database: 20261109_0006_watch_folder_music_mode.sql
+PASS: Migration applied in the database: 20261110_0001_task_classification.sql
+PASS: Migration applied in the database: 20261110_0002_task_template_mode.sql
+PASS: Migration applied in the database: 20261110_0002_task_separation_opt_in.sql
+PASS: Migration applied in the database: 20261111_0001_channel_monitoring.sql
+PASS: Migration applied in the database: 20261111_0002_channel_monitoring_stage2.sql
+PASS: Migration applied in the database: 20261112_0001_task_broll_enabled.sql
+PASS: Migration applied in the database: 20261115_0001_recipes.sql
+PASS: Migration applied in the database: 20261115_0002_watch_folder_recipe_id.sql
+PASS: Migration applied in the database: 20261116_0001_task_framing_mode.sql
+PASS: Migration applied in the database: 20261117_0001_task_layout_template.sql
+PASS: LiteLLM gateway model list (checked from inside the backend container)
+PASS: Backend health endpoint (http://localhost:8000/health)
+PASS: Backend database health endpoint (http://localhost:8000/health/db)
+PASS: Frontend page (http://localhost:3107, retried - production build warms up slowly)
+PASS: Ollama reachable on the host (http://localhost:11434) - qwen3:8b model present
+
+Summary: 199 passed, 0 failed.
+Send Sanji this full output. A FAIL here does not mean the install is broken - several checks depend on the stack having finished starting.
+VERIFY EXIT 0

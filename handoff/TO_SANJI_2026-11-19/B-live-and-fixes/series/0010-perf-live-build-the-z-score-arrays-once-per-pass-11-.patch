@@ -1,0 +1,37 @@
+From 43fd28e8e1553a2aaa4e0620dbf428752b5fd67c Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 16:28:25 +0530
+Subject: [PATCH 10/13] perf(live): build the z-score arrays once per pass (11
+ h ranking: minutes -> 8.5 s)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/live/voice_scan.py | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/backend/src/live/voice_scan.py b/backend/src/live/voice_scan.py
+index 318a874..1bac37d 100644
+--- a/backend/src/live/voice_scan.py
++++ b/backend/src/live/voice_scan.py
+@@ -86,6 +86,9 @@ class VoiceTrack:
+ 
+     def zscores(self) -> List[Tuple[float, Dict[str, float]]]:
+         t = np.asarray(self.times)
++        # Built once per call (not once per second): an 11 h stream has 40k
++        # seconds, and rebuilding the arrays inside the loop took minutes.
++        arrays = {k: np.asarray(self.feats[k]) for k in FLOORS}
+         out = []
+         for i, ti in enumerate(self.times):
+             if ti in self._z:
+@@ -95,7 +98,7 @@ class VoiceTrack:
+             hi = int(np.searchsorted(t, ti - self.exclude_recent_sec))
+             z: Dict[str, float] = {}
+             for k, floor in FLOORS.items():
+-                series = np.asarray(self.feats[k])
++                series = arrays[k]
+                 if hi - lo < self.min_baseline:
+                     z[k] = 0.0
+                     continue
+-- 
+2.56.0.windows.2
+

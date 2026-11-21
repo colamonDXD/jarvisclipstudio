@@ -1,0 +1,262 @@
+From 348c4977cc9c5fdba19c597caf82c3aced6d55f3 Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Wed, 18 Nov 2026 21:37:20 +0530
+Subject: [PATCH 06/27] feat(live): captions via Groq hosted Whisper when
+ GROQ_API_KEY is set; clips 22-30 s
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/live/finisher.py                  |  6 +-
+ backend/src/live/groq_transcribe.py           | 98 +++++++++++++++++++
+ backend/src/live/session.py                   | 10 +-
+ .../tests/unit/test_live_groq_transcribe.py   | 80 +++++++++++++++
+ 4 files changed, 189 insertions(+), 5 deletions(-)
+ create mode 100644 backend/src/live/groq_transcribe.py
+ create mode 100644 backend/tests/unit/test_live_groq_transcribe.py
+
+diff --git a/backend/src/live/finisher.py b/backend/src/live/finisher.py
+index 357fed0..a811cb7 100644
+--- a/backend/src/live/finisher.py
++++ b/backend/src/live/finisher.py
+@@ -48,8 +48,12 @@ def render_live_clip(window: Path, out_path: Path, *, niche: str = "gaming", lay
+     total = _duration(window)
+     if total <= 1.0:
+         return {"ok": False, "error": "window is empty"}
++    from .groq_transcribe import transcribe_with_groq
++
+     try:
+-        get_video_transcript(window)
++        # Groq's hosted Whisper when the key is set (no CPU load), else local.
++        if not transcribe_with_groq(window):
++            get_video_transcript(window)
+         data = load_cached_transcript_data(window) or {}
+     except Exception as exc:  # a clip without captions beats no clip
+         logger.warning("Live clip transcript failed: %s", exc)
+diff --git a/backend/src/live/groq_transcribe.py b/backend/src/live/groq_transcribe.py
+new file mode 100644
+index 0000000..281f9a2
+--- /dev/null
++++ b/backend/src/live/groq_transcribe.py
+@@ -0,0 +1,98 @@
++"""Live clip captions through Groq's hosted Whisper (free tier) instead of the CPU.
++
++Speech-to-text was the heaviest local load of a live session: every clip
++window was transcribed on the laptop's CPU. When ``GROQ_API_KEY`` is set,
++the window's audio (16 kHz mono, about 30 s) goes to Groq's
++OpenAI-compatible ``/audio/transcriptions`` endpoint with word timestamps,
++and the result is written to the same transcript cache the caption builder
++reads. Any failure (no key, rate limit, network) returns False and the
++caller falls back to the local model, so a clip is never lost.
++
++``LIVE_TRANSCRIPTION_PROVIDER=local`` turns this off; ``LIVE_GROQ_MODEL``
++picks the model (default ``whisper-large-v3-turbo``).
++"""
++from __future__ import annotations
++
++import logging
++import os
++import subprocess
++import tempfile
++from pathlib import Path
++from typing import Any, Dict, List
++
++logger = logging.getLogger(__name__)
++
++GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
++
++
++def groq_enabled() -> bool:
++    if os.getenv("LIVE_TRANSCRIPTION_PROVIDER", "").strip().lower() == "local":
++        return False
++    return bool(os.getenv("GROQ_API_KEY", "").strip())
++
++
++def to_whisper_result(payload: Dict[str, Any]) -> Dict[str, Any]:
++    """Groq verbose_json (top-level ``words`` + ``segments``) -> the
++    openai-whisper result shape the transcript cache already understands."""
++    words: List[Dict[str, Any]] = [
++        {"word": str(w.get("word", "")).strip(), "start": float(w.get("start", 0.0)),
++         "end": float(w.get("end", 0.0)), "probability": 1.0}
++        for w in payload.get("words") or [] if str(w.get("word", "")).strip()
++    ]
++    segments = []
++    for seg in payload.get("segments") or []:
++        s, e = float(seg.get("start", 0.0)), float(seg.get("end", 0.0))
++        segments.append({"start": s, "end": e, "text": str(seg.get("text", "")).strip(),
++                         "words": [w for w in words if s - 0.05 <= w["start"] < e]})
++    assigned = sum(len(seg["words"]) for seg in segments)
++    if not segments or assigned < len(words):
++        # No segments, or words outside them: one segment holding every word.
++        segments = [{"start": words[0]["start"] if words else 0.0, "end": words[-1]["end"] if words else 0.0,
++                     "text": str(payload.get("text", "")).strip(), "words": words}]
++    return {"text": str(payload.get("text", "")).strip(), "language": payload.get("language"), "segments": segments}
++
++
++def transcribe_with_groq(video: Path, timeout: float = 60.0) -> bool:
++    """Transcribe ``video`` with Groq and write its transcript cache. True on success."""
++    if not groq_enabled():
++        return False
++    import httpx
++
++    from ..media.transcription import cache_transcript_data
++
++    with tempfile.TemporaryDirectory(prefix="live_groq_") as tmp:
++        audio = Path(tmp) / "audio.mp3"
++        cut = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000",
++                              "-b:a", "48k", str(audio)], capture_output=True, text=True)
++        if cut.returncode != 0 or not audio.is_file():
++            logger.warning("Groq transcription: audio extract failed: %s", (cut.stderr or "")[-200:])
++            return False
++        try:
++            with audio.open("rb") as fh:
++                response = httpx.post(
++                    GROQ_URL,
++                    headers={"Authorization": f"Bearer {os.environ['GROQ_API_KEY'].strip()}"},
++                    data={"model": os.getenv("LIVE_GROQ_MODEL", "whisper-large-v3-turbo"),
++                          "response_format": "verbose_json",
++                          "timestamp_granularities[]": ["word", "segment"]},
++                    files={"file": ("audio.mp3", fh, "audio/mpeg")},
++                    timeout=timeout,
++                )
++        except Exception as exc:  # network, timeout
++            logger.warning("Groq transcription failed (%s); using the local model", type(exc).__name__)
++            return False
++    if response.status_code != 200:
++        # Never log the body verbatim beyond a short prefix: no secrets in it,
++        # but keep logs small. 429 = free-tier limit reached.
++        logger.warning("Groq transcription HTTP %s (%s); using the local model",
++                       response.status_code, response.text[:160])
++        return False
++    try:
++        result = to_whisper_result(response.json())
++    except Exception as exc:
++        logger.warning("Groq transcription: unreadable answer (%s)", exc)
++        return False
++    cache_transcript_data(Path(video), result)
++    words = sum(len(s["words"]) for s in result["segments"])
++    logger.info("Groq transcription: %d words (%s)", words, result.get("language"))
++    return True
+diff --git a/backend/src/live/session.py b/backend/src/live/session.py
+index e0a29d3..312b95e 100644
+--- a/backend/src/live/session.py
++++ b/backend/src/live/session.py
+@@ -19,6 +19,7 @@ these threads; the worker writes it to the database). Event ``type``:
+ from __future__ import annotations
+ 
+ import logging
++import os
+ import queue
+ import subprocess
+ import threading
+@@ -34,9 +35,10 @@ from .voice_scan import VoiceTrack
+ 
+ logger = logging.getLogger(__name__)
+ 
+-# Seconds of footage needed after a flag before its window is decided: the
+-# window may run up to MAX_LEN past the start, plus one segment of slack.
+-MAX_LEN = 30.0
++# Clip length (Luffy: "minimum 22 to 30 sec, not 15"). The analyst waits
++# until MAX_LEN of footage after a flag is on disk before deciding its window.
++MIN_LEN = float(os.getenv("LIVE_CLIP_MIN_SEC", "22"))
++MAX_LEN = max(MIN_LEN, float(os.getenv("LIVE_CLIP_MAX_SEC", "30")))
+ LEAD_MAX = 6.0
+ 
+ 
+@@ -150,7 +152,7 @@ class LiveSession:
+         onset = float(flag["onset"])
+         base, voiced = self.voice.voiced_between(onset - LEAD_MAX - 2, onset + MAX_LEN + 2)
+         start_l, stop_l, share = speech_window(voiced, onset - base, float(flag["end"]) - base,
+-                                               lead_max=LEAD_MAX, max_len=MAX_LEN)
++                                               lead_max=LEAD_MAX, min_len=MIN_LEN, max_len=MAX_LEN)
+         start, stop = base + start_l, base + stop_l
+         moment = {"type": "moment", "onset_wall": onset, "start_wall": start, "end_wall": stop,
+                   "signals": list(flag.get("signals") or []), "strength": round(float(flag.get("peak", 0)), 2),
+diff --git a/backend/tests/unit/test_live_groq_transcribe.py b/backend/tests/unit/test_live_groq_transcribe.py
+new file mode 100644
+index 0000000..4a7164d
+--- /dev/null
++++ b/backend/tests/unit/test_live_groq_transcribe.py
+@@ -0,0 +1,80 @@
++"""Live captions via Groq's hosted Whisper: conversion, cache write, fallbacks."""
++from __future__ import annotations
++
++import json
++import subprocess
++
++import httpx
++import pytest
++
++from src.live import groq_transcribe as G
++from src.media.transcription import load_cached_transcript_data
++
++PAYLOAD = {
++    "text": "bro what is this",
++    "language": "English",
++    "segments": [{"start": 0.0, "end": 1.6, "text": "bro what"}, {"start": 1.6, "end": 3.0, "text": "is this"}],
++    "words": [{"word": "bro", "start": 0.1, "end": 0.4}, {"word": "what", "start": 0.6, "end": 1.0},
++              {"word": "is", "start": 1.8, "end": 2.0}, {"word": "this", "start": 2.1, "end": 2.6}],
++}
++
++
++def test_groq_answer_becomes_the_whisper_shape():
++    result = G.to_whisper_result(PAYLOAD)
++    assert [[w["word"] for w in s["words"]] for s in result["segments"]] == [["bro", "what"], ["is", "this"]]
++    assert result["segments"][0]["words"][0] == {"word": "bro", "start": 0.1, "end": 0.4, "probability": 1.0}
++
++
++def test_words_without_segments_are_kept_in_one_segment():
++    result = G.to_whisper_result({"text": "hey", "words": [{"word": "hey", "start": 0.2, "end": 0.5}]})
++    assert len(result["segments"]) == 1 and result["segments"][0]["words"][0]["word"] == "hey"
++
++
++@pytest.fixture()
++def window(tmp_path):
++    video = tmp_path / "window_001.mp4"
++    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
++                    "-f", "lavfi", "-i", "color=c=black:s=320x180:d=3", "-shortest", "-c:v", "libx264",
++                    "-c:a", "aac", str(video)], check=True)
++    return video
++
++
++class _Response:
++    def __init__(self, status, body):
++        self.status_code, self._body = status, body
++        self.text = json.dumps(body)
++
++    def json(self):
++        return self._body
++
++
++def test_success_writes_the_cache_the_captions_read(window, monkeypatch):
++    monkeypatch.setenv("GROQ_API_KEY", "test-key")
++    seen = {}
++
++    def fake_post(url, headers, data, files, timeout):
++        seen.update(url=url, auth=headers["Authorization"], model=data["model"], name=files["file"][0])
++        return _Response(200, PAYLOAD)
++
++    monkeypatch.setattr(httpx, "post", fake_post)
++    assert G.transcribe_with_groq(window) is True
++    assert seen == {"url": G.GROQ_URL, "auth": "Bearer test-key", "model": "whisper-large-v3-turbo", "name": "audio.mp3"}
++    cached = load_cached_transcript_data(window)
++    assert [w["text"] for w in cached["words"]] == ["bro", "what", "is", "this"]
++    assert cached["words"][0]["start"] == 100 and cached["words"][0]["end"] == 400  # ms, like every provider
++
++
++def test_rate_limit_falls_back_to_local(window, monkeypatch):
++    monkeypatch.setenv("GROQ_API_KEY", "test-key")
++    monkeypatch.setattr(httpx, "post", lambda *a, **k: _Response(429, {"error": "rate limit"}))
++    assert G.transcribe_with_groq(window) is False
++    assert load_cached_transcript_data(window) is None
++
++
++def test_off_without_a_key_or_when_forced_local(monkeypatch):
++    monkeypatch.delenv("GROQ_API_KEY", raising=False)
++    assert G.groq_enabled() is False
++    monkeypatch.setenv("GROQ_API_KEY", "k")
++    assert G.groq_enabled() is True
++    monkeypatch.setenv("LIVE_TRANSCRIPTION_PROVIDER", "local")
++    assert G.groq_enabled() is False
+-- 
+2.56.0.windows.2
+

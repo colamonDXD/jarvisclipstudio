@@ -1,0 +1,60 @@
+{
+ "id": "requirements_focus",
+ "kind": "requirements",
+ "brief": {
+  "version": 2,
+  "requirements": [
+   {
+    "id": "r1",
+    "type": "topic_focus",
+    "text": "Expedia must be a major focus of the content.",
+    "kind": "mandatory",
+    "topics": [],
+    "min_topics": 1,
+    "requires_major": true
+   }
+  ],
+  "allowed_ranges": [
+   {
+    "start_seconds": 10589.0,
+    "end_seconds": null,
+    "start_label": "2:56:29",
+    "end_label": null
+   }
+  ]
+ },
+ "candidates": [
+  {
+   "candidate_id": 0,
+   "text": "we booked on Expedia and Expedia planned the whole destination trip",
+   "start_seconds": 180.0,
+   "end_seconds": 230.0
+  },
+  {
+   "candidate_id": 1,
+   "text": "generic talk about lunch and the drive home today",
+   "start_seconds": 230.0,
+   "end_seconds": 480.0
+  }
+ ],
+ "expected": {
+  "0": {
+   "r1": {
+    "focus": "major",
+    "status": "satisfied"
+   }
+  },
+  "1": {
+   "r1": {
+    "focus": "absent",
+    "status": "failed"
+   }
+  }
+ },
+ "permitted_aliases": [
+  "clip-assured",
+  "groq-20b",
+  "local-qwen"
+ ],
+ "notes": "The content-requirements focus pass (backend/src/auto_director/content_requirements_llm.py): PERMITTED_ALIASES are exactly clip-assured, groq-20b, local-qwen. Brief and candidate windows are the real Expedia fixtures from the app's tests (see builder); expected verdicts are the app's own deterministic evaluator (candidate 0 major/satisfied, candidate 1 absent/failed). The harness grades a response with the pass's own FocusJudgements schema plus the app's own _merge_llm_judgement verbatim-evidence gate: invented evidence is discarded, not scored."
+}

@@ -1,0 +1,140 @@
+{
+ "video": "D:\\SnipNova-Dev\\claude-code\\test-footage\\phase2_src\\-m-gudHhLxc.mp4",
+ "niche": "education_tutorial",
+ "llm": "ollama:qwen3:8b",
+ "stock_broll": false,
+ "timings": {
+  "transcribe_s": 100.7,
+  "select_s": 0.0
+ },
+ "clips": [
+  {
+   "clip": "clip1.mp4",
+   "render_ok": true,
+   "render_s": 113.5,
+   "source_start": 215.19,
+   "source_end": 265.49,
+   "duration": 50.3,
+   "selection": {
+    "virality": null,
+    "hook_type": "fixed-window",
+    "hook_title": null,
+    "reasoning": "Pipeline check only: sentence-aligned window, not an AI selection."
+   },
+   "decisions": {
+    "segments": 12,
+    "transitions": [],
+    "zooms": 1,
+    "broll_planned": 0,
+    "broll_inserted": 0,
+    "broll": [],
+    "broll_dropped": [],
+    "music": "calm",
+    "captions": "hormozi"
+   },
+   "qc": {
+    "ffprobe": [
+     {
+      "codec_type": "video",
+      "width": 1080,
+      "height": 1920
+     },
+     {
+      "codec_type": "audio",
+      "width": null,
+      "height": null
+     }
+    ],
+    "output_seconds": 50.4,
+    "loudness_lufs": -14.8,
+    "black_seconds": 0,
+    "boundary": {
+     "ok": true,
+     "starts_on_sentence": true,
+     "ends_on_sentence": true,
+     "cuts_a_word": false,
+     "first_words": "Let's look at the larynx next.",
+     "last_words": "air, passes between the vocal folds."
+    },
+    "layout": {
+     "broll_applied": false
+    },
+    "reframe_plan": {
+     "attached": true,
+     "delegate": "plain",
+     "shots": []
+    }
+   },
+   "frames": [
+    "clip1_8pct.png",
+    "clip1_50pct.png",
+    "clip1_90pct.png"
+   ]
+  },
+  {
+   "clip": "clip2.mp4",
+   "render_ok": true,
+   "render_s": 96.5,
+   "source_start": 445.41,
+   "source_end": 485.62,
+   "duration": 40.2,
+   "selection": {
+    "virality": null,
+    "hook_type": "fixed-window",
+    "hook_title": null,
+    "reasoning": "Pipeline check only: sentence-aligned window, not an AI selection."
+   },
+   "decisions": {
+    "segments": 10,
+    "transitions": [
+     "fade"
+    ],
+    "zooms": 1,
+    "broll_planned": 0,
+    "broll_inserted": 0,
+    "broll": [],
+    "broll_dropped": [],
+    "music": "calm",
+    "captions": "hormozi"
+   },
+   "qc": {
+    "ffprobe": [
+     {
+      "codec_type": "video",
+      "width": 1080,
+      "height": 1920
+     },
+     {
+      "codec_type": "audio",
+      "width": null,
+      "height": null
+     }
+    ],
+    "output_seconds": 40.4,
+    "loudness_lufs": -14.6,
+    "black_seconds": 0,
+    "boundary": {
+     "ok": true,
+     "starts_on_sentence": true,
+     "ends_on_sentence": true,
+     "cuts_a_word": false,
+     "first_words": "In breathy voice, so this is",
+     "last_words": "and often some irregularity in periodicity."
+    },
+    "layout": {
+     "broll_applied": false
+    },
+    "reframe_plan": {
+     "attached": true,
+     "delegate": "plain",
+     "shots": []
+    }
+   },
+   "frames": [
+    "clip2_8pct.png",
+    "clip2_50pct.png",
+    "clip2_90pct.png"
+   ]
+  }
+ ]
+}

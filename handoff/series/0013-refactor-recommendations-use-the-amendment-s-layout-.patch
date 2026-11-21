@@ -1,0 +1,196 @@
+From e8b5c5daffc4e4a5910dd99b72d06c6882ac1766 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 14:30:26 +0530
+Subject: [PATCH 13/13] refactor(recommendations): use the amendment's layout
+ names and the app's caption presets
+
+framing.layout: stacked_reactor | pip_preserved | full (was facecam_split |
+game_with_facecam_inset | game_only). Zoom target: facecam | gameplay (was
+center). caption_plan.position now carries the app's own preset names
+(clip_edits.CAPTION_POSITIONS) plus anchor=pane_seam for the stacked
+two-pane layout, matching Sanji's merged composition. No consumer had
+integrated the old names. Advisory data only; covered by the existing
+CHANGELOG entry for reaction editing suggestions.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../src/auto_director/edit_recommendations.py | 14 ++++----
+ backend/src/auto_director/reaction_hooks.py   | 33 ++++++++++++++-----
+ .../unit/test_reaction_hooks_and_recs.py      | 25 +++++++++++---
+ tools/gameplay-eval/HANDOFF.md                |  5 ++-
+ 4 files changed, 58 insertions(+), 19 deletions(-)
+
+diff --git a/backend/src/auto_director/edit_recommendations.py b/backend/src/auto_director/edit_recommendations.py
+index 8ddf9d8..45dab6b 100644
+--- a/backend/src/auto_director/edit_recommendations.py
++++ b/backend/src/auto_director/edit_recommendations.py
+@@ -9,9 +9,9 @@ seconds:
+ 
+ {
+   "schema_version": 1,
+-  "framing": {"mode": "auto|fit|crop", "layout": "facecam_split|game_with_facecam_inset|game_only",
++  "framing": {"mode": "auto|fit|crop", "layout": "stacked_reactor|pip_preserved|full",
+               "facecam_roi": [x, y, w, h] | null, "reason": str, "confidence": 0-1},
+-  "zooms":   [{"start": s, "end": s, "target": "facecam|center", "from_scale": 1.0,
++  "zooms":   [{"start": s, "end": s, "target": "facecam|gameplay", "from_scale": 1.0,
+                "to_scale": 1.12, "ease": "out_cubic", "reason": str}],
+   "pacing":  {"trim_dead_time": [{"start": s, "end": s, "reason": str}],
+               "speed": [{"start": s, "end": s, "rate": 0.6, "reason": str}],
+@@ -36,10 +36,12 @@ def recommend_framing(
+     facecam_roi: Optional[tuple[float, float, float, float]], mtype: str, kind: str
+ ) -> dict[str, Any]:
+     if facecam_roi is None:
+-        return {"mode": "fit", "layout": "game_only", "facecam_roi": None, "confidence": 0.5,
++        return {"mode": "fit", "layout": "full", "facecam_roi": None, "confidence": 0.5,
+                 "reason": "no facecam found: keep the full game frame so HUD stays readable"}
+     reaction_led = mtype in ("reaction_to_event", "commentary_reaction")
+-    layout = "facecam_split" if reaction_led else "game_with_facecam_inset"
++    # Layout names follow the Lane A amendment (stacked reactor / PiP-preserved
++    # / full): stacked_reactor = reactor pane on top, gameplay pane below.
++    layout = "stacked_reactor" if reaction_led else "pip_preserved"
+     return {
+         "mode": "fit", "layout": layout, "facecam_roi": [round(v, 3) for v in facecam_roi],
+         "confidence": 0.8 if reaction_led else 0.6,
+@@ -65,7 +67,7 @@ def recommend_zooms(
+         strong = kind in ("shout", "laughter")
+         zooms.append({
+             "start": round(a - 0.15 if a >= 0.15 else a, 2), "end": round(min(window_len, b + 0.4), 2),
+-            "target": "facecam" if facecam_roi else "center",
++            "target": "facecam" if facecam_roi else "gameplay",
+             "from_scale": 1.0, "to_scale": 1.12 if strong else 1.07, "ease": "out_cubic",
+             "reason": "punch in as the reaction starts, hold through it, release after the payoff"})
+     game = ev.get("game_event")
+@@ -73,7 +75,7 @@ def recommend_zooms(
+         g = _clip_time(game["start_sec"], window_start)
+         if g is not None and g + 0.6 < (a or window_len):
+             zooms.append({
+-                "start": g, "end": round(min(window_len, g + 0.9), 2), "target": "center",
++                "start": g, "end": round(min(window_len, g + 0.9), 2), "target": "gameplay",
+                 "from_scale": 1.0, "to_scale": 1.06, "ease": "out_cubic",
+                 "reason": "small push on the on-screen trigger so viewers see what the streamer reacts to"})
+     for z in zooms:
+diff --git a/backend/src/auto_director/reaction_hooks.py b/backend/src/auto_director/reaction_hooks.py
+index 43e0b21..a579162 100644
+--- a/backend/src/auto_director/reaction_hooks.py
++++ b/backend/src/auto_director/reaction_hooks.py
+@@ -200,19 +200,36 @@ def caption_plan(
+     if game:
+         plan["event_cue"] = {"at": round(max(0.0, game["start_sec"] - window_start), 2),
+                              "align_to": "event_start", "not_audio_peak": True}
+-    plan["position"] = caption_position(facecam_roi)
++    from .edit_recommendations import recommend_framing
++
++    layout = recommend_framing(facecam_roi, ev.get("moment_type", ""), ev.get("reaction_kind", ""))["layout"]
++    plan["position"] = caption_position(facecam_roi, layout)
+     return plan
+ 
+ 
+-def caption_position(roi: Optional[tuple[float, float, float, float]]) -> dict[str, Any]:
+-    """Where captions should sit so they do not cover the facecam or the
+-    bottom-of-screen HUD. Default is the lower-middle band the app uses."""
+-    if roi is None:
+-        return {"vertical": "lower_third", "avoid": ["bottom_hud"]}
++def caption_position(roi: Optional[tuple[float, float, float, float]],
++                     layout: Optional[str] = None) -> dict[str, Any]:
++    """Where captions should sit, in the app's own caption presets
++    (``clip_edits.CAPTION_POSITIONS``: top / middle / bottom).
++
++    * stacked_reactor: on the seam between the reactor pane and the gameplay
++      pane (the renderer knows where its seam is; ``middle`` is the fallback);
++    * pip_preserved: the half of the frame away from the facecam inset;
++    * full / no facecam: the app's default bottom band.
++    """
++    if roi is None or layout == "full":
++        return {"anchor": "frame", "preset": "bottom", "avoid": ["hud"],
++                "reason": "no facecam pane: the app's default caption band"}
+     x, y, w, h = roi
++    roi_out = [round(v, 3) for v in roi]
++    if layout == "stacked_reactor":
++        return {"anchor": "pane_seam", "preset": "middle", "avoid": ["facecam", "hud"],
++                "facecam_roi": roi_out,
++                "reason": "two-pane layout: captions sit on the seam between reactor and gameplay"}
+     centre_y = y + h / 2
+-    return {"vertical": "upper_third" if centre_y > 0.5 else "lower_third",
+-            "avoid": ["facecam", "bottom_hud"], "facecam_roi": [round(v, 3) for v in roi]}
++    return {"anchor": "frame", "preset": "top" if centre_y > 0.5 else "bottom",
++            "avoid": ["facecam"], "facecam_roi": roi_out,
++            "reason": "keep captions on the half of the frame away from the facecam inset"}
+ 
+ 
+ def apply_ga2(
+diff --git a/backend/tests/unit/test_reaction_hooks_and_recs.py b/backend/tests/unit/test_reaction_hooks_and_recs.py
+index 17f08e8..da400a4 100644
+--- a/backend/tests/unit/test_reaction_hooks_and_recs.py
++++ b/backend/tests/unit/test_reaction_hooks_and_recs.py
+@@ -67,7 +67,8 @@ def test_caption_plan_puts_emphasis_on_reaction_and_event_cue_on_event():
+     plan = rh.caption_plan(_moment(), 32.0, words, (0.7, 0.6, 0.25, 0.3), "keep")
+     assert plan["emphasis"][0]["start"] == 8.0 and plan["emphasis"][0]["style"] == "laugh"
+     assert plan["event_cue"]["at"] == 4.0 and plan["event_cue"]["not_audio_peak"] is True
+-    assert plan["position"]["vertical"] == "upper_third" and "facecam" in plan["position"]["avoid"]
++    # Reaction-led clip with a facecam -> stacked reactor layout -> captions on the pane seam.
++    assert plan["position"]["anchor"] == "pane_seam" and "facecam" in plan["position"]["avoid"]
+     assert plan["emphasis_words"][0]["text"] == "no"
+ 
+ 
+@@ -75,15 +76,15 @@ def test_recommendations_contract_and_bounds():
+     m = _moment()
+     rec = er.recommend_edits(m, 32.0, 50.0, facecam_roi=(0.7, 0.6, 0.25, 0.3))
+     assert rec["schema_version"] == 1
+-    assert rec["framing"]["layout"] == "facecam_split" and rec["framing"]["facecam_roi"]
++    assert rec["framing"]["layout"] == "stacked_reactor" and rec["framing"]["facecam_roi"]
+     assert all(z["to_scale"] <= 1.15 and z["start"] >= 0 and z["end"] <= 18.0 for z in rec["zooms"])
+     assert rec["pacing"]["open_on"] == "trigger" and rec["sfx_cues"][0]["requires_library"] is True
+ 
+ 
+ def test_no_facecam_means_fit_game_only():
+     rec = er.recommend_edits(_moment(), 32.0, 50.0, facecam_roi=None)
+-    assert rec["framing"]["layout"] == "game_only" and rec["framing"]["mode"] == "fit"
+-    assert all(z["target"] == "center" for z in rec["zooms"])
++    assert rec["framing"]["layout"] == "full" and rec["framing"]["mode"] == "fit"
++    assert all(z["target"] == "gameplay" for z in rec["zooms"])
+ 
+ 
+ def test_no_trigger_opens_on_reaction():
+@@ -97,3 +98,19 @@ def test_quote_rejects_fragments_and_centres_on_the_exclamation():
+              enumerate(["so", "I", "was", "going", "there", "and", "what", "the", "hell!", "bro"])]
+     q = rh.reaction_quote(words, 40, 46, "keep")
+     assert "hell!" in q and len(q.split()) <= 6
++
++
++def test_layout_and_caption_vocabulary_match_the_app_and_the_amendment():
++    from src.auto_director.clip_edits import CAPTION_POSITIONS
++
++    layouts = {er.recommend_framing(roi, mt, "shout")["layout"]
++               for roi in (None, (0.7, 0.6, 0.25, 0.3)) for mt in ("reaction_to_event", "silent_action")}
++    assert layouts <= {"stacked_reactor", "pip_preserved", "full"}
++    for roi, layout in ((None, "full"), ((0.7, 0.6, 0.25, 0.3), "stacked_reactor"),
++                        ((0.7, 0.6, 0.25, 0.3), "pip_preserved"), ((0.05, 0.05, 0.2, 0.3), "pip_preserved")):
++        pos = rh.caption_position(roi, layout)
++        assert pos["preset"] in CAPTION_POSITIONS
++    assert rh.caption_position((0.7, 0.6, 0.25, 0.3), "pip_preserved")["preset"] == "top"
++    assert rh.caption_position((0.05, 0.05, 0.2, 0.3), "pip_preserved")["preset"] == "bottom"
++    rec = er.recommend_edits(_moment(), 32.0, 50.0, facecam_roi=(0.7, 0.6, 0.25, 0.3))
++    assert {z["target"] for z in rec["zooms"]} <= {"facecam", "gameplay"}
+diff --git a/tools/gameplay-eval/HANDOFF.md b/tools/gameplay-eval/HANDOFF.md
+index 532626c..1d433ac 100644
+--- a/tools/gameplay-eval/HANDOFF.md
++++ b/tools/gameplay-eval/HANDOFF.md
+@@ -21,7 +21,7 @@ Nobody has integrated this work. Sanji must apply and verify it.
+ `hook_type` = `reaction_to_event | commentary_reaction | silent_facecam | silent_action` (or `hook_title` filled);
+ `evidence`: `{detector, moment_type, reaction_kind (laughter|shout|vocal_burst|silent_facecam), modalities[], signals{}, reaction_start_sec,
+ reaction_end_sec, game_event{start_sec,end_sec,type}|null, lead_in_sec, tail_sec, boundary_notes[], hook_quote?}`;
+-`caption_plan`: `{profanity_mode, emphasis[{start,end,style}], emphasis_words[], event_cue{at,align_to,not_audio_peak}|null, position{vertical,avoid[]}}`;
++`caption_plan`: `{profanity_mode, emphasis[{start,end,style}], emphasis_words[], event_cue{at,align_to,not_audio_peak}|null, position{anchor: frame|pane_seam, preset: top|middle|bottom (app's clip_edits.CAPTION_POSITIONS), avoid[], reason}}`;
+ `edit_recommendations`: see `edit_recommendations.py` docstring. All times in `caption_plan`/`edit_recommendations` are clip-relative seconds.
+ `silent_action` moments are low-score fallbacks; `visual_moments` drops them.
+ 
+@@ -108,3 +108,6 @@ Net: the app runs at zero cost; Groq 120B is the real primary. No new keys are r
+   Failing: DeepSeek (no credit; owner will NOT fund it).
+ * New DeepSeek-lane task: recall on real streamer VODs is low (see EVIDENCE.md round 2). Needs a labelled real set
+   (start with the owner's own clips) before any threshold change. Do not loosen the two-signal rule without one.
++
++## Vocabulary alignment (2026-11-17, commit after 07f8d4d)
++`edit_recommendations.framing.layout` now uses the amendment's names: `stacked_reactor` (reactor pane on top, gameplay below — Sanji's merged composition), `pip_preserved`, `full`. Zoom `target` is `facecam` or `gameplay`. Caption position uses the app's presets and `anchor: pane_seam` for the stacked layout. Old names (`facecam_split`, `game_with_facecam_inset`, `game_only`, `center`) are gone; nothing had integrated them.
+-- 
+2.56.0.windows.2
+

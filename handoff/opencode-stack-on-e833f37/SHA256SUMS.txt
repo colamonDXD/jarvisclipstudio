@@ -1,0 +1,12 @@
+aa8624221a78179ca51f8c97053f87645d45a4e29cac4bd21015ebcb17d8b711 *./README.md
+eda276da40559100fa2bb73899d685103765257032ccdbe22c3f0d91f4108619 *./commits.txt
+2b21f13d3172827e2c11244c9b6172b88e889ec5719933940472dd0418621b0f *./series/0001-fix-media-pass-the-NVENC-probe-graph-inline.patch
+ac96ccab360be764c327f703c4efafe4d354c6db45f11270a19da77126b89585 *./series/0002-feat-export-add-16-9-and-1-1-export-profiles.patch
+7481c22e9320fab8bda16c552c1eebb36e9d83a1ef7e0eaf656dcb6883b70742 *./series/0003-test-tools-add-the-xfade-transition-proof-reel.patch
+76ed0a1484ce5ac01a52841991e894385bdb6fe57f617e914db48309d9562336 *./series/0004-test-export-scope-two-pins-to-what-they-were-written.patch
+e3b4152175f7c80f9d2892ef8cbd6693ae121053767773c9057386f54a5ec324 *./series/0005-feat-media-add-an-extended-CPU-only-transition-libra.patch
+889536bfca0955f4a16c0d0a811b6e5f945ec47d8bbe2c1db8b5fe3430593a7b *./series/0006-feat-media-detect-changing-burned-in-caption-bands.patch
+d6f68d94719dd2ee130059b162f4b04ea4e24feb78567a9c50f73cfcab03605a *./series/0007-feat-media-expose-transition-library-catalogue-and-p.patch
+d681196597163137d6c58f7ccfc9ad1bdb6852a488df4adb4ae69993fc0dd1ac *./series/0008-feat-fonts-add-an-OFL-Apache-caption-font-pack-with-.patch
+9ab0eb71a06968923b2899a44e991510454ae19fedd1ddf689d96635e74a7f46 *./series/0009-chore-fonts-drop-THEBOLDFONT-licence-unverifiable-al.patch
+076ccafc75b59b22f14495a9aa908e781a5f1822ec5d2244b6ab01f3d4acc8f1 *./test_result.txt

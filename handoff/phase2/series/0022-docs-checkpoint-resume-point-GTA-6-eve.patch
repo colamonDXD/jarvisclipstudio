@@ -1,0 +1,28 @@
+From 996d074234b5447b1366eaefee8aa8590af59237 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 08:45:45 +0530
+Subject: [PATCH 22/22] docs: checkpoint resume point (GTA 6 eve)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CLAUDE_CHECKPOINT.md | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/CLAUDE_CHECKPOINT.md b/CLAUDE_CHECKPOINT.md
+index 34bdab5..4e1da0a 100644
+--- a/CLAUDE_CHECKPOINT.md
++++ b/CLAUDE_CHECKPOINT.md
+@@ -147,3 +147,10 @@ Sanji coordination via Luffy: replies in handoff\REPLY_TO_SANJI_2026-11-17*.md.
+ Fixture v2 at test-footage\fixtures\streamer_fixture_v2.mp4: reaction picker FAILS (decoy #1; no episodes). Next Lane A fix: mic channel / speech-relative voice bursts, YuNet-landmark face activity in the facecam_rect window.
+ Sanji's gate diff applied in worktree D:\SnipNova-Dev\sanji-gate-wt (base 48dd1e9); compare results in test-footage\gate_compare\*.jsonl.
+ Owner still to run: tools\phase2\run_all.py --select ai --env-file <his .env> (after his V11 install finishes).
++
++## Resume point (2026-11-18, GTA 6 eve)
++Luffy/Sanji: complete website tonight; STOP building from scratch (news-card template paused, not in series).
++Phase 2 series = 21 patches, tip 70961ee, in D:\SnipNova-Dev\handoff\phase2 (+ music\ with 7 FreePD MP3s not in git).
++Plain/Auto switch proven with music+SFX present: comedy Plain audio bit-identical to voice-only (-240 dB diff), Auto bed -35.8 dB; Plain/Auto EDL decisions in test-footage\phase2\*_sw_plain|auto\report.json.
++Replies to Sanji: handoff\REPLY_TO_SANJI_2026-11-18.md, _b.md, _c.md (Q9-Q13: assets mount, defaults, E2E on installed app, Luffy's empty install folder/.env, GPU in Docker).
++Try-it page: tools\phase2\try_it.py (Layout picker: auto one-layout / crop / fit).
+-- 
+2.56.0.windows.2
+

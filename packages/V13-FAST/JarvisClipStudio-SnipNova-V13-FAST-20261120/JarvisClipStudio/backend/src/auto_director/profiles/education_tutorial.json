@@ -1,0 +1,53 @@
+{
+  "niche": "education_tutorial",
+  "pacing": {
+    "target_cuts_per_min": [12, 18],
+    "silence_trim_aggressive": true,
+    "min_shot_sec": 3.3,
+    "max_shot_sec": 5.0
+  },
+  "transitions": {
+    "default": "cut",
+    "duration_sec": 0.05,
+    "on_topic_change": "fade",
+    "on_punchline": "cut",
+    "signature": {"name": "fade", "duration_sec": 0.3}
+  },
+  "zooms": {
+    "punch_in_scale": 1.15,
+    "punch_in_trigger": "key_concept",
+    "ken_burns": false
+  },
+  "captions": {
+    "preset_id": "hormozi",
+    "words_per_line": 3,
+    "position": "bottom"
+  },
+  "overlays": {
+    "info_cards": true,
+    "lower_thirds": false,
+    "reference_images": "open_web",
+    "ref_image_at_entity_mentions": true
+  },
+  "broll": {
+    "enabled": true,
+    "source": "stock",
+    "density_per_min": 1.5,
+    "cadence_per_min": 3.5,
+    "layout": "pip"
+  },
+  "audio": {
+    "music_mood": "calm",
+    "music_volume_0_to_1": 0.1,
+    "ducking_db": -15.0,
+    "sfx_from_user_library": false
+  },
+  "color": {
+    "lut": "none"
+  },
+  "hook": {
+    "title_style": "problem",
+    "available_title_styles": ["problem", "mistake_fix"],
+    "title_seconds": 2.0
+  }
+}

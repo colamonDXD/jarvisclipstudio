@@ -1,0 +1,285 @@
+{
+  "source": "https://github.com/google/fonts",
+  "fonts": [
+    {
+      "file": "Anton-Regular.ttf",
+      "sha256": "a4ba3a92350ebb031da0cb47630ac49eb265082ca1bc0450442f4a83ab947cab",
+      "family": "Anton",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/anton",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/anton/OFL.txt"
+    },
+    {
+      "file": "ArchivoBlack-Regular.ttf",
+      "sha256": "dd9a89a019b4849f66ab75455fe7bdf931311042cbb0f0f97acc061539703180",
+      "family": "Archivo Black",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/archivoblack",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/archivoblack/OFL.txt"
+    },
+    {
+      "file": "Bangers-Regular.ttf",
+      "sha256": "4160a7311de9342674cce9160cde9fcbb30f48190397d86ff1b70b455af65824",
+      "family": "Bangers",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/bangers",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/bangers/OFL.txt"
+    },
+    {
+      "file": "BarlowCondensed-Bold.ttf",
+      "sha256": "e476562ec9c1e16cf16475895b511f08c804f438cc9a9f80a44ea50a0eeb5b65",
+      "family": "Barlow Condensed",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/barlowcondensed",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/barlowcondensed/OFL.txt"
+    },
+    {
+      "file": "BebasNeue-Regular.ttf",
+      "sha256": "08e4623805102d819f58601e46e345648846075e363b2ceb23313c2d1c83ec73",
+      "family": "Bebas Neue",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/bebasneue",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/bebasneue/OFL.txt"
+    },
+    {
+      "file": "Bungee-Regular.ttf",
+      "sha256": "c4f5361ce120af3e6b9156d0bf379fa19cda2ea0cd18ac01fd99596c6bf66e3f",
+      "family": "Bungee",
+      "license": "OFL-1.1",
+      "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/bungee/Bungee-Regular.ttf",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/bungee/OFL.txt"
+    },
+    {
+      "file": "Chewy-Regular.ttf",
+      "sha256": "7cf75ea288f82fd20badea8ab4da7a656a96a7277c170811e813b3d3d6294147",
+      "family": "Chewy",
+      "license": "Apache-2.0",
+      "source_url": "https://raw.githubusercontent.com/google/fonts/main/apache/chewy/Chewy-Regular.ttf",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/apache/chewy/LICENSE.txt"
+    },
+    {
+      "file": "DMSans.ttf",
+      "sha256": "8cd08d97e89c24d0aa92edd2f0f4c8ee6195eee9b7c9f154865a58b02f0c1c0d",
+      "family": "DM Sans",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/dmsans",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/dmsans/OFL.txt"
+    },
+    {
+      "file": "Fredoka-Variable.ttf",
+      "sha256": "2ba02e68b152868aef9ba28e24b3648c7d457fe6f25c761f2c2c53fb61a73fc8",
+      "family": "Fredoka",
+      "license": "OFL-1.1",
+      "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/fredoka/Fredoka%5Bwdth%2Cwght%5D.ttf",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/fredoka/OFL.txt"
+    },
+    {
+      "file": "Inter.ttf",
+      "sha256": "29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031",
+      "family": "Inter",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/inter",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/OFL.txt"
+    },
+    {
+      "file": "LeagueSpartan.ttf",
+      "sha256": "2dbb6290b39ab7c48a40b18f74ca59ef48a69a015c3ea0542703f0c6ce51d617",
+      "family": "League Spartan",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/leaguespartan",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/leaguespartan/OFL.txt"
+    },
+    {
+      "file": "LilitaOne-Regular.ttf",
+      "sha256": "f5b641c45c69d772ee4eda687bc9fda411d5cad6b0b45371491da4580cbc8d59",
+      "family": "Lilita One",
+      "license": "OFL-1.1",
+      "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/lilitaone/LilitaOne-Regular.ttf",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/lilitaone/OFL.txt"
+    },
+    {
+      "file": "LuckiestGuy-Regular.ttf",
+      "sha256": "cfbdd68a039f92df51cf3721506af6242e64594c6325fe0bedbeff3fe385d980",
+      "family": "Luckiest Guy",
+      "license": "Apache-2.0",
+      "source_url": "https://raw.githubusercontent.com/google/fonts/main/apache/luckiestguy/LuckiestGuy-Regular.ttf",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/apache/luckiestguy/LICENSE.txt"
+    },
+    {
+      "file": "Montserrat-Black.ttf",
+      "sha256": "9d9bb42bdc0defdf103a4f41c4ec775c4bfc77014b0e2f4ecc69be874b10d58b",
+      "family": "Montserrat",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/montserrat",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/montserrat/OFL.txt"
+    },
+    {
+      "file": "Montserrat-ExtraBold.ttf",
+      "sha256": "f0123e28dc0c4cac86559d1ffe587dded6ec57a4819956f56fcf6ad31d696eed",
+      "family": "Montserrat",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/montserrat",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/montserrat/OFL.txt"
+    },
+    {
+      "file": "Montserrat-Variable-wght.ttf",
+      "sha256": "0f7b311b2f3279e4eef9b2f968bcdbab6e28f4daeb1f049f4f278a902bcd82f7",
+      "family": "Montserrat",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/montserrat",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/montserrat/OFL.txt"
+    },
+    {
+      "file": "NotoSerif-Regular.ttf",
+      "sha256": "5473d2e43bdd018ee124a4addba8091fd0a29894b121cbb741023af6549662b6",
+      "family": "Noto Serif",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/notoserif",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/notoserif/OFL.txt"
+    },
+    {
+      "file": "NunitoSans.ttf",
+      "sha256": "f934d7142fb4784bf828da485b7dcbd90c0c80d514e9d49a5da0ed3a1ae2491d",
+      "family": "Nunito Sans",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/nunitosans",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/nunitosans/OFL.txt"
+    },
+    {
+      "file": "OpenSans.ttf",
+      "sha256": "36643644f318a812aab2d2ed3bb98f8cf0872527f835fe9398d95fe6b9adb878",
+      "family": "Open Sans",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/opensans",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/opensans/OFL.txt"
+    },
+    {
+      "file": "Oswald-Variable-wght.ttf",
+      "sha256": "5b38c246e255a12f5712d640d56bcced0472466fc68983d2d0410ec0457c2817",
+      "family": "Oswald",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/oswald",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/oswald/OFL.txt"
+    },
+    {
+      "file": "PassionOne-Regular.ttf",
+      "sha256": "86fea5001e5d751cf5696f0ecd4754db80918adbb12658add959f5bcdc92b09b",
+      "family": "Passion One",
+      "license": "OFL-1.1",
+      "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/passionone/PassionOne-Regular.ttf",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/passionone/OFL.txt"
+    },
+    {
+      "file": "PaytoneOne-Regular.ttf",
+      "sha256": "1c07073b0b578199b54c7866d55e2b631d285e8aa4bb4fbc08809d980cd49b14",
+      "family": "Paytone One",
+      "license": "OFL-1.1",
+      "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/paytoneone/PaytoneOne-Regular.ttf",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/paytoneone/OFL.txt"
+    },
+    {
+      "file": "PermanentMarker-Regular.ttf",
+      "sha256": "28f82c8a7943cb8e9d599f8554da1d4fc75dbcf69b9885ad6c0611d20c6946c5",
+      "family": "Permanent Marker",
+      "license": "Apache-2.0",
+      "source_url": "https://raw.githubusercontent.com/google/fonts/main/apache/permanentmarker/PermanentMarker-Regular.ttf",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/apache/permanentmarker/LICENSE.txt"
+    },
+    {
+      "file": "Poppins-ExtraBold.ttf",
+      "sha256": "f2ab17c1a63a0ecc12c2461848fc8a469395e3cd2d641803e889c643d9f958e1",
+      "family": "Poppins",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/poppins",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/poppins/OFL.txt"
+    },
+    {
+      "file": "Raleway-Variable-wght.ttf",
+      "sha256": "8bbcc3eb8275c388f4bcd998832f8a4b943eadbaf6a595205312774b5951aefb",
+      "family": "Raleway",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/raleway",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/raleway/OFL.txt"
+    },
+    {
+      "file": "Roboto.ttf",
+      "sha256": "d7598e12c5dbef095ff8272cfc55da0250bd07fbdecbac8a530b9b277872a134",
+      "family": "Roboto",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/roboto",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/OFL.txt"
+    },
+    {
+      "file": "Rubik.ttf",
+      "sha256": "1b3a7437ba2af80e465e773ed60c5036d1ba6ace492d89046dbcf18fb31e4e88",
+      "family": "Rubik",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/rubik",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/rubik/OFL.txt"
+    },
+    {
+      "file": "RubikMonoOne-Regular.ttf",
+      "sha256": "b22624b6a36e543e942106edfccd198c50b57b65b924bfe02a6f0a5699429e6b",
+      "family": "Rubik Mono One",
+      "license": "OFL-1.1",
+      "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/rubikmonoone/RubikMonoOne-Regular.ttf",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/rubikmonoone/OFL.txt"
+    },
+    {
+      "file": "Sora.ttf",
+      "sha256": "84ff7096ae3ec6c8be47d906d1a0ba4de7f2ce78c615275c77301964a316e16c",
+      "family": "Sora",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/sora",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/sora/OFL.txt"
+    },
+    {
+      "file": "THEBOLDFONT.ttf",
+      "sha256": "5751022bdfe00903cf6ec5d4a8d23920952ecc213169bbaf19f28d8dedc54339",
+      "family": "THE BOLD FONT",
+      "license": "UNVERIFIED",
+      "source_url": "",
+      "license_url": ""
+    },
+    {
+      "file": "TikTokSans-Bold.ttf",
+      "sha256": "04c5f110157c1f8a84319d850b6c1ae0ea95798ea2a8b1326262d06e68d00064",
+      "family": "TikTok Sans",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/tiktoksans",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/tiktoksans/OFL.txt"
+    },
+    {
+      "file": "TikTokSans-Regular.ttf",
+      "sha256": "340bcf4fc0901573f734b38e64c9bc20b617ca4de614761c38571b7d044eddf3",
+      "family": "TikTok Sans",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/tiktoksans",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/tiktoksans/OFL.txt"
+    },
+    {
+      "file": "TitanOne-Regular.ttf",
+      "sha256": "563ff6de179bbd44bcd7d2a6c448d6dc3bf935834237cf1250e506e65cd86ff1",
+      "family": "Titan One",
+      "license": "OFL-1.1",
+      "source_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/titanone/TitanOne-Regular.ttf",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/titanone/OFL.txt"
+    },
+    {
+      "file": "Urbanist.ttf",
+      "sha256": "748362d51eb276840e9f0023cd2d98299bf709a95fb3a5ae4ffcb624c638ebb9",
+      "family": "Urbanist",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/urbanist",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/urbanist/OFL.txt"
+    },
+    {
+      "file": "WorkSans.ttf",
+      "sha256": "f50f61f2ba738e239442d40bf1069adb195c224b6a5a73a581fc2f3ed62a9f63",
+      "family": "Work Sans",
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/main/ofl/worksans",
+      "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/worksans/OFL.txt"
+    }
+  ]
+}

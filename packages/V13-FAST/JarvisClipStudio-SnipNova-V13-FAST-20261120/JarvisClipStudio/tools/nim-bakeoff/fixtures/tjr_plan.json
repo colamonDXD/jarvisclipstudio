@@ -1,0 +1,557 @@
+{
+ "id": "tjr_plan",
+ "kind": "plan",
+ "niche": "finance_business",
+ "profile": {
+  "niche": "finance_business",
+  "pacing": {
+   "target_cuts_per_min": [
+    8,
+    12
+   ],
+   "silence_trim_aggressive": false,
+   "min_shot_sec": 5.0,
+   "max_shot_sec": 7.5
+  },
+  "transitions": {
+   "default": "hard_cut",
+   "duration_sec": 0.05,
+   "on_topic_change": "slide",
+   "on_punchline": "hard_cut",
+   "signature": {
+    "name": "slide",
+    "duration_sec": 0.3
+   }
+  },
+  "zooms": {
+   "punch_in_scale": 1.1,
+   "punch_in_trigger": "key_metric",
+   "ken_burns": false
+  },
+  "captions": {
+   "preset_id": "hormozi",
+   "words_per_line": 3,
+   "position": "bottom"
+  },
+  "overlays": {
+   "info_cards": true,
+   "lower_thirds": false,
+   "reference_images": "off",
+   "ref_image_at_entity_mentions": false
+  },
+  "broll": {
+   "enabled": true,
+   "source": "pexels",
+   "density_per_min": 1.5
+  },
+  "audio": {
+   "music_mood": "corporate",
+   "music_volume_0_to_1": 0.15,
+   "ducking_db": -12.0,
+   "sfx_from_user_library": false
+  },
+  "color": {
+   "lut": "none"
+  },
+  "hook": {
+   "title_style": "problem",
+   "title_seconds": 2.0
+  }
+ },
+ "duration": 28.6,
+ "text": "trade worth $96 ,000 in profit. This loss today, or these two loss today, are actually helping me get closer to my next win, that I know, it sounds stupid, but I'm due to my probabilities within the market. I know that 10 times out of 10, when I execute on my strategy, I have higher odds of winning than losing, and I know that when I win, my winners are going to be larger than my losers, and that's all that I care about. So whenever my strategy presents itself, I'm taking that fucking trade,",
+ "words": [
+  {
+   "word": "trade",
+   "start": 0.0,
+   "end": 0.36
+  },
+  {
+   "word": "worth",
+   "start": 0.36,
+   "end": 0.66
+  },
+  {
+   "word": "$96",
+   "start": 0.66,
+   "end": 1.44
+  },
+  {
+   "word": ",000",
+   "start": 1.44,
+   "end": 1.88
+  },
+  {
+   "word": "in",
+   "start": 1.88,
+   "end": 2.34
+  },
+  {
+   "word": "profit.",
+   "start": 2.34,
+   "end": 2.96
+  },
+  {
+   "word": "This",
+   "start": 2.96,
+   "end": 3.02
+  },
+  {
+   "word": "loss",
+   "start": 3.02,
+   "end": 3.34
+  },
+  {
+   "word": "today,",
+   "start": 3.34,
+   "end": 3.94
+  },
+  {
+   "word": "or",
+   "start": 3.94,
+   "end": 4.06
+  },
+  {
+   "word": "these",
+   "start": 4.06,
+   "end": 4.26
+  },
+  {
+   "word": "two",
+   "start": 4.26,
+   "end": 4.5
+  },
+  {
+   "word": "loss",
+   "start": 4.5,
+   "end": 4.68
+  },
+  {
+   "word": "today,",
+   "start": 4.68,
+   "end": 5.26
+  },
+  {
+   "word": "are",
+   "start": 5.26,
+   "end": 5.48
+  },
+  {
+   "word": "actually",
+   "start": 5.48,
+   "end": 5.78
+  },
+  {
+   "word": "helping",
+   "start": 5.78,
+   "end": 6.02
+  },
+  {
+   "word": "me",
+   "start": 6.02,
+   "end": 6.22
+  },
+  {
+   "word": "get",
+   "start": 6.22,
+   "end": 6.44
+  },
+  {
+   "word": "closer",
+   "start": 6.44,
+   "end": 6.82
+  },
+  {
+   "word": "to",
+   "start": 6.82,
+   "end": 7.06
+  },
+  {
+   "word": "my",
+   "start": 7.06,
+   "end": 7.26
+  },
+  {
+   "word": "next",
+   "start": 7.26,
+   "end": 7.5
+  },
+  {
+   "word": "win,",
+   "start": 7.5,
+   "end": 8.02
+  },
+  {
+   "word": "that",
+   "start": 8.02,
+   "end": 8.2
+  },
+  {
+   "word": "I",
+   "start": 8.2,
+   "end": 8.44
+  },
+  {
+   "word": "know,",
+   "start": 8.44,
+   "end": 9.06
+  },
+  {
+   "word": "it",
+   "start": 9.06,
+   "end": 9.22
+  },
+  {
+   "word": "sounds",
+   "start": 9.22,
+   "end": 9.78
+  },
+  {
+   "word": "stupid,",
+   "start": 9.78,
+   "end": 10.28
+  },
+  {
+   "word": "but",
+   "start": 10.28,
+   "end": 10.32
+  },
+  {
+   "word": "I'm",
+   "start": 10.32,
+   "end": 10.62
+  },
+  {
+   "word": "due",
+   "start": 10.62,
+   "end": 11.06
+  },
+  {
+   "word": "to",
+   "start": 11.06,
+   "end": 11.62
+  },
+  {
+   "word": "my",
+   "start": 11.62,
+   "end": 12.46
+  },
+  {
+   "word": "probabilities",
+   "start": 12.46,
+   "end": 13.1
+  },
+  {
+   "word": "within",
+   "start": 13.1,
+   "end": 13.44
+  },
+  {
+   "word": "the",
+   "start": 13.44,
+   "end": 13.54
+  },
+  {
+   "word": "market.",
+   "start": 13.54,
+   "end": 13.94
+  },
+  {
+   "word": "I",
+   "start": 13.94,
+   "end": 14.0
+  },
+  {
+   "word": "know",
+   "start": 14.0,
+   "end": 14.14
+  },
+  {
+   "word": "that",
+   "start": 14.14,
+   "end": 14.34
+  },
+  {
+   "word": "10",
+   "start": 14.34,
+   "end": 15.66
+  },
+  {
+   "word": "times",
+   "start": 15.66,
+   "end": 15.92
+  },
+  {
+   "word": "out",
+   "start": 15.92,
+   "end": 16.08
+  },
+  {
+   "word": "of",
+   "start": 16.08,
+   "end": 16.16
+  },
+  {
+   "word": "10,",
+   "start": 16.16,
+   "end": 16.66
+  },
+  {
+   "word": "when",
+   "start": 16.66,
+   "end": 16.82
+  },
+  {
+   "word": "I",
+   "start": 16.82,
+   "end": 16.94
+  },
+  {
+   "word": "execute",
+   "start": 16.94,
+   "end": 17.24
+  },
+  {
+   "word": "on",
+   "start": 17.24,
+   "end": 17.42
+  },
+  {
+   "word": "my",
+   "start": 17.42,
+   "end": 17.52
+  },
+  {
+   "word": "strategy,",
+   "start": 17.52,
+   "end": 18.22
+  },
+  {
+   "word": "I",
+   "start": 18.22,
+   "end": 18.4
+  },
+  {
+   "word": "have",
+   "start": 18.4,
+   "end": 18.64
+  },
+  {
+   "word": "higher",
+   "start": 18.64,
+   "end": 19.0
+  },
+  {
+   "word": "odds",
+   "start": 19.0,
+   "end": 19.44
+  },
+  {
+   "word": "of",
+   "start": 19.44,
+   "end": 19.68
+  },
+  {
+   "word": "winning",
+   "start": 19.68,
+   "end": 19.98
+  },
+  {
+   "word": "than",
+   "start": 19.98,
+   "end": 20.5
+  },
+  {
+   "word": "losing,",
+   "start": 20.5,
+   "end": 21.0
+  },
+  {
+   "word": "and",
+   "start": 21.0,
+   "end": 21.08
+  },
+  {
+   "word": "I",
+   "start": 21.08,
+   "end": 21.18
+  },
+  {
+   "word": "know",
+   "start": 21.18,
+   "end": 21.38
+  },
+  {
+   "word": "that",
+   "start": 21.38,
+   "end": 21.54
+  },
+  {
+   "word": "when",
+   "start": 21.54,
+   "end": 21.68
+  },
+  {
+   "word": "I",
+   "start": 21.68,
+   "end": 21.82
+  },
+  {
+   "word": "win,",
+   "start": 21.82,
+   "end": 22.28
+  },
+  {
+   "word": "my",
+   "start": 22.28,
+   "end": 22.38
+  },
+  {
+   "word": "winners",
+   "start": 22.38,
+   "end": 22.6
+  },
+  {
+   "word": "are",
+   "start": 22.6,
+   "end": 22.76
+  },
+  {
+   "word": "going",
+   "start": 22.76,
+   "end": 22.88
+  },
+  {
+   "word": "to",
+   "start": 22.88,
+   "end": 22.96
+  },
+  {
+   "word": "be",
+   "start": 22.96,
+   "end": 23.08
+  },
+  {
+   "word": "larger",
+   "start": 23.08,
+   "end": 23.34
+  },
+  {
+   "word": "than",
+   "start": 23.34,
+   "end": 23.52
+  },
+  {
+   "word": "my",
+   "start": 23.52,
+   "end": 23.66
+  },
+  {
+   "word": "losers,",
+   "start": 23.66,
+   "end": 24.1
+  },
+  {
+   "word": "and",
+   "start": 24.1,
+   "end": 24.22
+  },
+  {
+   "word": "that's",
+   "start": 24.22,
+   "end": 24.42
+  },
+  {
+   "word": "all",
+   "start": 24.42,
+   "end": 24.58
+  },
+  {
+   "word": "that",
+   "start": 24.58,
+   "end": 24.7
+  },
+  {
+   "word": "I",
+   "start": 24.7,
+   "end": 24.8
+  },
+  {
+   "word": "care",
+   "start": 24.8,
+   "end": 24.96
+  },
+  {
+   "word": "about.",
+   "start": 24.96,
+   "end": 25.46
+  },
+  {
+   "word": "So",
+   "start": 25.46,
+   "end": 25.56
+  },
+  {
+   "word": "whenever",
+   "start": 25.56,
+   "end": 25.76
+  },
+  {
+   "word": "my",
+   "start": 25.76,
+   "end": 25.96
+  },
+  {
+   "word": "strategy",
+   "start": 25.96,
+   "end": 26.3
+  },
+  {
+   "word": "presents",
+   "start": 26.3,
+   "end": 26.58
+  },
+  {
+   "word": "itself,",
+   "start": 26.58,
+   "end": 27.1
+  },
+  {
+   "word": "I'm",
+   "start": 27.1,
+   "end": 27.26
+  },
+  {
+   "word": "taking",
+   "start": 27.26,
+   "end": 27.48
+  },
+  {
+   "word": "that",
+   "start": 27.48,
+   "end": 27.68
+  },
+  {
+   "word": "fucking",
+   "start": 27.68,
+   "end": 27.84
+  },
+  {
+   "word": "trade,",
+   "start": 27.84,
+   "end": 28.19
+  }
+ ],
+ "audio_features": {
+  "energy_peaks": [
+   13.5,
+   19.0
+  ],
+  "pauses": []
+ },
+ "selection_scores": {
+  "relevance_score": 0.9,
+  "total_score": 88
+ },
+ "notes": "TJR's 28.6 s trading clip under the finance_business profile it now classifies to. Word timings are the real faster-whisper starts; each word's end is the next word's start."
+}

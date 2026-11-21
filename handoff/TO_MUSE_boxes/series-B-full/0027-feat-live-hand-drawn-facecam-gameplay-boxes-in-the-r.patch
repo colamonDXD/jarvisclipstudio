@@ -1,0 +1,320 @@
+From 8d41886a2fcd23409a0e2b9fb360c5e9cff731cb Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 23:12:18 +0530
+Subject: [PATCH 27/27] feat(live): hand-drawn facecam/gameplay boxes in the
+ render path (WIP, untested)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/api/routes/live.py        | 12 +++-
+ backend/src/live/finisher.py          | 13 +++-
+ backend/src/live/moments.py           | 14 +++--
+ backend/src/live/session.py           |  5 +-
+ backend/src/live/vod.py               |  5 +-
+ backend/src/media/gaming_templates.py | 87 +++++++++++++++++++++++++++
+ backend/src/media/reframe_plan.py     |  9 +++
+ backend/src/media/reframing.py        |  9 +++
+ backend/src/workers/live_worker.py    |  2 +-
+ 9 files changed, 142 insertions(+), 14 deletions(-)
+
+diff --git a/backend/src/api/routes/live.py b/backend/src/api/routes/live.py
+index 1226b03..580f3f7 100644
+--- a/backend/src/api/routes/live.py
++++ b/backend/src/api/routes/live.py
+@@ -109,7 +109,17 @@ def validate_settings(data: Dict[str, Any]) -> Dict[str, Any]:
+         raise HTTPException(status_code=422, detail="max_clips must be a whole number from 1 to 60")
+     return {"layout_template": layout, "niche": niche, "streamer_words_only": words_only, "max_clips": max_clips,
+             "credit": _text(data, "credit", 40), "hook_title": _text(data, "hook_title", 80),
+-            "request": _text(data, "request", 200), "voice_fx": _voice_fx(data.get("voice_fx"))}
++            "request": _text(data, "request", 200), "voice_fx": _voice_fx(data.get("voice_fx")),
++            "boxes": _boxes(data.get("boxes"))}
++
++
++def _boxes(value: Any) -> Any:
++    from ..media.gaming_templates import validate_boxes
++
++    try:
++        return validate_boxes(value)
++    except ValueError as exc:
++        raise HTTPException(status_code=422, detail=str(exc)) from None
+ 
+ 
+ @router.get("/status")
+diff --git a/backend/src/live/finisher.py b/backend/src/live/finisher.py
+index 7230f3f..bb17ad7 100644
+--- a/backend/src/live/finisher.py
++++ b/backend/src/live/finisher.py
+@@ -33,7 +33,8 @@ def _duration(path: Path) -> float:
+ def render_live_clip(window: Path, out_path: Path, *, niche: str = "gaming", layout_template: Optional[str] = "facecam_red",
+                      credit: Optional[str] = None, hook_title: Optional[str] = None,
+                      streamer_words_only: bool = True, voice_fx: Optional[str] = None,
+-                     quote_title: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
++                     quote_title: Optional[Dict[str, Any]] = None,
++                     boxes: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+     """Render ``window`` into ``out_path``; returns ``{ok, duration, words, error}``."""
+     from ..auto_director import edl as E
+     from ..media.gaming_templates import clean_layout_credit
+@@ -73,12 +74,18 @@ def render_live_clip(window: Path, out_path: Path, *, niche: str = "gaming", lay
+     apply_auto_music_bed(edl, niche)
+     if quote_title:
+         edl["quote_title"] = quote_title  # drawn by media/hook_finish.py
+-    attach_reframe_plan(edl, window, [(0.0, total)], False, framing=None)
+-    ok = create_optimized_clip(window, 0.0, total, out_path, add_subtitles=True,
++    from ..media.gaming_templates import MANUAL_BOXES
++
++    token = MANUAL_BOXES.set(boxes if layout_template else None)
++    try:
++        attach_reframe_plan(edl, window, [(0.0, total)], False, framing=None)
++        ok = create_optimized_clip(window, 0.0, total, out_path, add_subtitles=True,
+                                caption_template=(profile.get("captions") or {}).get("preset_id") or "default",
+                                hook_title=hook_title, edl=edl, profile_name=niche, layout_report={},
+                                framing_mode="auto", layout_template=layout_template,
+                                layout_credit=clean_layout_credit(credit) if layout_template else None)
++    finally:
++        MANUAL_BOXES.reset(token)
+     ok = bool(ok) and out_path.is_file()
+     if ok and voice_fx:
+         from ..media.voice_fx import apply_voice_fx
+diff --git a/backend/src/live/moments.py b/backend/src/live/moments.py
+index fd06022..b214d86 100644
+--- a/backend/src/live/moments.py
++++ b/backend/src/live/moments.py
+@@ -64,7 +64,7 @@ def _probe_size(video: Path) -> Optional[Tuple[int, int]]:
+         return None
+ 
+ 
+-def creator_on_camera(window: Path, onset_in_window: float, *, min_ratio: float = 1.8) -> Tuple[bool, str]:
++def creator_on_camera(window: Path, onset_in_window: float, *, min_ratio: float = 1.8, cam_box=None) -> Tuple[bool, str]:
+     """Is the streamer's face visible in the facecam, and moving, at the reaction?
+ 
+     Visible in >= 2 of 3 facecam frames (onset-1, +1, +3 s) and the face's
+@@ -83,10 +83,14 @@ def creator_on_camera(window: Path, onset_in_window: float, *, min_ratio: float
+     w, h = size
+     dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                                 str(window)], capture_output=True, text=True).stdout.strip() or 0)
+-    found = find_facecam_rect(str(window), w, h, probe_times([(0.0, max(dur, 1.0))]))
+-    if found is None:
+-        return False, "no facecam found"
+-    x, y, cw, ch = [int(v) for v in found.rect]
++    if cam_box:
++        x, y = int(cam_box["x"] * w), int(cam_box["y"] * h)
++        cw, ch = max(2, int(cam_box["w"] * w)) // 2 * 2, max(2, int(cam_box["h"] * h)) // 2 * 2
++    else:
++        found = find_facecam_rect(str(window), w, h, probe_times([(0.0, max(dur, 1.0))]))
++        if found is None:
++            return False, "no facecam found"
++        x, y, cw, ch = [int(v) for v in found.rect]
+     detector = open_yunet_detector()
+     hits = 0
+     for t in (onset_in_window - 1, onset_in_window + 1, onset_in_window + 3):
+diff --git a/backend/src/live/session.py b/backend/src/live/session.py
+index b18f182..cba1867 100644
+--- a/backend/src/live/session.py
++++ b/backend/src/live/session.py
+@@ -51,6 +51,7 @@ class LiveSettings:
+     hook_title: Optional[str] = None
+     request: Optional[str] = None      # "Find moments where..." (finished streams)
+     voice_fx: Optional[str] = None     # funny voice: "high" | "deep"
++    boxes: Optional[Dict[str, Any]] = None  # hand-drawn {"cam", "game", "arrange"} (gaming_templates.validate_boxes)
+     streamer_words_only: bool = True
+     min_talk_share: float = 0.5
+     max_clips: int = 30
+@@ -180,7 +181,7 @@ class LiveSession:
+             self._emit({**moment, "n": n, "status": "rejected", "reason": "window cut failed"})
+             return
+         if self.settings.layout_template:
+-            ok, why = creator_on_camera(window, onset - start)
++            ok, why = creator_on_camera(window, onset - start, cam_box=(self.settings.boxes or {}).get("cam"))
+             moment["camera"] = why
+             if not ok:
+                 self._emit({**moment, "n": n, "status": "rejected", "reason": why})
+@@ -209,7 +210,7 @@ class LiveSession:
+                                           layout_template=self.settings.layout_template, credit=self.settings.credit,
+                                           hook_title=self.settings.hook_title,
+                                           streamer_words_only=self.settings.streamer_words_only,
+-                                          voice_fx=self.settings.voice_fx)
++                                          voice_fx=self.settings.voice_fx, boxes=self.settings.boxes)
+             except Exception as exc:
+                 logger.exception("Live clip render failed")
+                 result = {"ok": False, "error": str(exc)[:300]}
+diff --git a/backend/src/live/vod.py b/backend/src/live/vod.py
+index 8b08b8f..92e7d89 100644
+--- a/backend/src/live/vod.py
++++ b/backend/src/live/vod.py
+@@ -736,7 +736,8 @@ class VodSession:
+                 self._emit({**moment, "status": "rejected", "reason": f"[{stamp}] could not download this part"})
+                 continue
+             if s.layout_template:
+-                ok, why = creator_on_camera(section, pick["onset"] - pick["start"], min_ratio=0.0)
++                ok, why = creator_on_camera(section, pick["onset"] - pick["start"], min_ratio=0.0,
++                                            cam_box=(s.boxes or {}).get("cam"))
+                 if not ok:  # face-on-top needs the streamer's camera (intro screens, cutscenes)
+                     self._emit({**moment, "status": "rejected", "reason": f"[{stamp}] {why}"})
+                     continue
+@@ -751,7 +752,7 @@ class VodSession:
+                                           credit=s.credit, quote_title=quote,
+                                           hook_title=None if quote else (s.hook_title if s.hook_title else None),
+                                           streamer_words_only=s.streamer_words_only,
+-                                          voice_fx=getattr(s, "voice_fx", None))
++                                          voice_fx=getattr(s, "voice_fx", None), boxes=getattr(s, "boxes", None))
+             except Exception as exc:
+                 result = {"ok": False, "error": str(exc)[:300]}
+             self._emit({"type": "clip", "n": n, "status": "ready" if result.get("ok") else "failed",
+diff --git a/backend/src/media/gaming_templates.py b/backend/src/media/gaming_templates.py
+index 8af8b4a..fbb625e 100644
+--- a/backend/src/media/gaming_templates.py
++++ b/backend/src/media/gaming_templates.py
+@@ -196,3 +196,90 @@ def build_facecam_stack_layout(
+         "face_crop": (fw_, fh_, fx_, fy_),
+         "game_crop": (gw, gh, gx, gy),
+     }
++
++
++# ---------------------------------------------------------------------------
++# Hand-drawn boxes (idea from NeonClipping, MIT): the user draws the facecam
++# box and the gameplay box on a frame of the stream, so the layout never
++# depends on auto-detection. Boxes are fractions of the source frame
++# ({"x", "y", "w", "h"} in 0..1). ``arrange`` "top" puts the face above the
++# game (the templates' look), "bottom" puts the game above the face.
++# The render reads them from a context variable the live finisher sets, so
++# no signature on the long render path changes.
++
++import contextvars
++
++MANUAL_BOXES: "contextvars.ContextVar[Optional[Dict[str, Any]]]" = contextvars.ContextVar(
++    "manual_layout_boxes", default=None
++)
++ARRANGEMENTS = ("top", "bottom")
++
++
++def validate_boxes(value: object) -> Optional[Dict[str, Any]]:
++    """Clean ``{"cam": box, "game": box, "arrange"?}``; None when absent. Raises ValueError."""
++    if value is None:
++        return None
++    if not isinstance(value, dict):
++        raise ValueError("boxes must be an object")
++    out: Dict[str, Any] = {}
++    for key in ("cam", "game"):
++        box = value.get(key)
++        if not isinstance(box, dict):
++            raise ValueError(f"boxes.{key} is required")
++        try:
++            x, y, w, h = (float(box[k]) for k in ("x", "y", "w", "h"))
++        except (KeyError, TypeError, ValueError):
++            raise ValueError(f"boxes.{key} needs numbers x, y, w, h")
++        if not (0 <= x < 1 and 0 <= y < 1 and 0.03 <= w <= 1 and 0.03 <= h <= 1):
++            raise ValueError(f"boxes.{key} must be inside the frame")
++        w, h = min(w, 1 - x), min(h, 1 - y)
++        out[key] = {"x": round(x, 4), "y": round(y, 4), "w": round(w, 4), "h": round(h, 4)}
++    arrange = value.get("arrange") or "top"
++    if arrange not in ARRANGEMENTS:
++        raise ValueError(f"boxes.arrange must be one of {list(ARRANGEMENTS)}")
++    out["arrange"] = arrange
++    return out
++
++
++def _cover_crop(box: Dict[str, float], width: int, height: int, aspect: float) -> Tuple[int, int, int, int]:
++    """The largest ``aspect`` (w/h) crop centred inside the drawn box, in source pixels."""
++    bx, by, bw, bh = box["x"] * width, box["y"] * height, box["w"] * width, box["h"] * height
++    cw, ch = bw, bw / aspect
++    if ch > bh:
++        ch, cw = bh, bh * aspect
++    cw, ch = max(2, round_to_even(int(cw))), max(2, round_to_even(int(ch)))
++    x = clamp_even(int(bx + (bw - cw) / 2), 0, max(0, width - cw))
++    y = clamp_even(int(by + (bh - ch) / 2), 0, max(0, height - ch))
++    return cw, ch, x, y
++
++
++def build_manual_stack_layout(
++    width: int, height: int, boxes: Dict[str, Any], template: str, credit: Optional[str] = None,
++) -> Dict[str, Any]:
++    """The face/game stack from hand-drawn boxes (no detection)."""
++    spec = LAYOUT_TEMPLATES[template]
++    bottom = boxes.get("arrange") == "bottom"
++    fw_, fh_, fx_, fy_ = _cover_crop(boxes["cam"], width, height, OUT_W / FACE_PANEL_H)
++    gw, gh, gx, gy = _cover_crop(boxes["game"], width, height, OUT_W / GAME_PANEL_H)
++    game_chain = f"[game_src]crop={gw}:{gh}:{gx}:{gy},scale={OUT_W}:{GAME_PANEL_H}:flags=lanczos,setsar=1"
++    if credit:
++        game_chain += "," + _credit_filter(credit)
++    seam = (GAME_PANEL_H if bottom else FACE_PANEL_H) - DIVIDER_H // 2
++    order = "[game][face]" if bottom else "[face][game]"
++    graph = [
++        "[0:v]split=2[face_src][game_src]",
++        f"[face_src]crop={fw_}:{fh_}:{fx_}:{fy_},scale={OUT_W}:{FACE_PANEL_H}:flags=lanczos,"
++        "unsharp=5:5:0.6:5:5:0.0,setsar=1[face]",
++        game_chain + "[game]",
++        f"{order}vstack=inputs=2,"
++        f"drawbox=x=0:y={seam}:w={OUT_W}:h={DIVIDER_H}:color={spec['divider_color']}:t=fill,"
++        "format=yuv420p[vout]",
++    ]
++    caption_y = seam_caption_y(template)
++    if bottom:
++        caption_y += (GAME_PANEL_H - FACE_PANEL_H) / OUT_H
++    return {
++        "kind": "reaction", "template": template, "video_filter": ";".join(graph), "caption_y": caption_y,
++        "inset": (fx_, fy_, fw_, fh_), "face_crop": (fw_, fh_, fx_, fy_), "game_crop": (gw, gh, gx, gy),
++        "manual": True,
++    }
+diff --git a/backend/src/media/reframe_plan.py b/backend/src/media/reframe_plan.py
+index d7fc65e..ad6f8a6 100644
+--- a/backend/src/media/reframe_plan.py
++++ b/backend/src/media/reframe_plan.py
+@@ -1342,6 +1342,11 @@ def build_reframe_plan(
+     # faces): find the camera window itself on the source, inside this
+     # clip's ranges. The plain path's reaction layout composes it.
+     if source_path is not None:
++        from .gaming_templates import MANUAL_BOXES
++
++        if MANUAL_BOXES.get():
++            logger.info("Reframe plan: hand-drawn boxes; delegating to the plain layout path")
++            return {"delegate": "plain", "shots": []}
+         try:
+             from .facecam_rect import facecam_rect_enabled, find_facecam_rect, probe_times
+ 
+@@ -3715,6 +3720,10 @@ def unify_layout_plan(
+ 
+ 
+ def _layout_facecam_found(source_path: Path, analysis: Dict[str, Any], ranges) -> bool:
++    from .gaming_templates import MANUAL_BOXES
++
++    if MANUAL_BOXES.get():
++        return True
+     try:
+         from .facecam_rect import find_facecam_rect, probe_times
+ 
+diff --git a/backend/src/media/reframing.py b/backend/src/media/reframing.py
+index 5d6c79a..131f404 100644
+--- a/backend/src/media/reframing.py
++++ b/backend/src/media/reframing.py
+@@ -1616,6 +1616,15 @@ def describe_vertical_layout(
+     # found, and falls back to the normal planner when none is.
+     if layout_template:
+         framing = None
++        # Hand-drawn facecam/gameplay boxes outrank detection entirely.
++        from .gaming_templates import LAYOUT_TEMPLATES, MANUAL_BOXES, build_manual_stack_layout
++
++        boxes = MANUAL_BOXES.get()
++        if boxes and layout_template in LAYOUT_TEMPLATES:
++            manual = build_manual_stack_layout(width, height, boxes, layout_template, layout_credit)
++            logger.info("Manual layout (%s, %s): face %s game %s", layout_template, boxes.get("arrange"),
++                        manual["face_crop"], manual["game_crop"])
++            return _described("reaction", manual["video_filter"], "complex", manual["caption_y"])
+     if framing == "fit":
+         return _described("fit", build_full_frame_filter(), "complex", 0.80)
+ 
+diff --git a/backend/src/workers/live_worker.py b/backend/src/workers/live_worker.py
+index 064108c..c3d0a53 100644
+--- a/backend/src/workers/live_worker.py
++++ b/backend/src/workers/live_worker.py
+@@ -58,7 +58,7 @@ def settings_from_row(row: Dict[str, Any]) -> LiveSettings:
+     return LiveSettings(
+         url=row["url"], niche=s.get("niche") or "gaming",
+         layout_template=s.get("layout_template"), credit=s.get("credit"), hook_title=s.get("hook_title"),
+-        request=s.get("request"), voice_fx=s.get("voice_fx"),
++        request=s.get("request"), voice_fx=s.get("voice_fx"), boxes=s.get("boxes"),
+         streamer_words_only=bool(s.get("streamer_words_only", True)),
+         max_clips=int(s.get("max_clips") or (10 if s.get("mode") == "vod" else 30)),
+     )
+-- 
+2.56.0.windows.2
+

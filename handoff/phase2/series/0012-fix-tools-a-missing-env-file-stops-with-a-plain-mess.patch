@@ -1,0 +1,74 @@
+From 39b3c488e70751273c417f90e90782e3eb11b635 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 23:44:34 +0530
+Subject: [PATCH 12/22] fix(tools): a missing --env-file stops with a plain
+ message, not a traceback
+
+run_all.py and auto_edit.py exit 2 with "--env-file not found: <path>,
+nothing was run"; the try-it page answers 400 instead of silently
+falling back to fixed windows. Seen when the owner pointed the AI run at
+an install folder that was empty mid-reinstall.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/phase2/auto_edit.py | 8 +++++++-
+ tools/phase2/run_all.py   | 5 +++++
+ tools/phase2/try_it.py    | 7 +++++++
+ 3 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/tools/phase2/auto_edit.py b/tools/phase2/auto_edit.py
+index 573eeb3..4a94c3e 100644
+--- a/tools/phase2/auto_edit.py
++++ b/tools/phase2/auto_edit.py
+@@ -259,7 +259,13 @@ def main() -> int:
+                     help="streamer 'face on top, game below' template (clips with a facecam)")
+     ap.add_argument("--credit", help="credit line for the template, e.g. @KaiCenat")
+     ap.add_argument("--out-suffix", default="", help="write to test-footage/phase2/<stem><suffix>")
+-    return asyncio.run(main_async(ap.parse_args()))
++    a = ap.parse_args()
++    if a.env_file and not Path(a.env_file).is_file():
++        print(f"--env-file not found: {a.env_file}\n"
++              "Point it at the .env that holds GROQ_API_KEY (and optionally PIXABAY_API_KEY / COVERR_API_KEY).\n"
++              "Nothing was run.", file=sys.stderr)
++        return 2
++    return asyncio.run(main_async(a))
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/tools/phase2/run_all.py b/tools/phase2/run_all.py
+index 0f89bc2..eac19dc 100644
+--- a/tools/phase2/run_all.py
++++ b/tools/phase2/run_all.py
+@@ -36,6 +36,11 @@ def main() -> int:
+     ap.add_argument("--clips", type=int, default=2)
+     ap.add_argument("--only", help="run one niche label only")
+     a = ap.parse_args()
++    if a.env_file and not Path(a.env_file).is_file():
++        print(f"--env-file not found: {a.env_file}\n"
++              "Point it at the .env that holds GROQ_API_KEY (and optionally PIXABAY_API_KEY / COVERR_API_KEY).\n"
++              "Nothing was run.", file=sys.stderr)
++        return 2
+     rows = []
+     for label, profile, video, source in NICHES:
+         if a.only and a.only.lower() != label.lower():
+diff --git a/tools/phase2/try_it.py b/tools/phase2/try_it.py
+index c374eb8..5693bb3 100644
+--- a/tools/phase2/try_it.py
++++ b/tools/phase2/try_it.py
+@@ -87,6 +87,13 @@ def home() -> str:
+ async def run(video: UploadFile = File(...), niche: str = Form("gaming"), clips: int = Form(2),
+               select: str = Form("fixed"), template: str = Form(""), credit: str = Form(""),
+               env_file: str = Form("")):
++    if env_file.strip() and not Path(env_file.strip()).is_file():
++        return HTMLResponse(
++            f"<html><head>{STYLE}</head><body><h1>That .env file was not found</h1>"
++            f"<p>{html.escape(env_file.strip())}</p><p>Nothing was run. Go back and fix the path, "
++            "or leave it empty to use fixed windows.</p><p><a href='/'>← back</a></p></body></html>",
++            status_code=400,
++        )
+     run_id = uuid.uuid4().hex[:10]
+     folder = _run_dir(run_id)
+     folder.mkdir(parents=True, exist_ok=True)
+-- 
+2.56.0.windows.2
+

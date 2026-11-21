@@ -1,0 +1,196 @@
+From 59f040c16c6ee53eb73e614ea7e7a7d8fac5492e Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 08:14:41 +0530
+Subject: [PATCH 15/22] feat(audio): bundled FreePD music beds (CC0) and a
+ comedy bed for meme clips
+
+FreePD closed in 2025; its CC0 catalogue is mirrored on the Internet
+Archive (item freepd). That item is anonymous and holds at least one
+non-FreePD file, so a track is used only when the archived freepd.com
+page listed it (same title and running time) under the site-wide
+"CC0 1.0 Universal Public Domain Dedication", and only when it matches
+the archive's MD5. Seven beds cover every mood the profiles name
+(comedy, energetic, upbeat, corporate, calm, funk, phonk-substitute);
+docs/assets/MUSIC_PROVENANCE.md lists title, composer, archived page,
+MD5 and SHA-256. The 45 MB of MP3s stay out of git:
+tools/assets/fetch_freepd_music.py re-downloads and re-verifies them.
+
+meme_comedy now plays the comedy bed at 0.30 with -8 dB ducking (it
+had no music). Measured on a stand-up clip, the old 0.14/-12 dB mix put
+the bed ~29 dB under continuous speech: present but inaudible.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .gitignore                                    |  3 +
+ .../auto_director/profiles/meme_comedy.json   |  6 +-
+ docs/assets/MUSIC_PROVENANCE.md               | 56 ++++++++++++++++
+ tools/assets/fetch_freepd_music.py            | 66 +++++++++++++++++++
+ 4 files changed, 128 insertions(+), 3 deletions(-)
+ create mode 100644 docs/assets/MUSIC_PROVENANCE.md
+ create mode 100644 tools/assets/fetch_freepd_music.py
+
+diff --git a/.gitignore b/.gitignore
+index 840b754..a29d4a1 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -31,3 +31,6 @@ _samples/
+ 
+ # local test media (never commit)
+ test-footage/
++
++# Bundled music beds: fetched and MD5-verified by tools/assets/fetch_freepd_music.py (CC0, see docs/assets/MUSIC_PROVENANCE.md)
++assets/music/*.mp3
+diff --git a/backend/src/auto_director/profiles/meme_comedy.json b/backend/src/auto_director/profiles/meme_comedy.json
+index 68a15b2..38847e7 100644
+--- a/backend/src/auto_director/profiles/meme_comedy.json
++++ b/backend/src/auto_director/profiles/meme_comedy.json
+@@ -35,9 +35,9 @@
+     "density_per_min": 0.0
+   },
+   "audio": {
+-    "music_mood": "none",
+-    "music_volume_0_to_1": 0.0,
+-    "ducking_db": 0.0,
++    "music_mood": "comedy",
++    "music_volume_0_to_1": 0.3,
++    "ducking_db": -8.0,
+     "sfx_from_user_library": true
+   },
+   "color": {
+diff --git a/docs/assets/MUSIC_PROVENANCE.md b/docs/assets/MUSIC_PROVENANCE.md
+new file mode 100644
+index 0000000..6f1e499
+--- /dev/null
++++ b/docs/assets/MUSIC_PROVENANCE.md
+@@ -0,0 +1,56 @@
++# Bundled music: provenance (FreePD, CC0)
++
++Approved by Luffy on 2026-11-18 ("Yes, use FreePD").
++
++**Licence.** FreePD.com published every track under the CC0 1.0 Universal Public
++Domain Dedication. From the archived home page
++(https://web.archive.org/web/20240104044209/https://freepd.com/):
++
++- "This music is all licensed CC0 1.0 Universal Public Domain Dedication."
++- FAQ: "Can I include this music in an app that generates movies for users? YES!"
++
++Attribution is not required; we still credit the composers here.
++
++**Source of the files.** freepd.com closed in 2025. The files come from the
++Internet Archive mirror, item `freepd` (https://archive.org/details/freepd):
++- That item was uploaded anonymously and contains at least one file that is not
++  FreePD's, so the item itself is **not** trusted.
++- A track is used only if the archived freepd.com page listed it, with the same
++  title and running time.
++- Each file must match the archive's published MD5. `tools/assets/fetch_freepd_music.py`
++  re-downloads and re-verifies them, and refuses to write anything that does not match.
++
++**Not committed to git.** The 7 MP3s (45 MB) are kept out of the patch series. Run
++the fetch script to recreate `assets/music/`, or copy them from the handoff folder.
++
++| File (mood stem) | Used by profiles | Title | Composer | Listed on (archived) | Time | Archive MD5 | SHA-256 |
++|---|---|---|---|---|---|---|---|
++| `comedy.mp3` | meme_comedy | Wakka Wakka | Bryan Teoh | [comedy.php](https://web.archive.org/web/20250104052211/https://freepd.com/comedy.php) | 2:01 | `dec522c5b475f74af7732c089e5b6ec1` | `de261ef809e92732806ebd51534da59b1dda8aee9c9f8bd062c4234aa30eb10c` |
++| `energetic.mp3` | gaming, sports | Goodnightmare | Kevin MacLeod | [electronic.php](https://web.archive.org/web/20241217205507/https://freepd.com/electronic.php) | 4:00 | `197b28aae16e36c5ac41a3e0f3e73124` | `b3793f15317a70bbbd857fa4a77872a42bcdc27445f25bce397bb7a442f91b9c` |
++| `upbeat.mp3` | vlog_lifestyle | Arpent | Kevin MacLeod | electronic.php (as above) | 2:42 | `b1a53b51752ca0b3dc92c6f83bbd99c1` | `ef06d8b524c196a31954dfb1f3261e7d37459e43f4afd9df31ee2965c6094a56` |
++| `corporate.mp3` | finance_business | Meditating Beat | Kevin MacLeod | electronic.php | 2:37 | `d27d2c4906bc409ed6259f349c712edf` | `e498c2015a413e6cba5ab8dbef2a60cdebf7c4d4a97f9edd84851752ff49d3b6` |
++| `calm.mp3` | education_tutorial, hindi_podcast, travel_vlog, japan_travel_cinematic, Auto bed | Study and Relax | Kevin MacLeod | [home page, featured](https://web.archive.org/web/20240104044209/https://freepd.com/) | 3:43 | `2c6f64b4065f2e71f09a7337e2880872` | `9cba2a3c2d1c9d364220db1691f618a0f25b8d9cf6f2a857fe389ef614fd18a4` |
++| `funk.mp3` | anime_funk_edit | Fenster's Explanation | Kevin MacLeod | comedy.php | 2:49 | `0ba77f5905c35a4618e311b5c2ff9d81` | `c9f773e0a153f63764eac84fb3e3fcff6b67abb494b89925c025abfe5a735edd` |
++| `phonk.mp3` | football_edit | Beat One | Kevin MacLeod | electronic.php | 3:00 | `1a068ec590ebc360a5357e539f8a9764` | `930dd4c6c88a2abb153f52e56a7c74bd041008f5afa4835602469dba3676aed8` |
++
++**Honest notes**
++- FreePD has no phonk. `phonk.mp3` is the closest drum-and-bass track ("Upbeat, drum
++  and bass styled track. Modern and dark.").
++- `funk.mp3` is funky comedy brass, not modern funk.
++- This is one track per mood, so every clip in a mood gets the same bed. A bigger
++  library (several tracks per mood, picked by tempo) is Phase 3 work.
++- Three files embed cover art (an MJPEG stream). The renderer reads audio only;
++  checked in a real render.
++
++# Bundled sound effects: generated, original (CC0)
++
++`assets/sfx/{whoosh,pop,riser,ding,impact,sting}.wav` are the six cue names the EDL
++places (`auto_director.edl.SFX_EVENT_NAMES`). They are **synthesised** by
++`tools/assets/make_sfx.py` from oscillators and filtered noise with ffmpeg: no
++samples and no third-party audio, so there is nothing to license. They ship CC0 with
++the project. `impact` is a deep, gritty sub-bass hit, the closest original take on a
++meme "boom".
++
++Meme sounds downloaded from sites such as Myinstants have no stated licence or
++provenance, so they are **never bundled**. A user who wants one uploads it to their
++own SFX library, which the renderer already searches after `assets/sfx`.
+diff --git a/tools/assets/fetch_freepd_music.py b/tools/assets/fetch_freepd_music.py
+new file mode 100644
+index 0000000..a8be307
+--- /dev/null
++++ b/tools/assets/fetch_freepd_music.py
+@@ -0,0 +1,66 @@
++"""Fetch the bundled music beds (FreePD, CC0) into assets/music and verify them.
++
++  python tools/assets/fetch_freepd_music.py [--dest assets/music]
++
++FreePD.com closed in 2025. Its catalogue is mirrored on the Internet Archive
++(item ``freepd``). Every track below was checked against the archived
++freepd.com page that listed it, under the site-wide licence statement
++"This music is all licensed CC0 1.0 Universal Public Domain Dedication"
++(https://web.archive.org/web/20240104044209/https://freepd.com/). Each file
++is downloaded from the archive and must match the archive's published MD5
++before it is written as ``<mood>.mp3``, the stem the EDL renderer resolves
++a profile's ``music_mood`` against. Anything that does not verify is not
++written. Provenance details: docs/assets/MUSIC_PROVENANCE.md.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import sys
++import urllib.parse
++import urllib.request
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[2]
++ARCHIVE = "https://archive.org/download/freepd/"
++
++# (mood stem, archive path, archive md5, title, composer, freepd page)
++TRACKS = [
++    ("comedy", "comedy/Wakka Wakka.mp3", "dec522c5b475f74af7732c089e5b6ec1", "Wakka Wakka", "Bryan Teoh", "comedy.php"),
++    ("energetic", "electronic/Goodnightmare.mp3", "197b28aae16e36c5ac41a3e0f3e73124", "Goodnightmare", "Kevin MacLeod", "electronic.php"),
++    ("upbeat", "electronic/Arpent.mp3", "b1a53b51752ca0b3dc92c6f83bbd99c1", "Arpent", "Kevin MacLeod", "electronic.php"),
++    ("corporate", "electronic/Meditating Beat.mp3", "d27d2c4906bc409ed6259f349c712edf", "Meditating Beat", "Kevin MacLeod", "electronic.php"),
++    ("calm", "featured/Study and Relax.mp3", "2c6f64b4065f2e71f09a7337e2880872", "Study and Relax", "Kevin MacLeod", "(home page, featured)"),
++    ("funk", "comedy/Fenster's Explanation.mp3", "0ba77f5905c35a4618e311b5c2ff9d81", "Fenster's Explanation", "Kevin MacLeod", "comedy.php"),
++    ("phonk", "electronic/Beat One.mp3", "1a068ec590ebc360a5357e539f8a9764", "Beat One", "Kevin MacLeod", "electronic.php"),
++]
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--dest", default=str(ROOT / "assets" / "music"))
++    a = ap.parse_args()
++    dest = Path(a.dest)
++    dest.mkdir(parents=True, exist_ok=True)
++    failures = 0
++    for mood, path, md5, title, composer, _page in TRACKS:
++        target = dest / f"{mood}.mp3"
++        if target.exists() and hashlib.md5(target.read_bytes()).hexdigest() == md5:
++            print(f"ok (present)  {target.name}  {title} - {composer}")
++            continue
++        url = ARCHIVE + urllib.parse.quote(path)
++        request = urllib.request.Request(url, headers={"User-Agent": "snipnova-asset-fetch"})
++        with urllib.request.urlopen(request, timeout=300) as response:
++            data = response.read()
++        got = hashlib.md5(data).hexdigest()
++        if got != md5:
++            print(f"FAILED        {mood}: md5 {got} != {md5}; not written", file=sys.stderr)
++            failures += 1
++            continue
++        target.write_bytes(data)
++        print(f"ok (fetched)  {target.name}  {title} - {composer}  sha256 {hashlib.sha256(data).hexdigest()[:16]}")
++    return 1 if failures else 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+-- 
+2.56.0.windows.2
+

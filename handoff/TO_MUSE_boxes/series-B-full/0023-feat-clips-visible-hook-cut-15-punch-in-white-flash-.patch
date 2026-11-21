@@ -1,0 +1,53 @@
+From f40ececd8da647331eda2538ed1912c81dbabf2a Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 20:32:48 +0530
+Subject: [PATCH 23/27] feat(clips): visible hook cut (15% punch-in + white
+ flash + louder whoosh)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/media/hook_finish.py    | 5 ++++-
+ backend/src/media/hook_profile.json | 4 ++--
+ 2 files changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/backend/src/media/hook_finish.py b/backend/src/media/hook_finish.py
+index 60020da..6916848 100644
+--- a/backend/src/media/hook_finish.py
++++ b/backend/src/media/hook_finish.py
+@@ -207,6 +207,9 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+     if lift:
+         filters.append(lift)
+     filters.append(punch_filter(info["width"], info["height"], times or [at], seconds, zoom))
++    # A visible cut: a quick white flash (~2 frames) on each punch-in.
++    flash = "+".join(f"between(t,{t:.2f},{t + 0.07:.2f})" for t in (times or [at]))
++    filters.append(f"drawbox=x=0:y=0:w=iw:h=ih:color=white@0.55:t=fill:enable='{flash}'")
+     video_chain = ",".join(filters)
+ 
+     # Quote title with emoji ("Lacy swore he never crashes" 😭✌️🥀): the text
+@@ -270,7 +273,7 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+             hits = (times or [at])[:4]  # a whoosh on each of the first cuts
+             split = f"[{audio_index}:a]asplit={len(hits)}" + "".join(f"[w{i}]" for i in range(len(hits)))
+             delayed = ";".join(f"[w{i}]adelay={max(0, int((h - 0.15) * 1000))}|{max(0, int((h - 0.15) * 1000))},"
+-                               f"volume={0.55 if i == 0 else 0.35}[d{i}]" for i, h in enumerate(hits))
++                               f"volume={0.9 if i == 0 else 0.6}[d{i}]" for i, h in enumerate(hits))
+             mix = "[0:a]" + "".join(f"[d{i}]" for i in range(len(hits)))
+             cmd += ["-i", str(whoosh), "-filter_complex",
+                     f"{graph};{split};{delayed};{mix}amix=inputs={len(hits) + 1}:duration=first:normalize=0[a]",
+diff --git a/backend/src/media/hook_profile.json b/backend/src/media/hook_profile.json
+index b78811c..e96fde2 100644
+--- a/backend/src/media/hook_profile.json
++++ b/backend/src/media/hook_profile.json
+@@ -24,7 +24,7 @@
+   "target_brightness": 127.7,
+   "target_saturation": 64.05,
+   "max_punches": 6,
+-  "punch_seconds": 1.2,
+-  "punch_zoom": 1.08
++  "punch_seconds": 1.0,
++  "punch_zoom": 1.15
+  }
+ }
+\ No newline at end of file
+-- 
+2.56.0.windows.2
+

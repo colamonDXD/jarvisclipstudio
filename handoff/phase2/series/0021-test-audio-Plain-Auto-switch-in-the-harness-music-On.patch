@@ -1,0 +1,103 @@
+From 70961ee663eeb628d324b540f3a3be7ace5d6271 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 08:43:56 +0530
+Subject: [PATCH 21/22] test(audio): Plain/Auto switch in the harness; music-On
+ fallback test uses a bed-less profile
+
+auto_edit.py --template plain|auto follows services/video_service.py:
+Plain builds the EDL with B-roll off and runs plainify_edl right away;
+Auto runs Music = Auto (apply_auto_music_bed) and resolves B-roll. The
+report now records template, SFX, overlay and music-volume counts.
+
+test_pipeline_edl_music_on_without_pick_falls_back_to_auto_bed used
+meme_comedy as its bed-less profile; meme_comedy got its own comedy bed
+on 2026-11-18 at Luffy's request, so the test now uses true_crime (still
+bed-less). The rule under test and its assertions are unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/tests/unit/test_music_auto_bed.py |  8 +++---
+ tools/phase2/auto_edit.py                 | 30 +++++++++++++++++++----
+ 2 files changed, 30 insertions(+), 8 deletions(-)
+
+diff --git a/backend/tests/unit/test_music_auto_bed.py b/backend/tests/unit/test_music_auto_bed.py
+index 6486039..3002d9e 100644
+--- a/backend/tests/unit/test_music_auto_bed.py
++++ b/backend/tests/unit/test_music_auto_bed.py
+@@ -487,12 +487,14 @@ def test_pipeline_edl_music_on_without_pick_keeps_profile_bed():
+ def test_pipeline_edl_music_on_without_pick_falls_back_to_auto_bed(
+     tmp_path, monkeypatch
+ ):
+-    # meme_comedy carries no bed by design; mode On is the user's
++    # true_crime carries no bed by design; mode On is the user's
+     # explicit instruction for music, so it gets the Auto selection
+-    # rather than silence (self-run audit issue #3).
++    # rather than silence (self-run audit issue #3). (This used
++    # meme_comedy until 2026-11-18, when meme_comedy got its own comedy
++    # bed at Luffy's request; the rule under test is unchanged.)
+     _library(tmp_path, monkeypatch)
+     edl = VideoService.build_pipeline_edl(
+-        _segment(), _words(), niche_override="meme_comedy", duration=12.0,
++        _segment(), _words(), niche_override="true_crime", duration=12.0,
+         music_mode="on",
+     )
+     assert edl is not None
+diff --git a/tools/phase2/auto_edit.py b/tools/phase2/auto_edit.py
+index 76263af..8fd57a5 100644
+--- a/tools/phase2/auto_edit.py
++++ b/tools/phase2/auto_edit.py
+@@ -165,12 +165,26 @@ async def main_async(a) -> int:
+         dur = end - start
+         rel = [{"word": w["text"], "text": w["text"], "start": round(w["start"] - start, 3), "end": round(w["end"] - start, 3)}
+                for w in words if start <= w["start"] < end]
+-        edl = E.build_edl({"start": start, "end": end, "duration": dur}, rel, profile, energy_peaks=[])
+-        # Same stage the pipeline runs (services/video_service.py): the
+-        # subject-aware reframe plan. Without it the EDL graph centre-crops.
++        plain = a.template == "plain"
++        edl = E.build_edl({"start": start, "end": end, "duration": dur}, rel, profile, energy_peaks=[],
++                          broll_enabled=not plain)
++        # Same order as services/video_service.py: Plain strips every
++        # template element right after the EDL is built; Auto runs the
++        # music chain (Music = Auto: the profile bed, or the Auto bed when
++        # the profile has none) and resolves B-roll.
++        if plain:
++            from src.auto_director.template_mode import plainify_edl
++            plainify_edl(edl)
++        else:
++            from src.media.music_library import apply_auto_music_bed
++            apply_auto_music_bed(edl, a.niche)
++        # Same stage the pipeline runs: the subject-aware reframe plan.
++        # Plain with no explicit framing uses the plain tight crop, as
++        # resolve_framing_mode does for a Plain task.
+         from src.media.reframe_plan import attach_reframe_plan
+-        reframed = attach_reframe_plan(edl, source, [(start, end)], False, framing=a.framing)
+-        if stock:
++        framing = None if (plain and a.framing == "auto") else a.framing
++        reframed = attach_reframe_plan(edl, source, [(start, end)], plain, framing=framing)
++        if stock and not plain:
+             from src.media.pixabay_broll import resolve_edl_broll
+             resolve_edl_broll(edl)
+         clip_path = out / f"clip{i + 1}.mp4"
+@@ -209,6 +223,10 @@ async def main_async(a) -> int:
+                            "why_not": (b.get("not_inserted") or {}).get("reason")} for b in broll],
+                 "broll_dropped": [d.get("reason") for d in edl.get("broll_dropped") or []],
+                 "music": (edl.get("audio") or {}).get("music_mood"),
++                "music_volume": (edl.get("audio") or {}).get("music_volume_0_to_1", (edl.get("audio") or {}).get("music_volume")),
++                "sfx": len(edl.get("sfx_events") or []) + len(edl.get("sfx") or []),
++                "overlays": len(edl.get("overlays") or []),
++                "template": edl.get("template") or "auto",
+                 "captions": (profile.get("captions") or {}).get("preset_id"),
+             },
+             "qc": {
+@@ -255,6 +273,8 @@ def main() -> int:
+     ap.add_argument("--llm", default="auto")
+     ap.add_argument("--select", choices=("ai", "fixed"), default="ai")
+     ap.add_argument("--ollama-url", default="http://localhost:11434/v1")
++    ap.add_argument("--template", choices=("auto", "plain"), default="auto",
++                    help="plain = cuts + captions only (no B-roll, music, SFX, effects); auto = full template")
+     ap.add_argument("--framing", choices=("auto", "fit", "crop"), default="auto",
+                     help="auto = one layout per clip (planner), fit = whole frame, crop = face-follow crop")
+     ap.add_argument("--layout-template", choices=("facecam_red", "facecam_gold"),
+-- 
+2.56.0.windows.2
+

@@ -1,0 +1,69 @@
+SnipNova
+========
+
+This product is built on the open-source SupoClip project
+(https://github.com/FujiwaraChoki/supoclip), copyright its respective
+contributors, and is distributed under the GNU Affero General Public
+License v3.0 (see LICENSE).
+
+SnipNova adds its own branding, interface design and features on top of
+that upstream foundation. The SupoClip name is used in this notice only
+to give the attribution the license requires.
+
+The YouTube-captions transcript path (backend/src/media/yt_captions.py —
+using the timed captions YouTube already serves as the word-timed
+transcript instead of running a speech model) follows the approach of
+NeonClipping, an MIT-licensed open-source project. The implementation
+here is original; the idea is credited to NeonClipping's authors with
+thanks, per the MIT licence's attribution spirit.
+
+The word-timing alignment and caption-coverage check in
+backend/src/media/word_align.py (snapping word edges onto the loudness
+envelope, and verifying every speech block has a caption over it) are
+adapted from wordcaps (https://github.com/Axeeh/wordcaps, commit
+ff520f4), an MIT-licensed open-source project, © its authors. The MIT
+licence permits this use with attribution, given here with thanks.
+
+Third-party code adapted under the MIT License
+----------------------------------------------
+
+- Chopify (https://github.com/mehbul/chopify), Copyright (c) 2026
+  Mehbul Islam — the campaign-brief rule schema and cut-time
+  enforcement pattern adapted in
+  ``backend/src/auto_director/campaign_rules.py``.
+- PeakCut (https://github.com/haziqahmedqasmi/PeakCut), Copyright
+  (c) 2026 PeakCut contributors — the luma-difference ad/BRB-slate
+  exclusion adapted in ``backend/src/media/slate_exclusion.py``; the
+  per-game picking rules and forced hashtags adapted in
+  ``backend/src/auto_director/game_rules.py``; the untrusted-text
+  prompt sanitiser adapted in ``backend/src/utils/prompt_safety.py``;
+  and the LLM caption-word tidy pass (exactly one output entry per
+  input word, word timings untouchable, original words kept on any
+  anomaly) adapted in ``backend/src/media/caption_polish.py``.
+- NeonClipping (https://github.com/iamajmeena/neonclipping),
+  Copyright (c) 2026 Ajay K Meena and NeonClipping contributors — the
+  Devanagari -> Hinglish transliteration (``translit.py``: a
+  common-word dictionary plus letter rules with Hindi schwa deletion,
+  preserving per-word timings) adapted in
+  ``backend/src/media/translit.py``.
+
+Both projects are MIT-licensed; the full MIT licence text is available
+in each upstream repository.
+
+SenseVoiceSmall model (optional reaction features)
+==================================================
+
+The optional reaction-feature pass in the live/VOD clipper
+(backend/src/live/sensevoice_scan.py, off by default) uses the
+SenseVoiceSmall model by Alibaba Group / FunAudioLLM. The model weights
+are distributed under the FunASR Model Open Source License Agreement
+v1.1; the full licence text ships with this product at
+docs/registries/FunASR_MODEL_LICENSE_v1.1.txt, and the model name
+"SenseVoiceSmall" is retained as that licence requires. The weights are
+not part of this repository: the official weights are downloaded,
+pinned by SHA-256, by tools/live/fetch_sensevoice.py. The FunASR
+toolkit used for inference is MIT-licensed.
+
+The "shout" signal in the same pass is adapted from NeonClipping
+(https://github.com/iamajmeena/neonclipping), MIT-licensed, copyright
+its respective contributors.

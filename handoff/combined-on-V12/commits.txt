@@ -1,0 +1,18 @@
+1e8d405 feat(tools): caption only the streamer, not game dialogue (--streamer-words-only)
+17b1ef7 feat(live): long-running live recorder runner and gated clip finisher (tools)
+7960f24 feat(live): fast voice pass with picker confirmation in the live loop
+b750dc6 feat(live): audio excitement, reaction scan on the buffer, fuser and quick preview
+7db28eb feat(live): rolling live recorder and cut-from-the-past buffer (LIVE_CLIPPING, off)
+bafe0ca chore(fonts): drop THEBOLDFONT (licence unverifiable); alias it to Montserrat-Black
+86763f5 feat(fonts): add an OFL/Apache caption font pack with a licence manifest
+12c8cbb feat(media): expose transition library catalogue and previews
+57a2d63 feat(media): detect changing burned-in caption bands
+85107fe feat(media): add an extended CPU-only transition library
+6953d2a fix(reframe): never screen-replan away split shots (V12 already guards unify)
+741d27e fix(reframe): screen framing only when the screen is a real part of the clip
+2f997ca feat(reframe): show the screen being reacted to, stacked over the reactor
+9a2e4b2 feat(selection): see visual story moments; keep a clip running to its payoff
+fca3ef1 feat(captions): drop transcription repetition loops; split lines by phrase
+93c89a0 feat(reframe): no blurred-copy fill; analyse 4K sources at a usable resolution
+a033fea feat(edl): cut, zoom and transition only where the footage gives a reason
+4cc768c feat(assets): licence-gated music/SFX variant library and keyless B-roll

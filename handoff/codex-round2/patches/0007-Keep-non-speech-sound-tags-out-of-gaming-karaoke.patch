@@ -1,0 +1,34 @@
+From a287a13f3ab4f3fd7ac7c58e6d163c9d3ea0f018 Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Fri, 20 Nov 2026 14:57:41 +0530
+Subject: [PATCH 7/7] Keep non-speech sound tags out of gaming karaoke
+
+---
+ backend/src/media/yt_captions.py       | 3 ++-
+ backend/tests/unit/test_yt_captions.py | 2 ++
+ 2 files changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/backend/src/media/yt_captions.py b/backend/src/media/yt_captions.py
+index 9bb02e2..bd2e747 100644
+--- a/backend/src/media/yt_captions.py
++++ b/backend/src/media/yt_captions.py
+@@ -48,7 +48,8 @@ logger = logging.getLogger(__name__)
+ 
+ def spoken_caption_text(value: str) -> str:
+     """Strip the speaker-change marker used by YouTube's text tracks."""
+-    return re.sub(r"^(?:(?:>>|»|&gt;&gt;)\s*)+", "", value.strip(), flags=re.IGNORECASE)
++    value = re.sub(r"\[(?:music|applause|laughter|cheering|silence)\]", "", value, flags=re.IGNORECASE)
++    return re.sub(r"^(?:(?:>>|»|&gt;&gt;)\s*)+", "", value.strip(), flags=re.IGNORECASE).strip()
+ 
+ _VIDEO_ID = re.compile(r"(?:v=|youtu\.be/|shorts/|live/)([A-Za-z0-9_-]{11})")
+ 
+diff --git a/backend/tests/unit/test_yt_captions.py b/backend/tests/unit/test_yt_captions.py
+index 355b99d..77d5908 100644
+--- a/backend/tests/unit/test_yt_captions.py
++++ b/backend/tests/unit/test_yt_captions.py
+@@ -133,3 +133,5 @@ def test_speaker_change_markers_do_not_become_karaoke_words():
+     from src.media.yt_captions import spoken_caption_text
+     assert [spoken_caption_text(s) for s in (">>", ">> Excuse me.", "&gt;&gt; Hello", "2 > 1")] == [
+         "", "Excuse me.", "Hello", "2 > 1"]
++    assert spoken_caption_text("[MUSIC]") == ""
++    assert spoken_caption_text("[Music] Play the music") == "Play the music"

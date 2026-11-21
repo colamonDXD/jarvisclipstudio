@@ -1,0 +1,96 @@
+{
+ "video": "D:\\SnipNova-Dev\\claude-code\\test-footage\\phase2_src\\dwZK6iQlyEw.mp4",
+ "niche": "meme_comedy",
+ "llm": "ollama:qwen3:8b",
+ "stock_broll": false,
+ "timings": {
+  "transcribe_s": 59.5,
+  "select_s": 0.0
+ },
+ "clips": [
+  {
+   "clip": "clip1.mp4",
+   "render_ok": true,
+   "render_s": 24.4,
+   "source_start": 149.6,
+   "source_end": 190.56,
+   "duration": 41.0,
+   "selection": {
+    "virality": null,
+    "hook_type": "fixed-window",
+    "hook_title": null,
+    "reasoning": "Pipeline check only: sentence-aligned window, not an AI selection."
+   },
+   "decisions": {
+    "segments": 13,
+    "transitions": [],
+    "zooms": 0,
+    "broll_planned": 0,
+    "broll_inserted": 0,
+    "broll": [],
+    "broll_dropped": [],
+    "music": "none",
+    "music_volume": 0.0,
+    "sfx": 0,
+    "overlays": 0,
+    "template": "plain",
+    "captions": "large_centre_pop"
+   },
+   "qc": {
+    "ffprobe": [
+     {
+      "codec_type": "video",
+      "width": 1080,
+      "height": 1920
+     },
+     {
+      "codec_type": "audio",
+      "width": null,
+      "height": null
+     }
+    ],
+    "output_seconds": 41.07,
+    "loudness_lufs": -14.2,
+    "black_seconds": 0,
+    "boundary": {
+     "ok": true,
+     "starts_on_sentence": true,
+     "ends_on_sentence": true,
+     "cuts_a_word": false,
+     "first_words": "Of course, he knew how to",
+     "last_words": "home and I used to draw."
+    },
+    "layout": {
+     "broll_applied": false
+    },
+    "reframe_plan": {
+     "attached": true,
+     "delegate": null,
+     "shots": [
+      [
+       "plain",
+       "plain_single_subject"
+      ],
+      [
+       "plain",
+       "plain_single_subject"
+      ],
+      [
+       "plain",
+       "plain_single_subject"
+      ],
+      [
+       "plain",
+       "plain_single_subject"
+      ]
+     ]
+    }
+   },
+   "frames": [
+    "clip1_8pct.png",
+    "clip1_50pct.png",
+    "clip1_90pct.png"
+   ]
+  }
+ ]
+}

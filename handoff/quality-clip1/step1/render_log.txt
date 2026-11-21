@@ -1,0 +1,13 @@
+faster-whisper: CUDA unusable on this host (Library cublas64_12.dll is not found or cannot be loaded); using CPU int8 from now on
+Batched faster-whisper transcription cannot use the GPU (CUDA libraries unavailable) at batch_size=16; falling back to CPU int8
+keys: {'PIXABAY_API_KEY': 'not used', 'COVERR_API_KEY': 'not used', 'GROQ_API_KEY': 'not used'} | selection model: ollama:qwen3:8b
+transcribed 721 words in 31.3s
+selected 1 moments in 0.0s
+Command failed (exit status 2880417800): ffmpeg -y -hide_banner -loglevel info -f lavfi -i testsrc2=size=1920x1080:rate=30:duration=6 -f lavfi -i sine=frequency=440:sample_rate=48000:duration=6 -filter_complex_script C:\Users\PRATEE~1\AppData\Local\Temp\nvenc-probe-77s6k8_u\probe_graph.txt -map [finalv] -map [aout] -c:v h264_nvenc -preset p4 -rc vbr -cq 22 -pix_fmt yuv420p -profile:v high -c:a aac -b:a 192k -ar 48000 -shortest -movflags +faststart C:\Users\PRATEE~1\AppData\Local\Temp\nvenc-probe-77s6k8_u\nvenc_probe.mp4
+Unrecognized option 'filter_complex_script'.
+Error splitting the argument list: Option not found
+
+NVENC probe failed at the realistic encode stage: Unrecognized option 'filter_complex_script'.
+Error splitting the argument list: Option not found
+clip1: 141.1-199.1s render ok=True in 52.5s
+done: D:\SnipNova-Dev\claude-code\test-footage\phase2\tryit_1cf9a50cd3_step1\report.md

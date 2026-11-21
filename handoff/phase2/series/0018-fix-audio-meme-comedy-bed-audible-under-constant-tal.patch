@@ -1,0 +1,35 @@
+From c90853a6044d7d1738d73236970f4be6a3b091f2 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 08:25:09 +0530
+Subject: [PATCH 18/22] fix(audio): meme comedy bed audible under constant talk
+
+ducking_db drives a sidechain compressor (threshold -34 dBFS, ratio
+2 + |ducking|), not a dB offset, so under non-stop speech any ducking
+pushed the bed 13-15 dB down: at 0.14/-12 it sat ~29 dB under the
+voice, at 0.30/-8 still ~24 dB. Meme pages keep the beat audible, so
+the comedy bed now plays unducked at 0.15: measured 17.8 dB under the
+voice on a stand-up clip.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/auto_director/profiles/meme_comedy.json | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/backend/src/auto_director/profiles/meme_comedy.json b/backend/src/auto_director/profiles/meme_comedy.json
+index 38847e7..fc11168 100644
+--- a/backend/src/auto_director/profiles/meme_comedy.json
++++ b/backend/src/auto_director/profiles/meme_comedy.json
+@@ -36,8 +36,8 @@
+   },
+   "audio": {
+     "music_mood": "comedy",
+-    "music_volume_0_to_1": 0.3,
+-    "ducking_db": -8.0,
++    "music_volume_0_to_1": 0.15,
++    "ducking_db": 0.0,
+     "sfx_from_user_library": true
+   },
+   "color": {
+-- 
+2.56.0.windows.2
+

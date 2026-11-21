@@ -1,0 +1,604 @@
+From c95f060258fdb7bccac17a3aba753c8557f7b0be Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 15:11:36 +0530
+Subject: [PATCH 3/6] feat(selection): see visual story moments; keep a clip
+ running to its payoff
+
+Root cause #1c of clip1.mp4 (handoff/quality-clip1/ROOT_CAUSE.md): selection
+read only the transcript. In the clip1 source both award wins (190-244 s and
+the Streamer of the Year win at ~300-378 s) have no transcribed speech (music,
+applause, a speech with burned-in subtitles), so no selector could see them.
+
+auto_director/story_events.py, SELECTION_EVENTS (default OFF until Luffy
+approves, Sanji Q15): one frame every 2 s scored with the SigLIP model the
+B-roll vision veto already uses, against story descriptions (award on stage,
+applause, screen with content, speech on stage, celebrating, laughing,
+gameplay) vs background ones; winning runs become event spans that
+- join the selector's clip_signals hints (same "- [mm:ss - mm:ss]" format),
+- extend a selected clip that ends inside a moment until it finishes,
+- drive the no-model fallback window (strongest run x 1.5 when the transcript
+  cannot see it, with a 25 s lead snapped back to the setup sentence).
+
+media/timeline.py, CLIP_CAP_KEEP_VISUAL_TAIL (default off): the 60 s cap
+walked back to the last transcribed word even when that word was 52 s
+earlier, collapsing the Step 4 clip to 7.7 s; with the switch on, the cap
+is kept when the last word is beyond the existing back-off limit.
+
+Evidence: handoff/quality-clip1/step4/ - with no AI key the engine picked
+297.3-357.3 s by itself: "The nominees for Streamer of the Year...", the wait,
+him jumping up, the walk to the stage, the speech (story_timeline.md).
+Tests: test_story_events 9/9; clip boundary/timeline suites 73/73 (switch off).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                              |   1 +
+ backend/src/auto_director/story_events.py | 337 ++++++++++++++++++++++
+ backend/src/media/timeline.py             |  11 +
+ backend/src/services/video_service.py     |  41 +++
+ backend/tests/unit/test_story_events.py   | 103 +++++++
+ 5 files changed, 493 insertions(+)
+ create mode 100644 backend/src/auto_director/story_events.py
+ create mode 100644 backend/tests/unit/test_story_events.py
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 9322568..2b579ea 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,7 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-18
++- **Improved:** Clip picking can now see moments that happen in the picture, not only in the words: an award walk-up, a speech with burned-in subtitles, a celebration. These moments are offered to the AI picker, and a clip that ends just as one starts now keeps going until it finishes (within the 60-second limit). Off until approved: set `SELECTION_EVENTS=on` and `CLIP_CAP_KEEP_VISUAL_TAIL=on` to try it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Fixed:** Captions no longer repeat a phrase over and over when the speech recogniser loops over loud crowd or music noise; the phrase is shown once. Caption lines now follow the phrasing of the speech (sentence ends, pauses, commas) and never leave a single word stranded on its own line. Off until approved: set `CAPTION_LOOP_FILTER=on` and `CAPTION_PHRASE_SPLIT=on` to try it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Improved:** Wide shots no longer fill the top and bottom of the frame with a blurred copy of the picture: the bars become a calm, dark tint of the shot's own colour, so captions and titles sit on a clean background. On 4K footage people are now found at a sharper resolution, so medium shots of the speaker are framed on them instead of shown tiny. Off until approved: set `FIT_PAD=ambient` and `REFRAME_HIRES_PROBE=on` to try it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Improved:** Auto edits can now cut only where the footage gives a reason: a real camera change or the end of a sentence. Before, clips were sliced into equal pieces, with zooms every few seconds and cuts snapped to the background music. Zooms now need speech behind them, and decorative transitions only land on real camera changes. Off until approved: set `EDL_CONTENT_CUTS=on` to try it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+diff --git a/backend/src/auto_director/story_events.py b/backend/src/auto_director/story_events.py
+new file mode 100644
+index 0000000..9d2505a
+--- /dev/null
++++ b/backend/src/auto_director/story_events.py
+@@ -0,0 +1,337 @@
++"""Step 4 of the clip1 correction: selection that sees non-speech moments.
++
++Root cause #1c of clip1.mp4 (handoff/quality-clip1/ROOT_CAUSE.md): clip
++selection reads only the transcript. In the clip1 source the story (the
++"Best IRL Streamer" nominees on the stage screen, the announcement, the
++walk to the stage and the speech) happens at 165-240 s with music and
++applause but NO transcribed speech, so no transcript-only selector, AI or
++not, can see it, and the clip that was cut ended right before the payoff.
++
++This module looks at the picture. One frame every ``SAMPLE_EVERY_SEC`` is
++scored with the SigLIP model the B-roll vision veto already uses
++(``google/siglip-base-patch16-224``, Apache-2.0, local) against short
++descriptions of story moments versus background shots. Consecutive
++samples where a story description wins become event spans. They are used
++three ways, all behind ``SELECTION_EVENTS`` (default off until the owner
++approves the corrected render, Sanji Q15):
++
++- ``event_signal_lines``: ``- [mm:ss - mm:ss] ...`` lines appended to the
++  selector's ``clip_signals`` hints, the channel reaction hints already use;
++- ``extend_to_payoff``: a selected clip whose end runs into an event keeps
++  going until the event finishes (and the sentence in progress ends),
++  within the length cap;
++- ``event_window``: the no-model fallback picks the strongest event run
++  with its lead-in, instead of a fixed window.
++
++It never invents content: spans only describe what the frames score as,
++and every span records its label and score. Any failure (no model, no
++frames) returns no events and selection behaves exactly as before.
++"""
++from __future__ import annotations
++
++import logging
++import os
++import subprocess
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any, Dict, List, Optional, Sequence, Tuple
++
++logger = logging.getLogger(__name__)
++
++SAMPLE_EVERY_SEC = 2.0
++IMAGE_SIZE = 224
++MIN_MARGIN = 0.01        # story label must beat the best background label by this
++MAX_GAP_SEC = 4.0        # samples further apart than this split a span
++MIN_SPAN_SEC = 4.0
++
++STORY_LABELS: Dict[str, str] = {
++    "award": "a person on stage holding an award trophy",
++    "applause": "an audience clapping and cheering",
++    "screen": "a large screen showing a video, names or text",
++    "stage_speech": "a person speaking into a microphone on a stage",
++    "celebrate": "people hugging and celebrating",
++    "laugh": "a person laughing hard",
++    "gameplay": "a video game being played on screen",
++}
++BACKGROUND_LABELS: Dict[str, str] = {
++    "seated": "people sitting at tables at an event",
++    "dark": "a dark, blurry room",
++    "backs": "the backs of people's heads in a crowd",
++    "talking": "a person talking to the camera",
++}
++
++
++def story_events_enabled() -> bool:
++    return os.getenv("SELECTION_EVENTS", "off").strip().lower() in ("on", "1", "true", "yes")
++
++
++@dataclass
++class EventSpan:
++    start: float
++    end: float
++    label: str
++    score: float  # mean margin over the span's samples
++
++    def as_dict(self) -> Dict[str, Any]:
++        return {"start": round(self.start, 2), "end": round(self.end, 2),
++                "label": self.label, "description": STORY_LABELS.get(self.label, self.label),
++                "score": round(self.score, 4)}
++
++
++def sample_frames(video_path: Path, start: float = 0.0, duration: Optional[float] = None,
++                  every: float = SAMPLE_EVERY_SEC) -> List[Tuple[float, Any]]:
++    """(time, 224x224 RGB array) every ``every`` seconds, in one decode."""
++    import numpy as np
++
++    cmd = ["ffmpeg", "-v", "error"]
++    if start > 0:
++        cmd += ["-ss", f"{start:.3f}"]
++    cmd += ["-i", str(video_path)]
++    if duration:
++        cmd += ["-t", f"{duration:.3f}"]
++    cmd += ["-an", "-vf", f"fps=1/{every},scale={IMAGE_SIZE}:{IMAGE_SIZE}",
++            "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]
++    try:
++        raw = subprocess.run(cmd, capture_output=True, timeout=900).stdout
++    except Exception as exc:
++        logger.warning("Story events: frame sampling failed: %s", exc)
++        return []
++    size = IMAGE_SIZE * IMAGE_SIZE * 3
++    frames = []
++    for index in range(len(raw) // size):
++        arr = np.frombuffer(raw[index * size:(index + 1) * size], dtype=np.uint8).reshape(IMAGE_SIZE, IMAGE_SIZE, 3)
++        frames.append((start + index * every, arr))
++    return frames
++
++
++def score_frames(frames: Sequence[Any], labels: Sequence[str]) -> Optional[Any]:
++    """Cosine-similarity matrix [frames x labels] from SigLIP; None if unavailable."""
++    if not frames:
++        return None
++    try:
++        import numpy as np
++        import torch
++        from transformers import AutoModel
++
++        from ..media import broll_vision as bv
++        from ..media.separation import separation_models_dir
++
++        os.environ.setdefault("HF_HOME", str(separation_models_dir()))
++        device = bv._vision_device() or "cpu"
++        tokenizer = bv._load_tokenizer()
++        model = AutoModel.from_pretrained(bv.MODEL_ID).to(device).eval()
++        text = tokenizer(list(labels), padding="max_length", max_length=64,
++                         truncation=True, return_tensors="pt")
++        rows = []
++        with torch.no_grad():
++            for i in range(0, len(frames), 32):
++                batch = np.stack([np.asarray(f) for f in frames[i:i + 32]])
++                pixels = torch.from_numpy(batch).permute(0, 3, 1, 2).float()
++                pixels = ((pixels / 255.0 - 0.5) / 0.5).to(device)
++                image_emb, text_emb = bv._embed(model, pixels, text["input_ids"].to(device))
++                image_emb = image_emb / image_emb.norm(dim=-1, keepdim=True)
++                text_emb = text_emb / text_emb.norm(dim=-1, keepdim=True)
++                rows.append((image_emb @ text_emb.T).cpu().numpy())
++        del model
++        return np.concatenate(rows, axis=0)
++    except Exception as exc:
++        logger.warning("Story events: SigLIP scoring unavailable (%s)", exc)
++        return None
++
++
++def spans_from_scores(times: Sequence[float], sims: Any) -> List[EventSpan]:
++    """Merge consecutive samples whose best story label beats the background."""
++    story_keys = list(STORY_LABELS)
++    n_story = len(story_keys)
++    spans: List[EventSpan] = []
++    current: Optional[Dict[str, Any]] = None
++    for t, row in zip(times, sims):
++        story = row[:n_story]
++        best = int(story.argmax())
++        margin = float(story[best] - row[n_story:].max())
++        if margin >= MIN_MARGIN:
++            label = story_keys[best]
++            if current and t - current["last"] <= MAX_GAP_SEC:
++                current["last"] = t
++                current["margins"].append(margin)
++                current["labels"].append(label)
++                continue
++            if current:
++                spans.append(_close(current))
++            current = {"start": t, "last": t, "margins": [margin], "labels": [label]}
++    if current:
++        spans.append(_close(current))
++    return [s for s in spans if s.end - s.start >= MIN_SPAN_SEC]
++
++
++def _close(current: Dict[str, Any]) -> EventSpan:
++    labels = current["labels"]
++    label = max(set(labels), key=labels.count)
++    margins = current["margins"]
++    return EventSpan(current["start"], current["last"] + SAMPLE_EVERY_SEC, label,
++                     sum(margins) / len(margins))
++
++
++def detect_story_events(video_path: Path, start: float = 0.0,
++                        duration: Optional[float] = None) -> List[EventSpan]:
++    frames = sample_frames(video_path, start, duration)
++    if not frames:
++        return []
++    sims = score_frames([f for _, f in frames], list(STORY_LABELS.values()) + list(BACKGROUND_LABELS.values()))
++    if sims is None:
++        return []
++    return spans_from_scores([t for t, _ in frames], sims)
++
++
++def _mmss(seconds: float) -> str:
++    s = max(0, int(seconds))
++    return f"{s // 60:02d}:{s % 60:02d}"
++
++
++def _speech_seconds(words: Sequence[Dict[str, Any]], start: float, end: float) -> float:
++    total = 0.0
++    for w in words:
++        a, b = max(start, float(w["start"])), min(end, float(w["end"]))
++        if b > a:
++            total += b - a
++    return total
++
++
++def event_signal_lines(spans: Sequence[EventSpan], words: Sequence[Dict[str, Any]]) -> str:
++    """Hint lines in the selector's clip_signals format."""
++    lines = []
++    for s in spans:
++        quiet = _speech_seconds(words, s.start, s.end) < 0.25 * (s.end - s.start)
++        lines.append(
++            f"- [{_mmss(s.start)} - {_mmss(s.end)}] visual story moment: "
++            f"{STORY_LABELS.get(s.label, s.label)}"
++            + (" (little or no transcribed speech: the picture carries this moment)" if quiet else "")
++        )
++    if not lines:
++        return ""
++    return "Visual story moments (sampled frames, SigLIP):\n" + "\n".join(lines)
++
++
++def _sentence_end_after(words: Sequence[Dict[str, Any]], t: float, limit: float) -> float:
++    for w in words:
++        if float(w["end"]) >= t and str(w.get("text", "")).rstrip().endswith((".", "?", "!")):
++            return min(float(w["end"]), limit)
++    return t
++
++
++def extend_to_payoff(start: float, end: float, spans: Sequence[EventSpan],
++                     words: Sequence[Dict[str, Any]], max_len: float = 60.0,
++                     reach: float = 4.0) -> Tuple[float, Optional[Dict[str, Any]]]:
++    """New end so a clip ending inside/just before an event sees it finish."""
++    limit = start + max_len
++    new_end = end
++    used = None
++    for s in sorted(spans, key=lambda s: s.start):
++        if s.start <= new_end + reach and s.end > new_end:
++            new_end = min(s.end + 1.0, limit)
++            used = s
++    if used is None:
++        return end, None
++    new_end = _sentence_end_after(words, new_end, limit) if any(
++        float(w["start"]) < new_end < float(w["end"]) + 1.5 for w in words) else new_end
++    return round(new_end, 2), {"extended_from": round(end, 2), "to": round(new_end, 2),
++                               "because": used.as_dict()}
++
++
++def event_window(spans: Sequence[EventSpan], words: Sequence[Dict[str, Any]],
++                 total: float, max_len: float = 60.0, lead: float = 25.0) -> Optional[Dict[str, Any]]:
++    """No-model fallback: the strongest run of events with its lead-in."""
++    if not spans:
++        return None
++    ordered = sorted(spans, key=lambda s: s.start)
++    runs: List[List[EventSpan]] = []
++    for s in ordered:
++        if runs and s.start - runs[-1][-1].end <= 12.0:
++            runs[-1].append(s)
++        else:
++            runs.append([s])
++
++    def strength(run: List[EventSpan]) -> float:
++        # Duration x visual strength. A run the transcript cannot see
++        # (little speech) gets a 1.5x bonus: that is exactly the moment a
++        # transcript-only selector misses. Label variety is NOT rewarded:
++        # it made scattered weak spans outrank one sustained moment.
++        base = sum((s.end - s.start) * s.score for s in run)
++        span = run[-1].end - run[0].start
++        quiet = _speech_seconds(words, run[0].start, run[-1].end) < 0.25 * span
++        return base * (1.5 if quiet else 1.0)
++
++    best = max(runs, key=strength)
++    start = max(0.0, best[0].start - lead)
++    # Begin on a sentence start up to 10 s earlier (the setup line that
++    # introduces the moment, e.g. "The nominees for ... are"), so the
++    # stimulus is in the clip, not just the reaction.
++    for w_prev, w in zip(words, words[1:]):
++        if start - 10.0 <= float(w["start"]) <= start and str(w_prev.get("text", "")).rstrip().endswith((".", "?", "!")):
++            start = float(w["start"])
++            break
++    # The end is computed after the start settles, so the cap holds.
++    end = min(total, best[-1].end + 2.0, start + max_len)
++    end = _sentence_end_after(words, end, start + max_len) if any(
++        float(w["start"]) < end < float(w["end"]) + 1.5 for w in words) else end
++    return {"start_time": round(start, 2), "end_time": round(end, 2),
++            "events": [s.as_dict() for s in best]}
++
++
++def words_from_transcript_data(data: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
++    """Cached transcript words as ``{text, start, end}`` in seconds."""
++    words = []
++    for w in (data or {}).get("words") or []:
++        try:
++            words.append({"text": str(w.get("text", "")), "start": float(w.get("start", 0)) / 1000.0,
++                          "end": float(w.get("end", 0)) / 1000.0})
++        except (TypeError, ValueError, AttributeError):
++            continue
++    return words
++
++
++def _parse_mmss(value: Any) -> Optional[float]:
++    try:
++        parts = [float(p) for p in str(value).split(":")]
++    except ValueError:
++        return None
++    seconds = 0.0
++    for part in parts:
++        seconds = seconds * 60 + part
++    return seconds
++
++
++def _fmt_mmss(seconds: float) -> str:
++    total = int(round(seconds))
++    if total >= 3600:
++        return f"{total // 3600:02d}:{total % 3600 // 60:02d}:{total % 60:02d}"
++    return f"{total // 60:02d}:{total % 60:02d}"
++
++
++def extend_segments_to_payoff(segments: Sequence[Any], spans: Sequence[EventSpan],
++                              words: Sequence[Dict[str, Any]], max_len: float = 60.0) -> int:
++    """Apply ``extend_to_payoff`` to selected segments in place; returns how many moved."""
++    moved = 0
++    for segment in segments or []:
++        getter = segment.get if isinstance(segment, dict) else (lambda k, s=segment: getattr(s, k, None))
++        start, end = _parse_mmss(getter("start_time")), _parse_mmss(getter("end_time"))
++        if start is None or end is None or end <= start:
++            continue
++        new_end, why = extend_to_payoff(start, end, spans, words, max_len=max(max_len, end - start))
++        if why is None or new_end <= end:
++            continue
++        stamp = _fmt_mmss(new_end)
++        reason = f" Extended to {stamp} so the visual moment ({why['because']['description']}) finishes."
++        if isinstance(segment, dict):
++            segment["end_time"] = stamp
++            segment["reasoning"] = str(segment.get("reasoning") or "") + reason
++        else:
++            try:
++                segment.end_time = stamp
++                segment.reasoning = str(getattr(segment, "reasoning", "") or "") + reason
++            except Exception:
++                continue
++        moved += 1
++        logger.info("Payoff: segment %s-%s extended to %s (%s)", getter("start_time"), _fmt_mmss(end),
++                    stamp, why["because"]["label"])
++    return moved
+diff --git a/backend/src/media/timeline.py b/backend/src/media/timeline.py
+index 001df5e..224d585 100644
+--- a/backend/src/media/timeline.py
++++ b/backend/src/media/timeline.py
+@@ -5,6 +5,7 @@ from ..clip_cleanup import DEFAULT_PAUSE_THRESHOLD_MS, default_filtered_words
+ from typing import Dict
+ from typing import List
+ from typing import Optional
++import os
+ from pathlib import Path
+ from typing import Tuple
+ from ..clip_cleanup import clip_cleanup_enabled
+@@ -268,6 +269,16 @@ def _end_at_cap(
+     if not fitting:
+         return cut
+     chosen = fitting[-1]
++    if (
++        os.getenv("CLIP_CAP_KEEP_VISUAL_TAIL", "off").strip().lower() in ("on", "1", "true", "yes")
++        and cut - float(chosen["end"]) > max_backoff_seconds
++    ):
++        # The cap lands in a long stretch with no transcribed speech (an
++        # award walk-up, a speech with burned-in subtitles, gameplay). The
++        # last word is far behind: walking back to it would throw away
++        # the whole visual moment (clip1 Step 4: a 60 s cap collapsed to
++        # 7.7 s). Keep the cap; there is no word to cut mid-syllable.
++        return cut
+     for word in reversed(fitting):
+         if cut - float(word["end"]) > max_backoff_seconds:
+             break
+diff --git a/backend/src/services/video_service.py b/backend/src/services/video_service.py
+index 5aefec8..e15a376 100644
+--- a/backend/src/services/video_service.py
++++ b/backend/src/services/video_service.py
+@@ -2804,6 +2804,7 @@ class VideoService:
+                     summary=None, key_topics=[], most_relevant_segments=[]
+                 )
+ 
++            story_spans: List[Any] = []
+             if relevant_parts is None:
+                 try:
+                     clip_signals = await run_in_thread(
+@@ -2834,6 +2835,32 @@ class VideoService:
+                             )
+                     except Exception as exc:
+                         logger.warning("Reaction signal extraction failed: %s", exc)
++                # Visual story moments (SELECTION_EVENTS, default off):
++                # the picture's events join the hints so moments with no
++                # transcribed speech (an award walk-up, a speech with
++                # burned-in subtitles) can be selected at all.
++                from ..auto_director import story_events as _story
++
++                if _story.story_events_enabled():
++                    try:
++                        story_spans = await run_in_thread(
++                            _story.detect_story_events, video_path
++                        )
++                        event_lines = _story.event_signal_lines(
++                            story_spans,
++                            _story.words_from_transcript_data(
++                                load_cached_transcript_data(video_path)
++                            ),
++                        )
++                        if event_lines:
++                            clip_signals = (
++                                clip_signals + "\n" + event_lines
++                                if clip_signals
++                                else event_lines
++                            )
++                    except Exception as exc:
++                        logger.warning("Story event extraction failed: %s", exc)
++                        story_spans = []
+                 # Scene-cut times already computed elsewhere for
+                 # reframing now also hint the selector (never-fail:
+                 # detection returns [] and any error here just means
+@@ -2933,6 +2960,20 @@ class VideoService:
+             )
+             logger.info(f"Pipeline stage timings so far: {stage_timings}")
+ 
++            if story_spans:
++                # A selected clip that ends inside (or just before) a
++                # visual story moment runs on until the moment finishes:
++                # never cut away before the payoff.
++                from ..auto_director import story_events as _story
++
++                _story.extend_segments_to_payoff(
++                    relevant_parts.most_relevant_segments,
++                    story_spans,
++                    _story.words_from_transcript_data(
++                        load_cached_transcript_data(video_path)
++                    ),
++                )
++
+             # Step 4: Create clips
+             if should_cancel and await should_cancel():
+                 raise Exception("Task cancelled")
+diff --git a/backend/tests/unit/test_story_events.py b/backend/tests/unit/test_story_events.py
+new file mode 100644
+index 0000000..d88d933
+--- /dev/null
++++ b/backend/tests/unit/test_story_events.py
+@@ -0,0 +1,103 @@
++"""Step 4: visual story moments for selection, payoff extension (clip1 root cause #1c)."""
++from __future__ import annotations
++
++import numpy as np
++
++from src.auto_director import story_events as se
++
++N_STORY = len(se.STORY_LABELS)
++N_ALL = N_STORY + len(se.BACKGROUND_LABELS)
++
++
++def _row(story_label: str | None, margin: float = 0.05):
++    row = np.zeros(N_ALL)
++    row[N_STORY:] = 0.05  # background
++    if story_label:
++        row[list(se.STORY_LABELS).index(story_label)] = 0.05 + margin
++    return row
++
++
++def _words(spec):
++    return [{"text": t, "start": s, "end": e} for t, s, e in spec]
++
++
++def test_spans_merge_consecutive_story_samples_and_drop_short_ones():
++    times = [0, 2, 4, 6, 8, 10, 12, 14, 16, 30]
++    rows = [_row(None), _row("stage_speech"), _row("stage_speech"), _row("award"),
++            _row("stage_speech"), _row(None), _row(None), _row(None), _row(None), _row("laugh")]
++    spans = se.spans_from_scores(times, np.array(rows))
++    assert len(spans) == 1  # the lone 'laugh' sample is shorter than MIN_SPAN_SEC
++    assert (spans[0].start, spans[0].end, spans[0].label) == (2, 10.0, "stage_speech")
++
++
++def test_event_window_prefers_a_sustained_quiet_moment_and_starts_on_its_setup_line():
++    spans = [se.EventSpan(94, 100, "celebrate", 0.058), se.EventSpan(110, 136, "stage_speech", 0.024),
++             se.EventSpan(142, 146, "applause", 0.032), se.EventSpan(332, 378, "award", 0.074)]
++    words = _words([("Hello.", 300.0, 300.4), ("The", 301.0, 301.2), ("nominees", 301.3, 301.8),
++                    ("are", 302.0, 302.3), ("here.", 302.4, 302.8), ("lots", 120.0, 130.0)])
++    win = se.event_window(spans, words, 500.0)
++    assert win["events"][0]["label"] == "award"
++    assert win["start_time"] == 301.0  # snapped back onto the setup sentence
++    assert win["end_time"] <= 301.0 + 60.0
++
++
++def test_payoff_extends_a_clip_that_ends_inside_a_moment():
++    spans = [se.EventSpan(190, 244, "stage_speech", 0.05)]
++    new_end, why = se.extend_to_payoff(141.0, 199.0, spans, [], max_len=120)
++    assert new_end == 245.0 and why["because"]["label"] == "stage_speech"
++
++
++def test_payoff_respects_the_cap_and_leaves_unrelated_clips_alone():
++    spans = [se.EventSpan(190, 244, "stage_speech", 0.05)]
++    assert se.extend_to_payoff(141.0, 199.0, spans, [], max_len=80)[0] == 221.0
++    assert se.extend_to_payoff(10.0, 60.0, spans, [])[1] is None
++
++
++def test_segments_are_extended_in_place_with_a_reason():
++    spans = [se.EventSpan(190, 244, "stage_speech", 0.05)]
++    segs = [{"start_time": "02:21", "end_time": "03:19", "reasoning": "x."},
++            {"start_time": "00:10", "end_time": "00:40", "reasoning": "y."}]
++    assert se.extend_segments_to_payoff(segs, spans, []) == 1
++    assert segs[0]["end_time"] == "03:21"  # cap: the 60 s render cap from 02:21
++    assert "visual moment" in segs[0]["reasoning"]
++    assert segs[1]["end_time"] == "00:40"
++
++
++def test_signal_lines_use_the_selector_hint_format():
++    spans = [se.EventSpan(190, 244, "stage_speech", 0.05)]
++    text = se.event_signal_lines(spans, [])
++    line = text.splitlines()[1]
++    import re
++    from src.ai import SIGNAL_LINE_PATTERN
++
++    assert SIGNAL_LINE_PATTERN.match(line)
++    assert "little or no transcribed speech" in line
++
++
++def test_switch_default_off(monkeypatch):
++    monkeypatch.delenv("SELECTION_EVENTS", raising=False)
++    assert not se.story_events_enabled()
++
++
++def test_no_frames_means_no_events(monkeypatch, tmp_path):
++    monkeypatch.setattr(se, "sample_frames", lambda *a, **k: [])
++    assert se.detect_story_events(tmp_path / "missing.mp4") == []
++
++
++def test_cap_keeps_a_visual_tail_instead_of_walking_back_52_seconds(monkeypatch, tmp_path):
++    """clip1 Step 4 root cause: a 60 s cap landing in a speechless stretch
++    walked back to the last word 52 s earlier and rendered 7.7 s."""
++    from src.media import timeline as T
++
++    words = [{"text": "The", "start": 297_500, "end": 297_800},
++             {"text": "nominees", "start": 298_000, "end": 299_000},
++             {"text": "are...", "start": 304_000, "end": 304_800},
++             {"text": "I", "start": 374_200, "end": 374_400}]
++    monkeypatch.setattr(T, "load_cached_transcript_data", lambda _p: {"words": words})
++    monkeypatch.setattr(T, "ffprobe_duration", lambda _p: 500.0, raising=False)
++    monkeypatch.setenv("CLIP_CAP_KEEP_VISUAL_TAIL", "on")
++    kept = T.clamp_keep_ranges_to_max_duration(tmp_path / "v.mp4", [(297.19, 379.54)], 60.0)
++    assert abs(kept[0][1] - 357.19) < 0.01
++    monkeypatch.setenv("CLIP_CAP_KEEP_VISUAL_TAIL", "off")
++    old = T.clamp_keep_ranges_to_max_duration(tmp_path / "v.mp4", [(297.19, 379.54)], 60.0)
++    assert old[0][1] < 306.0  # today's behaviour, kept when the switch is off
+-- 
+2.56.0.windows.2
+

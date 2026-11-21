@@ -1,0 +1,249 @@
+{
+  "ok": true,
+  "duration": 55.1,
+  "words": 29,
+  "caption_coverage": {
+    "ok": false,
+    "uncovered": [
+      [
+        43.55,
+        44.1
+      ],
+      [
+        44.35,
+        45.2
+      ],
+      [
+        45.55,
+        45.75
+      ],
+      [
+        46.1,
+        46.4
+      ],
+      [
+        53.65,
+        53.65
+      ],
+      [
+        54.1,
+        54.35
+      ]
+    ],
+    "uncovered_seconds": 2.15,
+    "silent_cues": []
+  },
+  "beat_density": null,
+  "error": null,
+  "transcript_provider": "groq-chunks",
+  "decoder_word_counts": {
+    "groq": 29,
+    "offline-gpu": 30,
+    "groq-chunks": 29
+  },
+  "burned_words": [
+    {
+      "text": "Lapiz",
+      "start": 0.0,
+      "end": 13.2,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Whoa",
+      "start": 13.2,
+      "end": 19.0,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "He",
+      "start": 19.0,
+      "end": 23.86,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "unlocked",
+      "start": 23.86,
+      "end": 24.18,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "like",
+      "start": 24.18,
+      "end": 24.34,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "another",
+      "start": 24.34,
+      "end": 24.7,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "dimension",
+      "start": 24.7,
+      "end": 25.3,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Oh",
+      "start": 25.3,
+      "end": 25.55,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Damn",
+      "start": 31.05,
+      "end": 31.3,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Damn",
+      "start": 31.3,
+      "end": 36.44,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "That",
+      "start": 36.44,
+      "end": 38.42,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "was",
+      "start": 38.42,
+      "end": 38.56,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "a",
+      "start": 38.56,
+      "end": 38.72,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "W,",
+      "start": 38.72,
+      "end": 39.38,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "chat",
+      "start": 39.38,
+      "end": 39.46,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Damn",
+      "start": 39.46,
+      "end": 43.3,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "I'ma",
+      "start": 50.12,
+      "end": 50.28,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "take",
+      "start": 50.28,
+      "end": 50.38,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "this",
+      "start": 50.38,
+      "end": 50.519,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "bag",
+      "start": 50.519,
+      "end": 50.74,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "right",
+      "start": 50.74,
+      "end": 50.98,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "here",
+      "start": 50.98,
+      "end": 51.12,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "chat,",
+      "start": 51.12,
+      "end": 52.38,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "I'ma",
+      "start": 52.38,
+      "end": 52.5,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "take",
+      "start": 52.5,
+      "end": 52.6,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "this",
+      "start": 52.6,
+      "end": 52.74,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "bag",
+      "start": 52.74,
+      "end": 53.08,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "right",
+      "start": 53.08,
+      "end": 53.3,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "here",
+      "start": 53.3,
+      "end": 53.54,
+      "confidence": 1.0,
+      "speaker": null
+    }
+  ]
+}

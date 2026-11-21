@@ -1,0 +1,2 @@
+email=testdrive-v12@snipnova.test
+password=T8fce9fe0e8169751!a

@@ -1,0 +1,13 @@
+078c732 fix(audio): face-on-top clips get their music bed and SFX (plain path dropped them)
+0a7448d feat(captions): swear words masked in burned-in captions and titles; 30 s minimum clip (owner rules)
+3cbcc80 perf(live): transcribe 5 candidate windows per Groq request (free tier is 20 requests/min)
+43fd28e perf(live): build the z-score arrays once per pass (11 h ranking: minutes -> 8.5 s)
+7e3ca3a feat(live): fast clipping of finished 10-20 h streams without downloading the video
+7f5d0e8 test: add tasks.hook_title_enabled to the hand-built task tables (same as layout_credit)
+a07b138 fix(clips): 17 s minimum, white seam captions, title on/off, layout picker; gaming layout wins over Fit
+348c497 feat(live): captions via Groq hosted Whisper when GROQ_API_KEY is set; clips 22-30 s
+6f4f79b fix(live): fast speech model for live clips; Stop finishes clips already found
+aa9167b fix(live): find yt-dlp in the app's venv (not on PATH in the image)
+929dae2 feat(live): Live page, /api/live proxy and sidebar entry (shown when LIVE_CLIPPING is on)
+de2a944 feat(live): live clipping in the app: sessions API, live worker, hook-first clips
+1cdd8c6 fix(render): gaming layout template is no longer skipped on Auto clips

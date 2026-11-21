@@ -1,0 +1,50 @@
+{
+ "video": "test-footage/real_hd/kai_sa_20000_hd.mp4",
+ "seconds": 200.0,
+ "restarts": 0,
+ "gaps": [],
+ "voice_flags": [
+  {
+   "stream_time": 31.0,
+   "signals": [
+    "laugh",
+    "vocal"
+   ],
+   "flag_seen_after_onset_s": 25.4,
+   "confirm_took_s": 79.8,
+   "confirmed": false
+  },
+  {
+   "stream_time": 34.4,
+   "signals": [
+    "laugh"
+   ],
+   "flag_seen_after_onset_s": 101.9,
+   "confirm_took_s": 74.2,
+   "confirmed": true
+  }
+ ],
+ "candidates": [
+  {
+   "onset": 1795001790.39,
+   "start": 1795001775.39,
+   "end": 1795001798.56,
+   "score": 0.49,
+   "sources": [
+    "audio"
+   ],
+   "reasons": [
+    "sustained audio excitement z=5.8 from 1795001790.4"
+   ],
+   "peak_z": 5.84,
+   "visual": null,
+   "chat_peak": null,
+   "stream_time_of_onset": 287.0,
+   "detected_after_onset_s": 37.7,
+   "preview_ready_after_onset_s": 46.4,
+   "preview_render_s": 8.7,
+   "preview": "test-footage\\live-demo\\preview_1795001790.mp4",
+   "stream_still_live": false
+  }
+ ]
+}

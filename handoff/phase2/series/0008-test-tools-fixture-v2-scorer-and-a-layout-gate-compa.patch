@@ -1,0 +1,210 @@
+From 27f00d0760d5e5c891532c23e3e734fc2a84fbe1 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 22:13:50 +0530
+Subject: [PATCH 08/22] test(tools): fixture v2 scorer and a layout-gate
+ comparison runner
+
+score_fixture.py runs the production streamer-reaction picker on
+Sanji's streamer fixture v2 and checks his contract literally (R3 #1,
+R1/R2 above the decoy, context kept, no cut burst). gate_compare.py
+runs the plain path's real layout decision on 15 real clips under any
+code tree, so two reaction gates can be compared on the same evidence.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/phase2/gate_compare.py  | 95 +++++++++++++++++++++++++++++++++++
+ tools/phase2/score_fixture.py | 80 +++++++++++++++++++++++++++++
+ 2 files changed, 175 insertions(+)
+ create mode 100644 tools/phase2/gate_compare.py
+ create mode 100644 tools/phase2/score_fixture.py
+
+diff --git a/tools/phase2/gate_compare.py b/tools/phase2/gate_compare.py
+new file mode 100644
+index 0000000..9d5e3ca
+--- /dev/null
++++ b/tools/phase2/gate_compare.py
+@@ -0,0 +1,95 @@
++"""Which vertical layout does each real clip get under a given code tree?
++
++  python tools/phase2/gate_compare.py --repo <tree> --out <results.jsonl> [--clips <dir>]
++
++Cuts one 40 s excerpt (60 % into each source) from the real test videos
++(streamer facecams, a video-call podcast, vlog, stand-up, talking head, a
++lecture with a presenter window) and runs the plain path's own decision,
++``media.reframing.describe_vertical_layout``, from ``<tree>/backend/src``.
++Run it once per tree (e.g. this branch, and a worktree with another gate
++applied) and compare the ``kind`` column: ``reaction`` means the facecam
++layout engaged. Excerpts are cached in ``--clips`` and shared between runs.
++"""
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[2]
++CASES = [
++    # (file under test-footage, what it is, should the facecam layout engage?)
++    ("real_hd/kai_sa_20000_hd.mp4", "Kai Cenat 1080p, cam mid-left", True),
++    ("real_more/kai_sa_20000.mp4", "Kai Cenat 360p, cam mid-left", True),
++    ("real_more/kai_gta4_30000.mp4", "Kai Cenat GTA IV, small top-left cam", True),
++    ("real_more/kai_gta4_9000.mp4", "Kai Cenat GTA IV, looking down at desk", True),
++    ("real_twitch/vicens_1800.mp4", "Vicens GTA V, cam left", True),
++    ("real_twitch/vicens_4200.mp4", "Vicens GTA V, cam left", True),
++    ("real_twitch/vicens_7200.mp4", "Vicens GTA V, cam left", True),
++    ("real_twitch/vicens_sample.mp4", "Vicens GTA V, cam left", True),
++    ("real_more/speed_tw_2400.mp4", "iShowSpeed Omegle split (two people)", False),
++    ("real_more/speed_tw_7000.mp4", "iShowSpeed full-frame cam", False),
++    ("phase2_src/1oXjtK5Nsjw.mp4", "Video-call podcast, two windows", False),
++    ("phase2_src/D3cAyFmhi_M.mp4", "Travel vlog", False),
++    ("phase2_src/dwZK6iQlyEw.mp4", "Stand-up comedy", False),
++    ("phase2_src/TkHlhgTutFs.mp4", "Talking head speech", False),
++    ("phase2_src/-m-gudHhLxc.mp4", "Lecture: slides + presenter window", None),
++]
++
++
++def _probe(path: Path) -> tuple[int, int, float]:
++    out = json.loads(subprocess.check_output(
++        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
++         "stream=width,height:format=duration", "-of", "json", str(path)]))
++    return out["streams"][0]["width"], out["streams"][0]["height"], float(out["format"]["duration"])
++
++
++def _excerpt(source: Path, clips: Path) -> Path:
++    clips.mkdir(parents=True, exist_ok=True)
++    target = clips / f"{source.stem}_x40.mp4"
++    if not target.exists():
++        _w, _h, duration = _probe(source)
++        start = max(0.0, duration * 0.6)
++        subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{start:.2f}", "-i", str(source),
++                        "-t", "40", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
++                        "-c:a", "aac", str(target)], check=True)
++    return target
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--repo", required=True)
++    ap.add_argument("--out", required=True)
++    ap.add_argument("--clips", default=str(ROOT / "test-footage" / "gate_compare_clips"))
++    a = ap.parse_args()
++    backend = Path(a.repo).resolve() / "backend"
++    sys.path.insert(0, str(backend))
++    os.chdir(backend)
++    from src.media.reframing import describe_vertical_layout  # noqa: E402
++
++    rows = []
++    for rel, label, expected in CASES:
++        source = ROOT / "test-footage" / rel
++        if not source.exists():
++            continue
++        clip = _excerpt(source, Path(a.clips))
++        width, height, _ = _probe(clip)
++        t = time.time()
++        try:
++            kind = describe_vertical_layout(clip, width, height).get("kind")
++        except Exception as exc:  # report, never hide
++            kind = f"error: {exc}"
++        row = {"case": rel, "label": label, "expected_reaction": expected, "kind": kind,
++               "seconds": round(time.time() - t, 1)}
++        rows.append(row)
++        print(json.dumps(row), flush=True)
++    Path(a.out).write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tools/phase2/score_fixture.py b/tools/phase2/score_fixture.py
+new file mode 100644
+index 0000000..5376d7e
+--- /dev/null
++++ b/tools/phase2/score_fixture.py
+@@ -0,0 +1,80 @@
++"""Score the streamer-reaction picker against Sanji's streamer fixture v2.
++
++  python tools/phase2/score_fixture.py [--video test-footage/fixtures/streamer_fixture_v2.mp4]
++
++Ground truth (Sanji, 2026-11-17): 150 s, 1280x720, stereo L=gameplay R=mic,
++facecam top-right. Setup 16-20 s; R1 20-28 (kill + animated face + loud
++speech); R2 50-58 (funny event, most animated face); DECOY 80-86 (loudest
++gameplay explosion, still face, silent mic: must NOT rank top); R3 105-115
++(small event, mic scream 107.5-110.2 = loudest moment: must rank #1).
++Contract: R3 > R1, R2 > DECOY; clips include their context and never cut a
++burst. Prints the slate literally, then each check as PASS / FAIL.
++"""
++from __future__ import annotations
++
++import argparse
++import json
++import sys
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[2]
++TRUTH = {"R1": (20.0, 28.0), "R2": (50.0, 58.0), "DECOY": (80.0, 86.0), "R3": (105.0, 115.0)}
++
++
++def _sec(label: str) -> float:
++    parts = [float(p) for p in str(label).split(":")]
++    total = 0.0
++    for p in parts:
++        total = total * 60 + p
++    return total
++
++
++def _overlap(a: tuple[float, float], b: tuple[float, float]) -> float:
++    return max(0.0, min(a[1], b[1]) - max(a[0], b[0]))
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--video", default=str(ROOT / "test-footage" / "fixtures" / "streamer_fixture_v2.mp4"))
++    ap.add_argument("--clips", type=int, default=5)
++    ap.add_argument("--clip-seconds", type=float, default=30.0)
++    a = ap.parse_args()
++    sys.path.insert(0, str(ROOT / "backend"))
++    from src.auto_director.reaction_moments import select_streamer_moments
++
++    moments = select_streamer_moments(a.video, 150.0, target_count=a.clips, clip_seconds=a.clip_seconds)
++    ranked = sorted(moments, key=lambda m: -float(m.get("fused_score", m.get("virality_score", 0))))
++    print("rank | window | label | fused | virality | type | signals")
++    labelled = []
++    for rank, m in enumerate(ranked, 1):
++        win = (_sec(m["start_time"]), _sec(m["end_time"]))
++        label = max(TRUTH, key=lambda k: _overlap(win, TRUTH[k]))
++        label = label if _overlap(win, TRUTH[label]) > 0 else "-"
++        labelled.append((rank, win, label, m))
++        print(f"{rank} | {m['start_time']}-{m['end_time']} | {label} | {m.get('fused_score')} | "
++              f"{m.get('virality_score')} | {m.get('hook_type')} | {json.dumps(m.get('signals'))}")
++
++    def rank_of(name: str):
++        hits = [r for r, _w, lab, _m in labelled if lab == name]
++        return min(hits) if hits else None
++
++    r1, r2, r3, decoy = rank_of("R1"), rank_of("R2"), rank_of("R3"), rank_of("DECOY")
++    checks = []
++    checks.append(("R3 ranks #1", r3 == 1))
++    checks.append(("R1 found and below R3", r1 is not None and r3 is not None and r1 > r3))
++    checks.append(("R2 found and below R3", r2 is not None and r3 is not None and r2 > r3))
++    checks.append(("DECOY not top", decoy != 1))
++    checks.append(("R1 and R2 above DECOY (or DECOY absent)",
++                   decoy is None or (r1 is not None and r2 is not None and r1 < decoy and r2 < decoy)))
++    for name, need in (("R1", (16.0, 28.0)), ("R3", (107.5, 110.2))):
++        wins = [w for _r, w, lab, _m in labelled if lab == name]
++        checks.append((f"{name} clip contains {need[0]}-{need[1]} s",
++                       bool(wins) and any(w[0] <= need[0] and w[1] >= need[1] for w in wins)))
++    print()
++    for name, ok in checks:
++        print(f"{'PASS' if ok else 'FAIL'}  {name}")
++    return 0 if all(ok for _n, ok in checks) else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+-- 
+2.56.0.windows.2
+

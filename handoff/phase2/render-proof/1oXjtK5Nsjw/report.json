@@ -1,0 +1,183 @@
+{
+ "video": "D:\\SnipNova-Dev\\claude-code\\test-footage\\phase2_src\\1oXjtK5Nsjw.mp4",
+ "niche": "podcast_news",
+ "llm": "ollama:qwen3:8b",
+ "stock_broll": false,
+ "timings": {
+  "transcribe_s": 140.3,
+  "select_s": 0.0
+ },
+ "clips": [
+  {
+   "clip": "clip1.mp4",
+   "render_ok": true,
+   "render_s": 104.1,
+   "source_start": 180.98,
+   "source_end": 224.8,
+   "duration": 43.8,
+   "selection": {
+    "virality": null,
+    "hook_type": "fixed-window",
+    "hook_title": null,
+    "reasoning": "Pipeline check only: sentence-aligned window, not an AI selection."
+   },
+   "decisions": {
+    "segments": 9,
+    "transitions": [
+     "hard_cut",
+     "hard_cut",
+     "hard_cut",
+     "hard_cut",
+     "hard_cut",
+     "hard_cut",
+     "hard_cut",
+     "hard_cut"
+    ],
+    "zooms": 1,
+    "broll_planned": 1,
+    "broll_inserted": 0,
+    "broll": [
+     {
+      "at": 33.5,
+      "said": "restaurant",
+      "searched": "restaurant dining table",
+      "layout": "cutaway",
+      "inserted": false,
+      "why_not": "no_provider_configured"
+     }
+    ],
+    "broll_dropped": [],
+    "music": "none",
+    "captions": "hormozi"
+   },
+   "qc": {
+    "ffprobe": [
+     {
+      "codec_type": "video",
+      "width": 1080,
+      "height": 1920
+     },
+     {
+      "codec_type": "audio",
+      "width": null,
+      "height": null
+     }
+    ],
+    "output_seconds": 43.8,
+    "loudness_lufs": -14.4,
+    "black_seconds": 0,
+    "boundary": {
+     "ok": true,
+     "starts_on_sentence": true,
+     "ends_on_sentence": true,
+     "cuts_a_word": false,
+     "first_words": "I don't like to have food",
+     "last_words": "like a few of my bills."
+    },
+    "layout": {
+     "broll_applied": false
+    },
+    "reframe_plan": {
+     "attached": true,
+     "delegate": null,
+     "shots": [
+      [
+       "split",
+       "interaction_exceeds_crop"
+      ]
+     ]
+    }
+   },
+   "frames": [
+    "clip1_8pct.png",
+    "clip1_50pct.png",
+    "clip1_90pct.png"
+   ]
+  },
+  {
+   "clip": "clip2.mp4",
+   "render_ok": true,
+   "render_s": 80.2,
+   "source_start": 431.89,
+   "source_end": 472.64,
+   "duration": 40.8,
+   "selection": {
+    "virality": null,
+    "hook_type": "fixed-window",
+    "hook_title": null,
+    "reasoning": "Pipeline check only: sentence-aligned window, not an AI selection."
+   },
+   "decisions": {
+    "segments": 8,
+    "transitions": [
+     "hard_cut",
+     "hard_cut",
+     "hard_cut",
+     "hard_cut",
+     "hard_cut",
+     "hard_cut",
+     "hard_cut"
+    ],
+    "zooms": 1,
+    "broll_planned": 1,
+    "broll_inserted": 0,
+    "broll": [
+     {
+      "at": 35.21,
+      "said": "restaurant",
+      "searched": "restaurant dining table",
+      "layout": "cutaway",
+      "inserted": false,
+      "why_not": "no_provider_configured"
+     }
+    ],
+    "broll_dropped": [],
+    "music": "none",
+    "captions": "hormozi"
+   },
+   "qc": {
+    "ffprobe": [
+     {
+      "codec_type": "video",
+      "width": 1080,
+      "height": 1920
+     },
+     {
+      "codec_type": "audio",
+      "width": null,
+      "height": null
+     }
+    ],
+    "output_seconds": 40.77,
+    "loudness_lufs": -13.8,
+    "black_seconds": 0,
+    "boundary": {
+     "ok": true,
+     "starts_on_sentence": true,
+     "ends_on_sentence": true,
+     "cuts_a_word": false,
+     "first_words": "And, you know, you've, you've visited,",
+     "last_words": "you love to set it up?"
+    },
+    "layout": {
+     "broll_applied": false
+    },
+    "reframe_plan": {
+     "attached": true,
+     "delegate": null,
+     "shots": [
+      [
+       "split",
+       "interaction_exceeds_crop"
+      ]
+     ]
+    }
+   },
+   "frames": [
+    "clip2_8pct.png",
+    "clip2_50pct.png",
+    "clip2_90pct.png"
+   ]
+  }
+ ]
+}

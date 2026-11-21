@@ -1,0 +1,27 @@
+Rendering window_007.mp4
+Caption coverage: 3.50s of speech has no caption over it: [(43.65, 45.75), (48.6, 50.0)]
+Command failed (exit status 255): ffmpeg -hide_banner -loglevel error -f lavfi -i color=size=256x256:rate=1 -frames:v 1 -c:v h264_nvenc -f null -
+[h264_nvenc @ 0x63c0a4aa0e00] Cannot load libnvidia-encode.so.1
+[h264_nvenc @ 0x63c0a4aa0e00] The minimum required Nvidia driver for nvenc is 530.41.03 or newer
+[vost#0:0/h264_nvenc @ 0x63c0a4abc200] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.
+[vf#0:0 @ 0x63c0a4ad7300] Error sending frames to consumers: Operation not permitted
+[vf#0:0 @ 0x63c0a4ad7300] Task finished with error code: -1 (Operation not permitted)
+[vf#0:0 @ 0x63c0a4ad7300] Terminating thread with return code -1 (Operation not permitted)
+[vost#0:0/h264_nvenc @ 0x63c0a4abc200] Could not open encoder before EOF
+[vost#0:0/h264_nvenc @ 0x63c0a4abc200] Task finished with error code: -22 (Invalid argument)
+[vost#0:0/h264_nvenc @ 0x63c0a4abc200] Terminating thread with return code -22 (Invalid argument)
+[out#0/null @ 0x63c0a4abbac0] Nothing was written into output file, because at least one of its streams received no packets.
+
+NVENC probe failed at the one-frame encode stage: ation not permitted)
+[vf#0:0 @ 0x63c0a4ad7300] Terminating thread with return code -1 (Operation not permitted)
+[vost#0:0/h264_nvenc @ 0x63c0a4abc200] Could not open encoder before EOF
+[vost#0:0/h264_nvenc @ 0x63c0a4abc200] Task finished with error code: -22 (Invalid argument)
+[vost#0:0/h264_nvenc @ 0x63c0a4abc200] Terminating thread with return code -22 (Invalid argument)
+[out#0/null @ 0x63c0a4abbac0] Nothing was written into output file, because at least one of its streams received no packets.
+Rendered 7 50.01 seconds, 48 caption words
+Rendering window_008_cold.mp4
+Caption coverage: 35.00s of speech has no caption over it: [(2.95, 14.35), (14.8, 25.55), (26.85, 28.35), (28.7, 32.85), (33.25, 36.4)]
+Rendered 8 57.52 seconds, 50 caption words
+Rendering window_019_cold.mp4
+Caption coverage: 23.65s of speech has no caption over it: [(0.7, 0.95), (2.95, 3.6), (10.1, 10.25), (14.35, 16.1), (16.9, 17.4)]
+Rendered 19 52.12 seconds, 12 caption words

@@ -1,0 +1,256 @@
+From bc0dd8a296dbf7faff587f52a996a713cee3d962 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 08:25:10 +0530
+Subject: [PATCH 19/22] feat(reaction): face-led candidates for face-carried
+ moments (REACTION_FACE_LED)
+
+Sanji Q2/Q7: YuNet at 10 Hz (5 Hz past 30 min) on the facecam, per
+second p90 mouth-corner width and head jump, both / face height, z per
+task. A run at z >= 4 for >= 2 s that no reaction already covers is a
+face_reaction candidate: capped at 45 alone, up to 55 with a coinciding
+game event. Switch REACTION_FACE_LED (default on).
+
+Fixture v2, literally: R2 mouth z 1.7, jump z 1.1 (raw pixels: mouth
+50.9 px vs 51.0 px in a calm window); no run fires anywhere, so R2 is
+still missed and the decoy stays out (mouth z 0.3, jump z 2.4). Slate
+unchanged: 6/7 checks. 43 reaction tests pass.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/auto_director/reaction_moments.py | 129 ++++++++++++++++++
+ backend/tests/unit/test_reaction_face_led.py  |  68 +++++++++
+ 2 files changed, 197 insertions(+)
+ create mode 100644 backend/tests/unit/test_reaction_face_led.py
+
+diff --git a/backend/src/auto_director/reaction_moments.py b/backend/src/auto_director/reaction_moments.py
+index 1a504a5..63de0e7 100644
+--- a/backend/src/auto_director/reaction_moments.py
++++ b/backend/src/auto_director/reaction_moments.py
+@@ -799,6 +799,9 @@ def _score(it: dict[str, Any]) -> float:
+         if "coincidence" in it:
+             return float(_SILENT_ACTION_CAP * it["coincidence"])
+         return float(min(_SILENT_ACTION_CAP, base * it["mult"]))
++    if it["type"] == "face_reaction":
++        cap = _FACE_LED_WITH_EVENT_CAP if it.get("event") is not None else _FACE_LED_CAP
++        return float(min(cap, base * it["mult"]))
+     kind_bonus = {"laughter": 8.0, "shout": 6.0, "vocal_burst": 3.0, "silent_facecam": 0.0}.get(it["kind"], 0.0)
+     score = float(min(98.0, (base + kind_bonus) * it["mult"]))
+     # Coincidence rule: a top-ranked moment needs at least TWO modalities —
+@@ -806,7 +809,129 @@ def _score(it: dict[str, Any]) -> float:
+     return min(score, _VOICE_ONLY_CAP) if len(modalities(it)) < 2 else score
+ 
+ 
++# --- Face-led reactions (Sanji Q2, 2026-11-18; switch REACTION_FACE_LED) ---
++#
++# The R2 case: the face carries the moment while the game is quiet. Voice
++# and fusion cannot see it, and the 4 fps patch measure does not separate it
++# on handheld facecam footage. Measured as Sanji did on his fixture: YuNet at
++# 10 Hz on the facecam, mouth-corner width and head jump between frames,
++# both divided by face height so any resolution compares. A run with either
++# at z >= 4 for >= 2 s is a face-led candidate: capped at 45 alone (below
++# voice-only 55), up to 55 when a game event coincides.
++
++_FACE_LED_FPS = 10
++_FACE_LED_Z = 4.0
++_FACE_LED_MIN_SEC = 2
++_FACE_LED_CAP = 45.0
++_FACE_LED_WITH_EVENT_CAP = 55.0
++
++
++def face_led_enabled() -> bool:
++    import os
++
++    return os.getenv("REACTION_FACE_LED", "1").strip().lower() not in {"0", "false", "no", "off"}
++
++
++def extract_face_dynamics(video_path: Path | str, roi: tuple[float, float, float, float],
++                          duration: float = 0.0) -> Optional[dict[str, np.ndarray]]:
++    """Per-second facecam dynamics: p90 mouth-corner width and p90 head jump
++    (both / face height), YuNet at 10 Hz (5 Hz past 30 minutes). None when
++    the face is visible in under 30 % of frames."""
++    try:
++        from ..media.face_detection import YuNetFaceDetector
++
++        detector = YuNetFaceDetector()
++    except Exception:
++        return None
++    fps = _FACE_LED_FPS if duration <= 1800 else 5
++    x, y, w, h = roi
++    width = 384
++    crop = f"crop=iw*{w:.4f}:ih*{h:.4f}:iw*{x:.4f}:ih*{y:.4f},scale={width}:-2"
++    probe = subprocess.run(
++        ["ffmpeg", "-v", "error", "-i", str(video_path), "-an", "-frames:v", "1", "-vf", crop,
++         "-f", "rawvideo", "-pix_fmt", "bgr24", "-"], capture_output=True, timeout=60).stdout
++    height = len(probe) // (width * 3)
++    if height <= 0:
++        return None
++    size = width * height * 3
++    proc = subprocess.Popen(
++        ["ffmpeg", "-v", "error", "-i", str(video_path), "-an", "-vf", f"fps={fps},{crop},format=bgr24",
++         "-f", "rawvideo", "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
++    mouth: list[float] = []
++    jump: list[float] = []
++    seen = 0
++    prev = None
++    try:
++        assert proc.stdout is not None
++        while True:
++            buf = proc.stdout.read(size)
++            if len(buf) < size:
++                break
++            frame = np.frombuffer(buf, dtype=np.uint8).reshape(height, width, 3)
++            faces = [f for f in detector.detect_with_landmarks(frame) if f[0][3] >= height * 0.12]
++            if not faces:
++                mouth.append(np.nan)
++                jump.append(np.nan)
++                prev = None
++                continue
++            seen += 1
++            (fx, fy, fw, fh, _score), lm = max(faces, key=lambda f: f[0][2] * f[0][3])
++            mouth.append(float(np.hypot(lm[3][0] - lm[4][0], lm[3][1] - lm[4][1]) / max(fh, 1.0)))
++            centre = (fx + fw / 2, fy + fh / 2)
++            jump.append(float(np.hypot(centre[0] - prev[0], centre[1] - prev[1]) / max(fh, 1.0)) if prev else np.nan)
++            prev = centre
++    finally:
++        if proc.stdout:
++            proc.stdout.close()
++        proc.kill()
++        proc.wait()
++    if not mouth or seen < 0.3 * len(mouth):
++        return None
++    n = len(mouth) // fps
++
++    def per_second(values: list[float]) -> np.ndarray:
++        out = np.zeros(n)
++        for s in range(n):
++            chunk = np.array(values[s * fps:(s + 1) * fps], dtype=float)
++            chunk = chunk[np.isfinite(chunk)]
++            out[s] = float(np.percentile(chunk, 90)) if len(chunk) else np.nan
++        fill = np.nanmedian(out) if np.isfinite(out).any() else 0.0
++        return np.where(np.isfinite(out), out, fill)
++
++    return {"mouth": per_second(mouth), "jump": per_second(jump)}
++
++
++def face_led_items(dynamics: dict[str, np.ndarray], items: list[dict[str, Any]],
++                   game_eps: list[Episode]) -> list[dict[str, Any]]:
++    """Face-led candidates that no existing reaction item already covers."""
++    z_mouth = _robust_z(dynamics["mouth"], 0.02, rel=0.0)
++    z_jump = _robust_z(dynamics["jump"], 0.02, rel=0.0)
++    face_z = np.maximum(z_mouth, z_jump)
++    taken = [(i["start"], i["end"]) for i in items if i.get("type") != "silent_action"]
++    out: list[dict[str, Any]] = []
++    run: list[int] = []
++    for s in list(range(len(face_z))) + [len(face_z)]:
++        if s < len(face_z) and face_z[s] >= _FACE_LED_Z:
++            run.append(s)
++            continue
++        if len(run) >= _FACE_LED_MIN_SEC:
++            a, b = float(run[0]), float(run[-1] + 1)
++            if not any(min(b, e) - max(a, st) > 0 for st, e in taken):
++                event = next((g for g in game_eps if g.start - _EVENT_SLACK_SEC <= a <= g.end + _EVENT_LEAD_SEC), None)
++                peak = float(np.max(face_z[run[0]:run[-1] + 1]))
++                out.append({
++                    "start": a, "end": b, "strength": peak, "peak": a, "kind": "facecam",
++                    "features": {"face": peak, "face_mouth": float(np.max(z_mouth[run[0]:run[-1] + 1])),
++                                 "face_jump": float(np.max(z_jump[run[0]:run[-1] + 1]))},
++                    "agree": ["face"], "type": "face_reaction", "event": event,
++                    "mult": 1.0, "face_led": True,
++                })
++        run = []
++    return out
++
++
+ _REASON = {
++    "face_reaction": "the facecam shows a big {kind} reaction (mouth and head) while the game is quiet",
+     "reaction_to_event": "the streamer reacts ({kind}) right after something happens on screen",
+     "commentary_reaction": "the streamer has a strong vocal reaction ({kind}) with no visible game trigger — commentary or a bit",
+     "silent_facecam": "the facecam shows a big physical reaction but the streamer stays quiet",
+@@ -981,6 +1106,10 @@ def select_streamer_moments(
+         check_voice_source(items, video_path, roi)
+         if fusion_enabled():
+             rank_unreacted_events(items, zs, game_eps)
++        if face_led_enabled() and roi:
++            dynamics = extract_face_dynamics(video_path, roi, duration)
++            if dynamics is not None:
++                items.extend(face_led_items(dynamics, items, game_eps))
+     except Exception:
+         logger.warning("Streamer-reaction detection failed for %s", video_path, exc_info=True)
+         return []
+diff --git a/backend/tests/unit/test_reaction_face_led.py b/backend/tests/unit/test_reaction_face_led.py
+new file mode 100644
+index 0000000..b73898e
+--- /dev/null
++++ b/backend/tests/unit/test_reaction_face_led.py
+@@ -0,0 +1,68 @@
++"""Face-led reaction candidates (Sanji Q2/Q7, 2026-11-18; switch REACTION_FACE_LED).
++
++A run of >= 2 s where mouth-corner width or head jump (both / face height,
++10 Hz, per-task z) reaches z >= 4 is a candidate even with a quiet game:
++capped at 45 alone, up to 55 when a game event coincides.
++"""
++
++import numpy as np
++import pytest
++
++from src.auto_director import reaction_moments as rm
++from src.auto_director.gameplay_moments import Episode
++
++
++@pytest.fixture(autouse=True)
++def _on(monkeypatch):
++    monkeypatch.delenv("REACTION_FACE_LED", raising=False)
++
++
++def _dynamics(seconds=120, mouth_spike=None, jump_spike=None):
++    rng = np.random.default_rng(11)
++    mouth = 0.42 + rng.normal(0, 0.01, seconds)
++    jump = 0.05 + np.abs(rng.normal(0, 0.01, seconds))
++    if mouth_spike:
++        a, b = mouth_spike
++        mouth[a:b] += 0.2
++    if jump_spike:
++        a, b = jump_spike
++        jump[a:b] += 0.3
++    return {"mouth": mouth, "jump": jump}
++
++
++def test_a_sustained_face_reaction_becomes_a_capped_candidate():
++    items = rm.face_led_items(_dynamics(mouth_spike=(50, 54)), [], [])
++    assert len(items) == 1
++    it = items[0]
++    assert (it["start"], it["end"]) == (50.0, 54.0)
++    assert it["type"] == "face_reaction" and it["event"] is None
++    assert it["features"]["face_mouth"] >= rm._FACE_LED_Z
++    assert rm._score(it) <= rm._FACE_LED_CAP
++
++
++def test_a_one_second_twitch_is_not_a_reaction():
++    assert rm.face_led_items(_dynamics(jump_spike=(30, 31)), [], []) == []
++
++
++def test_existing_reactions_are_not_duplicated():
++    existing = [{"type": "reaction_to_event", "start": 49.0, "end": 55.0}]
++    assert rm.face_led_items(_dynamics(mouth_spike=(50, 54)), existing, []) == []
++    # An unreacted game event does not block it.
++    ignored = [{"type": "silent_action", "start": 49.0, "end": 55.0}]
++    assert len(rm.face_led_items(_dynamics(mouth_spike=(50, 54)), ignored, [])) == 1
++
++
++def test_a_coinciding_game_event_lifts_the_cap():
++    event = Episode(start=49.0, end=51.0, peak=50.0, strength=20.0, features={})
++    it = rm.face_led_items(_dynamics(jump_spike=(50, 53)), [], [event])[0]
++    assert it["event"] is event
++    alone = {**it, "event": None}
++    assert rm._score(alone) <= rm._FACE_LED_CAP
++    assert rm._score(it) <= rm._FACE_LED_WITH_EVENT_CAP
++    assert rm._score(it) >= rm._score(alone)
++
++
++def test_switch(monkeypatch):
++    assert rm.face_led_enabled() is True
++    monkeypatch.setenv("REACTION_FACE_LED", "0")
++    assert rm.face_led_enabled() is False
+-- 
+2.56.0.windows.2
+

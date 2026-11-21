@@ -1,0 +1,171 @@
+model_list:
+  - model_name: clip-fast
+    litellm_params:
+      model: openai/nvidia/nemotron-3-ultra-550b-a55b
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
+  - model_name: or-ultra-free
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+      api_key: os.environ/OPENROUTER_API_KEY
+  - model_name: nim-deepseek
+    litellm_params:
+      # 2026-11-17 live probe on the owner's NVIDIA key (audit_providers.py
+      # --probe-nvidia): deepseek-ai/deepseek-v4.1-flash answers HTTP 410
+      # (retired from the endpoint), so this rung was dead. Swapped to a
+      # model the probe confirmed WORKS. Route name and ladder position are
+      # unchanged; a different model from clip-fast's Ultra keeps this rung
+      # an independent fallback instead of a duplicate.
+      model: openai/nvidia/nemotron-3.5-super-vl-120b-a12b
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
+  - model_name: clip-assured
+    litellm_params:
+      model: groq/openai/gpt-oss-120b
+      api_key: os.environ/GROQ_API_KEY
+      # The premium selection pass sends reasoning_effort=high; older
+      # gateway builds reject it for Groq without this allow-list.
+      allowed_openai_params: ["reasoning_effort"]
+  - model_name: groq-20b
+    litellm_params:
+      model: groq/openai/gpt-oss-20b
+      api_key: os.environ/GROQ_API_KEY
+      allowed_openai_params: ["reasoning_effort"]
+  - model_name: local-qwen
+    litellm_params:
+      model: openai/qwen3:8b
+      api_base: http://host.docker.internal:11434/v1
+      api_key: ollama
+  - model_name: deepseek-chat
+    litellm_params:
+      model: openai/deepseek-v4-pro
+      api_base: https://api.deepseek.com
+      api_key: os.environ/DEEPSEEK_API_KEY
+  - model_name: openrouter-free
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+      api_key: os.environ/OPENROUTER_API_KEY
+  - model_name: cloudflare-free
+    litellm_params:
+      # Cloudflare Workers AI (2026-11-13, Luffy's Final Directive):
+      # an eligible fallback hop on independent infrastructure. No
+      # api_base is pinned here: LiteLLM's cloudflare provider builds
+      # the OpenAI-compatible endpoint
+      # https://api.cloudflare.com/client/v4/accounts/<id>/ai/v1 from
+      # CLOUDFLARE_ACCOUNT_ID at call time, so the shipped config
+      # carries no account-specific value (both CLOUDFLARE_API_KEY
+      # and CLOUDFLARE_ACCOUNT_ID reach this container through the
+      # compose override). The model is gpt-oss-120b — the same
+      # weights as clip-assured, on a different provider whose quota
+      # nothing else drains — and it sits in Workers AI's FREE
+      # allocation: 10,000 Neurons/day on the Workers Free plan, with
+      # Cloudflare's own pricing table pricing this model at 31,818
+      # neurons/M input tokens (~10 selection-size passes a day,
+      # which matches this hop's depth: it is reached only when the
+      # five routes above it are down or drained). The frontier
+      # Workers AI rows (GLM-5.x, Kimi K2.6+, DeepSeek V4) are NOT in
+      # the free allocation — they need a paid plan — so they are
+      # deliberately not used: this route is pinned to the one
+      # free-allocation model and cannot select a paid model.
+      # Endpoint UNVERIFIED-LIVE: no Cloudflare key exists in the
+      # build sandbox; the first live call happens on the user's
+      # machine (see AI_MODEL_ROUTING.md).
+      model: cloudflare/@cf/openai/gpt-oss-120b
+      api_key: os.environ/CLOUDFLARE_API_KEY
+  # NIM bake-off candidates (2026-11-12): pre-registered deployments
+  # for the models competing for the clip-fast / nim-deepseek rungs
+  # (see tools/nim-bakeoff). They are NOT armed: no production chain
+  # falls back to them and no app code calls these aliases, so
+  # behaviour is unchanged until the live bake-off justifies arming
+  # one - a one-line slug change on the clip-fast / nim-deepseek
+  # entries above. Slugs flagged UNVERIFIED were not confirmed on a
+  # free-callable NIM listing offline; the bake-off protocol probes
+  # GET /v1/models first and drops any slug that 404s.
+  - model_name: nim-glm-flash
+    litellm_params:
+      # UNVERIFIED: listed, but timed out (45 s) on the 2026-11-17 probe.
+      model: openai/z-ai/glm-5.3-flash
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
+  - model_name: nim-kimi-k2
+    litellm_params:
+      # DEAD: HTTP 410 on the 2026-11-17 live probe. Unarmed alias.
+      model: openai/moonshotai/kimi-k2.6
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
+  - model_name: nim-mistral-large4
+    litellm_params:
+      # LIVE: WORKS on the 2026-11-17 probe. Still unarmed.
+      model: openai/mistralai/mistral-large-4-1t-a52b
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
+  - model_name: nim-qwen3-235b
+    litellm_params:
+      # DEAD: HTTP 404 on the 2026-11-17 live probe. Unarmed alias.
+      model: openai/qwen/qwen3-235b-a22b
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
+  - model_name: nim-llama4-maverick
+    litellm_params:
+      # DEAD: HTTP 410 on the 2026-11-17 live probe. Unarmed alias.
+      model: openai/meta/llama-4-maverick-17b-128e-instruct
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
+  - model_name: nim-deepseek-pro
+    litellm_params:
+      # DEAD: HTTP 410 on the 2026-11-17 live probe. Unarmed alias.
+      model: openai/deepseek-ai/deepseek-v4-pro
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
+router_settings:
+  # Brain ladder v2 (2026-11-12): every chain is ranked STRONGEST
+  # first, so a failed or rate-limited route falls to the next
+  # strongest brain, never sideways to a weaker free route while a
+  # stronger one is still untried. The ranking (strongest -> weakest):
+  # deepseek-chat (DeepSeek direct, the full-size chat model on its
+  # own endpoint) -> clip-assured (Groq gpt-oss-120b, near-equal top)
+  # -> clip-fast (Nemotron 3 Ultra via NVIDIA NIM) -> nim-deepseek
+  # (DeepSeek Flash via NIM) -> openrouter-free (the same Nemotron
+  # Ultra via OpenRouter's shared free pool) -> cloudflare-free
+  # (gpt-oss-120b on Cloudflare Workers AI's free daily Neuron
+  # allocation, independent infrastructure — added 2026-11-13 at the
+  # owner's specified position, after openrouter-free and before
+  # groq-20b; its 120B model also outranks the 20B below it)
+  # -> groq-20b -> local-qwen
+  # (Ollama qwen3:8b on the user's own PC) LAST in every chain: the
+  # local model is the emergency floor that cannot run out of
+  # allowance, not a peer. This supersedes the same-day cost ladder,
+  # which walked the free routes first and reached DeepSeek only
+  # second-to-last. local-qwen's own chain is the one exception: it
+  # is only consulted when the local route itself failed, so it
+  # cannot contain local-qwen and walks the cloud routes
+  # strongest-first instead. Routes whose key is unset fail
+  # authentication if reached and are cooled down by the router;
+  # the gateway boots and the primary routes are unaffected.
+  fallbacks:
+    - clip-fast: ["deepseek-chat", "clip-assured", "nim-deepseek", "openrouter-free", "cloudflare-free", "groq-20b", "local-qwen"]
+    - clip-assured: ["deepseek-chat", "clip-fast", "nim-deepseek", "openrouter-free", "cloudflare-free", "groq-20b", "local-qwen"]
+    - groq-20b: ["deepseek-chat", "clip-assured", "clip-fast", "nim-deepseek", "openrouter-free", "cloudflare-free", "local-qwen"]
+    - local-qwen: ["deepseek-chat", "clip-assured", "clip-fast", "nim-deepseek", "openrouter-free", "cloudflare-free", "groq-20b"]
+    - or-ultra-free: ["deepseek-chat", "clip-assured", "clip-fast", "nim-deepseek", "cloudflare-free", "groq-20b", "local-qwen"]
+    - nim-deepseek: ["deepseek-chat", "clip-assured", "clip-fast", "openrouter-free", "cloudflare-free", "groq-20b", "local-qwen"]
+    - deepseek-chat: ["clip-assured", "clip-fast", "nim-deepseek", "openrouter-free", "cloudflare-free", "groq-20b", "local-qwen"]
+    - openrouter-free: ["deepseek-chat", "clip-assured", "clip-fast", "nim-deepseek", "cloudflare-free", "groq-20b", "local-qwen"]
+    - cloudflare-free: ["deepseek-chat", "clip-assured", "clip-fast", "nim-deepseek", "openrouter-free", "groq-20b", "local-qwen"]
+    # Bake-off candidate chains: if a candidate is ever called
+    # directly it walks the full production ladder strongest-first
+    # like every other route. Nothing falls back TO a candidate.
+    - nim-glm-flash: ["deepseek-chat", "clip-assured", "clip-fast", "nim-deepseek", "openrouter-free", "cloudflare-free", "groq-20b", "local-qwen"]
+    - nim-kimi-k2: ["deepseek-chat", "clip-assured", "clip-fast", "nim-deepseek", "openrouter-free", "cloudflare-free", "groq-20b", "local-qwen"]
+    - nim-mistral-large4: ["deepseek-chat", "clip-assured", "clip-fast", "nim-deepseek", "openrouter-free", "cloudflare-free", "groq-20b", "local-qwen"]
+    - nim-qwen3-235b: ["deepseek-chat", "clip-assured", "clip-fast", "nim-deepseek", "openrouter-free", "cloudflare-free", "groq-20b", "local-qwen"]
+    - nim-llama4-maverick: ["deepseek-chat", "clip-assured", "clip-fast", "nim-deepseek", "openrouter-free", "cloudflare-free", "groq-20b", "local-qwen"]
+    - nim-deepseek-pro: ["deepseek-chat", "clip-assured", "clip-fast", "nim-deepseek", "openrouter-free", "cloudflare-free", "groq-20b", "local-qwen"]
+  num_retries: 1
+  cooldown_time: 60
+  # Per-request ceiling (2026-11-19): a task hung 20+ minutes at
+  # "Analyzing content with AI" because one NIM call never returned
+  # and the fallback ladder never ran. A route that does not answer
+  # within 90 s now fails over to the next route in its chain.
+  timeout: 90
+  stream_timeout: 90

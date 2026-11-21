@@ -1,0 +1,190 @@
+{
+ "video": "D:\\SnipNova-Dev\\claude-code\\test-footage\\phase2_src\\dwZK6iQlyEw.mp4",
+ "niche": "meme_comedy",
+ "llm": "ollama:qwen3:8b",
+ "stock_broll": false,
+ "timings": {
+  "transcribe_s": 68.0,
+  "select_s": 0.0
+ },
+ "clips": [
+  {
+   "clip": "clip1.mp4",
+   "render_ok": true,
+   "render_s": 32.8,
+   "source_start": 149.6,
+   "source_end": 190.56,
+   "duration": 41.0,
+   "selection": {
+    "virality": null,
+    "hook_type": "fixed-window",
+    "hook_title": null,
+    "reasoning": "Pipeline check only: sentence-aligned window, not an AI selection."
+   },
+   "decisions": {
+    "segments": 13,
+    "transitions": [],
+    "zooms": 1,
+    "broll_planned": 0,
+    "broll_inserted": 0,
+    "broll": [],
+    "broll_dropped": [],
+    "music": "none",
+    "captions": "large_centre_pop"
+   },
+   "qc": {
+    "ffprobe": [
+     {
+      "codec_type": "video",
+      "width": 1080,
+      "height": 1920
+     },
+     {
+      "codec_type": "audio",
+      "width": null,
+      "height": null
+     }
+    ],
+    "output_seconds": 41.07,
+    "loudness_lufs": -14.2,
+    "black_seconds": 0,
+    "boundary": {
+     "ok": true,
+     "starts_on_sentence": true,
+     "ends_on_sentence": true,
+     "cuts_a_word": false,
+     "first_words": "Of course, he knew how to",
+     "last_words": "home and I used to draw."
+    },
+    "layout": {
+     "broll_applied": false
+    },
+    "reframe_plan": {
+     "attached": true,
+     "delegate": null,
+     "shots": [
+      [
+       "single",
+       "wide_single_subject"
+      ],
+      [
+       "single",
+       "wide_single_subject"
+      ],
+      [
+       "single",
+       "face_blur_avoided"
+      ],
+      [
+       "single",
+       "confident_subject"
+      ]
+     ]
+    }
+   },
+   "frames": [
+    "clip1_8pct.png",
+    "clip1_50pct.png",
+    "clip1_90pct.png"
+   ]
+  },
+  {
+   "clip": "clip2.mp4",
+   "render_ok": true,
+   "render_s": 32.3,
+   "source_start": 359.54,
+   "source_end": 401.39,
+   "duration": 41.8,
+   "selection": {
+    "virality": null,
+    "hook_type": "fixed-window",
+    "hook_title": null,
+    "reasoning": "Pipeline check only: sentence-aligned window, not an AI selection."
+   },
+   "decisions": {
+    "segments": 13,
+    "transitions": [
+     "zoomin"
+    ],
+    "zooms": 1,
+    "broll_planned": 0,
+    "broll_inserted": 0,
+    "broll": [],
+    "broll_dropped": [],
+    "music": "none",
+    "captions": "large_centre_pop"
+   },
+   "qc": {
+    "ffprobe": [
+     {
+      "codec_type": "video",
+      "width": 1080,
+      "height": 1920
+     },
+     {
+      "codec_type": "audio",
+      "width": null,
+      "height": null
+     }
+    ],
+    "output_seconds": 41.53,
+    "loudness_lufs": -14.6,
+    "black_seconds": 0,
+    "boundary": {
+     "ok": true,
+     "starts_on_sentence": true,
+     "ends_on_sentence": true,
+     "cuts_a_word": false,
+     "first_words": "Right? And she's like, hey bro,",
+     "last_words": "nobody respects you for general knowledge."
+    },
+    "layout": {
+     "broll_applied": false
+    },
+    "reframe_plan": {
+     "attached": true,
+     "delegate": null,
+     "shots": [
+      [
+       "single",
+       "confident_subject"
+      ],
+      [
+       "static",
+       "saliency_centroid"
+      ],
+      [
+       "single",
+       "confident_subject"
+      ],
+      [
+       "static",
+       "saliency_centroid"
+      ],
+      [
+       "single",
+       "confident_subject"
+      ],
+      [
+       "static",
+       "saliency_centroid"
+      ],
+      [
+       "single",
+       "confident_subject"
+      ],
+      [
+       "static",
+       "saliency_centroid"
+      ]
+     ]
+    }
+   },
+   "frames": [
+    "clip2_8pct.png",
+    "clip2_50pct.png",
+    "clip2_90pct.png"
+   ]
+  }
+ ]
+}

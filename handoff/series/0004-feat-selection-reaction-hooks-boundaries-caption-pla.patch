@@ -1,0 +1,1068 @@
+From f70aa5f0fa0b5cfd4d705106ecc414c4fa96f9ba Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 12:37:50 +0530
+Subject: [PATCH 04/13] feat(selection): reaction hooks, boundaries, caption
+ plan, edit recommendations, provider audit
+
+GA2 for reaction clips (grounded hooks, word/payoff-aware windows, caption cues
+aligned to reaction and event), advisory edit-recommendation contract, cluster-
+based facecam finder (verified on a real Twitch sample), keyless provider audit
+tool, EVIDENCE.md. test-footage/ is git-ignored.
+---
+ .gitignore                                    |   3 +
+ CHANGELOG.md                                  |   1 +
+ .../src/auto_director/edit_recommendations.py | 171 ++++++++++
+ backend/src/auto_director/reaction_hooks.py   | 237 ++++++++++++++
+ backend/src/auto_director/reaction_moments.py |  38 ++-
+ backend/tests/unit/test_provider_audit.py     |  36 +++
+ .../unit/test_reaction_hooks_and_recs.py      |  91 ++++++
+ tools/gameplay-eval/EVIDENCE.md               |  22 ++
+ tools/provider-audit/audit_providers.py       | 297 ++++++++++++++++++
+ tools/provider-audit/audit_static_report.json |  49 +++
+ 10 files changed, 938 insertions(+), 7 deletions(-)
+ create mode 100644 backend/src/auto_director/edit_recommendations.py
+ create mode 100644 backend/src/auto_director/reaction_hooks.py
+ create mode 100644 backend/tests/unit/test_provider_audit.py
+ create mode 100644 backend/tests/unit/test_reaction_hooks_and_recs.py
+ create mode 100644 tools/gameplay-eval/EVIDENCE.md
+ create mode 100644 tools/provider-audit/audit_providers.py
+ create mode 100644 tools/provider-audit/audit_static_report.json
+
+diff --git a/.gitignore b/.gitignore
+index 6cd6785..840b754 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -28,3 +28,6 @@ docs/youtube-provider-registry*.json
+ 
+ _samples/
+ .env
++
++# local test media (never commit)
++test-footage/
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index e8cb02f..0539729 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,7 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-17
++- **New:** Streamer reaction clips now come with a hook title that describes what actually happened (for example a streamer laughing at a sudden on-screen blast, never an invented event), clip windows that start on a pause and end after the reaction has died down, caption timing and placement notes that follow the reaction and keep clear of the facecam, and editing suggestions (facecam panel, a gentle punch-in on the reaction, trimming dead time). The suggestions are advisory data for the renderer.
+ - **New:** Streamer videos now get their best moments from the streamer's reaction, not just the loudest or most explosive stretch. The picker listens for a raised, shouting or laughing voice (ignoring explosions and engine noise), watches the facecam, and matches each reaction to the on-screen event that caused it. A reaction to something that just happened ranks highest, a funny moment with no visible trigger comes next, and a game event the streamer ignored is no longer picked. Each clip keeps the trigger and the full reaction, and explains why. Set `REACTION_SIGNALS=0` to switch the reaction hints off.
+ - **Improved:** Gameplay and other no-speech videos now get their best moments from what happens on screen, not just from the loudest sound. The picker watches for several visible changes at once — flashes, banners, on-screen events, sustained movement, screen shake — keeps the build-up before the action and ends after the payoff, and explains each pick. A loud sound with nothing visible happening (like a distant explosion) no longer outranks a real moment. Set `FRAME_EVIDENCE_SELECTION=0` to switch back to the older sound-and-scene-cut picker.
+ 
+diff --git a/backend/src/auto_director/edit_recommendations.py b/backend/src/auto_director/edit_recommendations.py
+new file mode 100644
+index 0000000..8ddf9d8
+--- /dev/null
++++ b/backend/src/auto_director/edit_recommendations.py
+@@ -0,0 +1,171 @@
++"""Editing recommendations for reaction clips, emitted as DATA for the renderer.
++
++This lane decides WHAT should happen; the render lane (Lane B) decides HOW.
++Every recommendation carries a confidence and the evidence it rests on, and the
++whole block is advisory: a renderer may ignore any item.
++
++Document contract (``moment["edit_recommendations"]``), times are clip-relative
++seconds:
++
++{
++  "schema_version": 1,
++  "framing": {"mode": "auto|fit|crop", "layout": "facecam_split|game_with_facecam_inset|game_only",
++              "facecam_roi": [x, y, w, h] | null, "reason": str, "confidence": 0-1},
++  "zooms":   [{"start": s, "end": s, "target": "facecam|center", "from_scale": 1.0,
++               "to_scale": 1.12, "ease": "out_cubic", "reason": str}],
++  "pacing":  {"trim_dead_time": [{"start": s, "end": s, "reason": str}],
++              "speed": [{"start": s, "end": s, "rate": 0.6, "reason": str}],
++              "open_on": "reaction|trigger", "reason": str},
++  "sfx_cues": [{"at": s, "kind": "impact|riser", "requires_library": true, "reason": str}]
++}
++"""
++
++from __future__ import annotations
++
++from typing import Any, Optional, Sequence
++
++SCHEMA_VERSION = 1
++_MAX_ZOOM = 1.15
++
++
++def _clip_time(value: Optional[float], window_start: float) -> Optional[float]:
++    return None if value is None else round(max(0.0, float(value) - window_start), 2)
++
++
++def recommend_framing(
++    facecam_roi: Optional[tuple[float, float, float, float]], mtype: str, kind: str
++) -> dict[str, Any]:
++    if facecam_roi is None:
++        return {"mode": "fit", "layout": "game_only", "facecam_roi": None, "confidence": 0.5,
++                "reason": "no facecam found: keep the full game frame so HUD stays readable"}
++    reaction_led = mtype in ("reaction_to_event", "commentary_reaction")
++    layout = "facecam_split" if reaction_led else "game_with_facecam_inset"
++    return {
++        "mode": "fit", "layout": layout, "facecam_roi": [round(v, 3) for v in facecam_roi],
++        "confidence": 0.8 if reaction_led else 0.6,
++        "reason": ("the reaction is the point of the clip: give the facecam its own panel "
++                   "above the game" if reaction_led else
++                   "game-led clip: keep the facecam as a small inset"),
++    }
++
++
++def recommend_zooms(
++    moment: dict[str, Any], window_start: float, window_len: float,
++    facecam_roi: Optional[tuple[float, float, float, float]],
++) -> list[dict[str, Any]]:
++    ev = moment.get("evidence") or {}
++    zooms: list[dict[str, Any]] = []
++    r0, r1 = ev.get("reaction_start_sec"), ev.get("reaction_end_sec")
++    if r0 is None or r1 is None:
++        return zooms
++    a = _clip_time(r0, window_start) or 0.0
++    b = min(window_len, _clip_time(r1, window_start) or 0.0)
++    kind = ev.get("reaction_kind")
++    if b - a >= 0.8:
++        strong = kind in ("shout", "laughter")
++        zooms.append({
++            "start": round(a - 0.15 if a >= 0.15 else a, 2), "end": round(min(window_len, b + 0.4), 2),
++            "target": "facecam" if facecam_roi else "center",
++            "from_scale": 1.0, "to_scale": 1.12 if strong else 1.07, "ease": "out_cubic",
++            "reason": "punch in as the reaction starts, hold through it, release after the payoff"})
++    game = ev.get("game_event")
++    if game:
++        g = _clip_time(game["start_sec"], window_start)
++        if g is not None and g + 0.6 < (a or window_len):
++            zooms.append({
++                "start": g, "end": round(min(window_len, g + 0.9), 2), "target": "center",
++                "from_scale": 1.0, "to_scale": 1.06, "ease": "out_cubic",
++                "reason": "small push on the on-screen trigger so viewers see what the streamer reacts to"})
++    for z in zooms:
++        z["to_scale"] = min(z["to_scale"], _MAX_ZOOM)
++    return zooms
++
++
++def recommend_pacing(
++    moment: dict[str, Any], window_start: float, window_len: float,
++    strength: Optional[Sequence[float]] = None, words: Optional[Sequence[dict[str, Any]]] = None,
++) -> dict[str, Any]:
++    ev = moment.get("evidence") or {}
++    game = ev.get("game_event")
++    r0 = ev.get("reaction_start_sec")
++    pacing: dict[str, Any] = {"trim_dead_time": [], "speed": [], "open_on": "trigger",
++                              "reason": "show the trigger first so the reaction has a cause"}
++    if not game:
++        pacing["open_on"] = "reaction"
++        pacing["reason"] = "no visible trigger: open directly on the reaction"
++    elif r0 is not None and r0 - game["end_sec"] > 4.0:
++        pacing["open_on"] = "reaction"
++        pacing["reason"] = "long gap between trigger and reaction: cold-open on the reaction"
++    # Dead time: stretches of >= 2.5 s with no speech and no reaction/event.
++    if strength is not None and window_len > 6:
++        quiet_start: Optional[int] = None
++        lo, hi = int(window_start), int(window_start + window_len)
++        for t in range(lo, hi + 1):
++            quiet = (t >= len(strength) or strength[t] <= 0)
++            if words:
++                quiet = quiet and not any(float(w["start"]) <= t + 1 and float(w["end"]) >= t for w in words)
++            if game and game["start_sec"] - 1 <= t <= game["end_sec"] + 1:
++                quiet = False
++            if quiet and quiet_start is None:
++                quiet_start = t
++            if (not quiet or t == hi) and quiet_start is not None:
++                if t - quiet_start >= 3:
++                    pacing["trim_dead_time"].append({
++                        "start": round(quiet_start - window_start + 0.4, 2),
++                        "end": round(t - window_start - 0.4, 2),
++                        "reason": "silence with nothing happening on screen"})
++                quiet_start = None
++    if game and ev.get("game_event", {}).get("type") in ("screen_flash_banner", "erratic_motion"):
++        g = _clip_time(game["start_sec"], window_start)
++        if g is not None and r0 is not None and r0 - game["start_sec"] >= 0.8:
++            pacing["speed"].append({
++                "start": g, "end": round(g + 0.8, 2), "rate": 0.6,
++                "reason": "brief slow-down on the trigger before the reaction lands"})
++    return pacing
++
++
++def recommend_sfx(moment: dict[str, Any], window_start: float) -> list[dict[str, Any]]:
++    """Cues only; the app's SFX library ships empty, so every cue says so."""
++    ev = moment.get("evidence") or {}
++    game = ev.get("game_event")
++    if not game:
++        return []
++    return [{"at": _clip_time(game["start_sec"], window_start), "kind": "impact",
++             "requires_library": True, "reason": "accent the on-screen trigger"}]
++
++
++def recommend_edits(
++    moment: dict[str, Any], window_start: float, window_end: float, *,
++    facecam_roi: Optional[tuple[float, float, float, float]] = None,
++    strength: Optional[Sequence[float]] = None,
++    words: Optional[Sequence[dict[str, Any]]] = None,
++) -> dict[str, Any]:
++    ev = moment.get("evidence") or {}
++    mtype = ev.get("moment_type", "")
++    window_len = max(0.0, window_end - window_start)
++    return {
++        "schema_version": SCHEMA_VERSION,
++        "framing": recommend_framing(facecam_roi, mtype, ev.get("reaction_kind", "")),
++        "zooms": recommend_zooms(moment, window_start, window_len, facecam_roi),
++        "pacing": recommend_pacing(moment, window_start, window_len, strength, words),
++        "sfx_cues": recommend_sfx(moment, window_start),
++    }
++
++
++def attach_recommendations(
++    moments: list[dict[str, Any]], *,
++    facecam_roi: Optional[tuple[float, float, float, float]] = None,
++    strength: Optional[Sequence[float]] = None,
++    words: Optional[Sequence[dict[str, Any]]] = None,
++) -> list[dict[str, Any]]:
++    def sec(label: str) -> float:
++        m, x = label.split(":")
++        return int(m) * 60 + int(x)
++
++    for m in moments:
++        if "moment_type" not in (m.get("evidence") or {}):
++            continue
++        m["edit_recommendations"] = recommend_edits(
++            m, sec(m["start_time"]), sec(m["end_time"]),
++            facecam_roi=facecam_roi, strength=strength, words=words)
++    return moments
+diff --git a/backend/src/auto_director/reaction_hooks.py b/backend/src/auto_director/reaction_hooks.py
+new file mode 100644
+index 0000000..d1017dd
+--- /dev/null
++++ b/backend/src/auto_director/reaction_hooks.py
+@@ -0,0 +1,237 @@
++"""GA2 for reaction clips: grounded hooks, payoff-aware boundaries, caption sync.
++
++Everything here is derived from MEASURED evidence on a moment (the
++``evidence`` block written by ``reaction_moments``) and, when available, the
++transcript's word timings. Nothing names a game, a weapon or an event the
++pictures and sound did not show; a hook never claims more than the evidence
++supports ("a sudden on-screen blast", not "a car explodes").
++
++Pure functions, no I/O: the pipeline and the tests call them directly.
++"""
++
++from __future__ import annotations
++
++import re
++import zlib
++from typing import Any, Optional, Sequence
++
++_TRIGGER_PHRASE = {
++    "screen_flash_banner": "a sudden on-screen blast",
++    "hud_event_streak": "a burst of on-screen action",
++    "erratic_motion": "everything going wildly wrong",
++    "sustained_escalation": "an intense on-screen sequence",
++    "visual_change": "something unexpected on screen",
++}
++_EVENT_HOOKS = {
++    "laughter": ("Streamer loses it laughing at {t}", "Streamer can't stop laughing at {t}",
++                 "Streamer cracks up over {t}"),
++    "shout": ("Streamer screams at {t}", "Streamer erupts after {t}", "Streamer panics at {t}"),
++    "vocal_burst": ("Streamer reacts loudly to {t}", "Streamer blurts out at {t}",
++                    "Streamer is stunned by {t}"),
++}
++_COMMENTARY_HOOKS = {
++    "laughter": ("Streamer bursts out laughing mid-stream", "Streamer completely loses it laughing",
++                 "Streamer cracks up out of nowhere"),
++    "shout": ("Streamer suddenly erupts mid-commentary", "Streamer's wild outburst out of nowhere",
++              "Streamer goes off unexpectedly"),
++    "vocal_burst": ("Streamer's unexpected outburst", "Streamer blurts out something unexpected",
++                    "Streamer reacts out of nowhere"),
++}
++_SILENT_HOOKS = ("Streamer's silent reaction says it all", "Streamer goes quiet at the worst moment")
++
++_PROFANITY = re.compile(r"\b(fuck\w*|shit\w*|bitch\w*|asshole|damn|crap|dick)\b", re.I)
++
++
++def mask_profanity(text: str, mode: str = "mask") -> str:
++    """User-configurable profanity handling: keep | mask | drop."""
++    if mode == "keep":
++        return text
++    if mode == "drop":
++        return re.sub(r"\s{2,}", " ", _PROFANITY.sub("", text)).strip()
++    return _PROFANITY.sub(lambda m: m.group(0)[0] + "*" * (len(m.group(0)) - 1), text)
++
++
++def _pick(options: Sequence[str], seed: str) -> str:
++    return options[zlib.crc32(seed.encode()) % len(options)]
++
++
++def reaction_hook_title(moment: dict[str, Any]) -> Optional[str]:
++    """A 3–9 word third-person hook grounded in the moment's evidence, or None
++    when the moment is a plain gameplay pick (those keep their own hooks)."""
++    ev = moment.get("evidence") or {}
++    mtype = ev.get("moment_type")
++    if mtype is None:
++        return None
++    kind = ev.get("reaction_kind") or "vocal_burst"
++    seed = f"{moment.get('start_time')}{mtype}{kind}"
++    if mtype == "reaction_to_event":
++        game = ev.get("game_event") or {}
++        trigger = _TRIGGER_PHRASE.get(game.get("type"), _TRIGGER_PHRASE["visual_change"])
++        title = _pick(_EVENT_HOOKS.get(kind, _EVENT_HOOKS["vocal_burst"]), seed).format(t=trigger)
++    elif mtype == "commentary_reaction":
++        title = _pick(_COMMENTARY_HOOKS.get(kind, _COMMENTARY_HOOKS["vocal_burst"]), seed)
++    elif mtype == "silent_facecam":
++        title = _pick(_SILENT_HOOKS, seed)
++    else:
++        return None
++    return title if 3 <= len(title.split()) <= 9 else " ".join(title.split()[:9])
++
++
++def reaction_quote(words: Sequence[dict[str, Any]], start: float, end: float,
++                   profanity: str = "mask", max_words: int = 6) -> Optional[str]:
++    """The streamer's own words at the reaction (verbatim, never rewritten).
++    Returns None when nobody spoke intelligibly there."""
++    spoken = [w for w in words if start - 0.2 <= float(w["start"]) <= end + 0.2]
++    if not spoken:
++        return None
++    text = " ".join(str(w["text"]) for w in spoken[:max_words]).strip()
++    return mask_profanity(text, profanity) or None
++
++
++# --------------------------------------------------------------------------
++# Boundaries
++# --------------------------------------------------------------------------
++
++def refine_window(
++    start: float,
++    end: float,
++    reaction_start: float,
++    reaction_end: float,
++    duration: float,
++    words: Optional[Sequence[dict[str, Any]]] = None,
++    strength: Optional[Sequence[float]] = None,
++) -> tuple[float, float, list[str]]:
++    """Snap a window to speech boundaries and finish on the payoff.
++
++    * never starts or ends inside a spoken word;
++    * starts on a pause (>= 0.3 s gap) found within 2.5 s before ``start``;
++    * ends after the reaction has really died down: it extends while the
++      reaction-strength series is still active (up to 4 s) and then past the
++      last word that begins within a second of that point;
++    * always keeps >= 2 s after the reaction ends.
++    Returns (start, end, notes) — notes name every adjustment made.
++    """
++    notes: list[str] = []
++    s, e = start, end
++    if strength is not None and len(strength):
++        t = int(reaction_end)
++        extra = 0
++        while extra < 4 and t + extra < len(strength) and strength[t + extra] > 0:
++            extra += 1
++        if extra and reaction_end + extra + 1.5 > e:
++            e = reaction_end + extra + 1.5
++            notes.append(f"extended end {extra}s: reaction still active")
++    if e < reaction_end + 2.0:
++        e = reaction_end + 2.0
++        notes.append("kept 2s of payoff after the reaction")
++    if words:
++        ws = [(float(w["start"]), float(w["end"])) for w in words]
++        for ws_, we_ in ws:
++            if ws_ < s < we_:
++                s = ws_
++                notes.append("moved start to the start of the word it cut")
++                break
++        else:
++            gaps = [ws[i + 1][0] for i in range(len(ws) - 1)
++                    if ws[i + 1][0] - ws[i][1] >= 0.3 and s - 2.5 <= ws[i + 1][0] <= s]
++            if gaps:
++                s = max(gaps)
++                notes.append("started on a pause between sentences")
++        for ws_, we_ in ws:
++            if ws_ < e < we_:
++                e = we_ + 0.25
++                notes.append("moved end past the word it cut")
++                break
++    return max(0.0, s), min(float(duration), e), notes
++
++
++# --------------------------------------------------------------------------
++# Caption synchronisation
++# --------------------------------------------------------------------------
++
++def caption_plan(
++    moment: dict[str, Any],
++    window_start: float,
++    words: Optional[Sequence[dict[str, Any]]] = None,
++    facecam_roi: Optional[tuple[float, float, float, float]] = None,
++    profanity: str = "mask",
++) -> dict[str, Any]:
++    """Caption timing/placement data for the renderer (times are clip-relative).
++
++    * emphasis spans sit on the REACTION (measured voice onset), not on the
++      loudest game sound;
++    * an on-screen-event cue is aligned to when the event appears on screen;
++    * placement keeps captions off the facecam rectangle.
++    Words are never altered except for the user's profanity setting.
++    """
++    ev = moment.get("evidence") or {}
++    r0 = ev.get("reaction_start_sec")
++    r1 = ev.get("reaction_end_sec")
++    plan: dict[str, Any] = {"profanity_mode": profanity, "emphasis": [], "event_cue": None,
++                            "words_modified": profanity != "keep"}
++    if r0 is not None and r1 is not None:
++        plan["emphasis"] = [{
++            "start": round(max(0.0, r0 - window_start), 2),
++            "end": round(max(0.0, r1 - window_start), 2),
++            "style": "laugh" if ev.get("reaction_kind") == "laughter" else "shout",
++            "reason": "measured reaction span",
++        }]
++        if words:
++            plan["emphasis_words"] = [
++                {"text": mask_profanity(str(w["text"]), profanity),
++                 "start": round(float(w["start"]) - window_start, 2),
++                 "end": round(float(w["end"]) - window_start, 2)}
++                for w in words if r0 - 0.2 <= float(w["start"]) <= r1 + 0.2]
++    game = ev.get("game_event")
++    if game:
++        plan["event_cue"] = {"at": round(max(0.0, game["start_sec"] - window_start), 2),
++                             "align_to": "event_start", "not_audio_peak": True}
++    plan["position"] = caption_position(facecam_roi)
++    return plan
++
++
++def caption_position(roi: Optional[tuple[float, float, float, float]]) -> dict[str, Any]:
++    """Where captions should sit so they do not cover the facecam or the
++    bottom-of-screen HUD. Default is the lower-middle band the app uses."""
++    if roi is None:
++        return {"vertical": "lower_third", "avoid": ["bottom_hud"]}
++    x, y, w, h = roi
++    centre_y = y + h / 2
++    return {"vertical": "upper_third" if centre_y > 0.5 else "lower_third",
++            "avoid": ["facecam", "bottom_hud"], "facecam_roi": [round(v, 3) for v in roi]}
++
++
++def apply_ga2(
++    moments: list[dict[str, Any]],
++    duration: float,
++    *,
++    words: Optional[Sequence[dict[str, Any]]] = None,
++    strength: Optional[Sequence[float]] = None,
++    facecam_roi: Optional[tuple[float, float, float, float]] = None,
++    profanity: str = "mask",
++) -> list[dict[str, Any]]:
++    """Fill hook, refined boundaries and caption plan on reaction moments."""
++    from .gameplay_moments import _mmss
++
++    def sec(label: str) -> float:
++        m, x = label.split(":")
++        return int(m) * 60 + int(x)
++
++    for m in moments:
++        ev = m.get("evidence") or {}
++        if "moment_type" not in ev:
++            continue
++        s, e, notes = refine_window(
++            sec(m["start_time"]), sec(m["end_time"]),
++            ev["reaction_start_sec"], ev["reaction_end_sec"], duration, words, strength)
++        m["start_time"], m["end_time"] = _mmss(s), _mmss(e)
++        ev["boundary_notes"] = notes
++        title = reaction_hook_title(m)
++        if title and not m.get("hook_title"):
++            m["hook_title"] = title
++        if words:
++            q = reaction_quote(words, ev["reaction_start_sec"], ev["reaction_end_sec"], profanity)
++            if q:
++                ev["hook_quote"] = q
++        m["caption_plan"] = caption_plan(m, s, words, facecam_roi, profanity)
++    return moments
+diff --git a/backend/src/auto_director/reaction_moments.py b/backend/src/auto_director/reaction_moments.py
+index d9ff773..a955454 100644
+--- a/backend/src/auto_director/reaction_moments.py
++++ b/backend/src/auto_director/reaction_moments.py
+@@ -220,16 +220,29 @@ def find_facecam(video_path: Path | str, duration: float, samples: int = 14) ->
+             continue
+         frame = np.frombuffer(proc.stdout, dtype=np.uint8).reshape(h, w, 3)
+         probed += 1
+-        faces = det.detect(frame)
+-        if faces:
+-            x, y, fw, fh, _score = max(faces, key=lambda f: f[4])
++        for x, y, fw, fh, _score in det.detect(frame):
+             boxes.append((x / w, y / h, fw / w, fh / h))
+-    if probed == 0 or len(boxes) < max(3, int(0.35 * probed)):
++    if probed == 0:
+         return None
+-    arr = np.array(boxes)
+-    cx, cy = arr[:, 0] + arr[:, 2] / 2, arr[:, 1] + arr[:, 3] / 2
+-    if np.std(cx) > 0.08 or np.std(cy) > 0.08:
++    # A facecam is the face that sits in the SAME place in many frames; in-game
++    # characters wander. Cluster face centres and take the busiest, stable one.
++    clusters: list[list[tuple[float, float, float, float]]] = []
++    for bx in boxes:
++        cx, cy = bx[0] + bx[2] / 2, bx[1] + bx[3] / 2
++        for cl in clusters:
++            ccx = float(np.median([c[0] + c[2] / 2 for c in cl]))
++            ccy = float(np.median([c[1] + c[3] / 2 for c in cl]))
++            if abs(cx - ccx) < 0.05 and abs(cy - ccy) < 0.05:
++                cl.append(bx)
++                break
++        else:
++            clusters.append([bx])
++    if not clusters:
++        return None
++    best = max(clusters, key=len)
++    if len(best) < max(3, int(0.35 * probed)):
+         return None
++    arr = np.array(best)
+     x0, y0 = float(np.median(arr[:, 0])), float(np.median(arr[:, 1]))
+     fw, fh = float(np.median(arr[:, 2])), float(np.median(arr[:, 3]))
+     # Pad: heads move; the reaction is the whole upper body.
+@@ -410,6 +423,8 @@ def select_streamer_moments(
+     face: Optional[np.ndarray] = None,
+     facecam_roi: Optional[tuple[float, float, float, float]] = None,
+     game_evidence: Optional[dict[str, np.ndarray]] = None,
++    words: Optional[list[dict[str, Any]]] = None,
++    profanity: str = "mask",
+     reason_context: str = "streamer reaction analysis",
+ ) -> list[dict[str, Any]]:
+     """Moments where a streamer's reaction makes the clip, with reasons.
+@@ -487,6 +502,15 @@ def select_streamer_moments(
+         })
+         if len(moments) >= target_count:
+             break
++    try:
++        from .edit_recommendations import attach_recommendations
++        from .reaction_hooks import apply_ga2
++
++        apply_ga2(moments, duration, words=words, strength=strength,
++                  facecam_roi=roi, profanity=profanity)
++        attach_recommendations(moments, facecam_roi=roi, strength=strength, words=words)
++    except Exception:
++        logger.warning("Reaction hook/recommendation pass failed", exc_info=True)
+     moments.sort(key=lambda m: m["start_time"])
+     return moments
+ 
+diff --git a/backend/tests/unit/test_provider_audit.py b/backend/tests/unit/test_provider_audit.py
+new file mode 100644
+index 0000000..d40fbfe
+--- /dev/null
++++ b/backend/tests/unit/test_provider_audit.py
+@@ -0,0 +1,36 @@
++"""Provider audit helpers: pure logic only, no network, no keys."""
++import importlib.util
++from pathlib import Path
++
++_spec = importlib.util.spec_from_file_location(
++    "audit_providers", Path(__file__).resolve().parents[3] / "tools" / "provider-audit" / "audit_providers.py")
++audit = importlib.util.module_from_spec(_spec)
++_spec.loader.exec_module(audit)
++
++
++def test_classify_statuses():
++    c = audit.classify
++    assert (c(200), c(401), c(402), c(429), c(404), c(503), c(0)) == (
++        "OK", "AUTH_FAILED", "OUT_OF_CREDIT", "RATE_LIMITED_OR_QUOTA", "NOT_FOUND", "PROVIDER_ERROR", "UNREACHABLE")
++
++
++def test_placeholder_keys_count_as_missing():
++    env = {"GROQ_API_KEY": "changeme", "NVIDIA_API_KEY": "nvapi-realish", "X": ""}
++    assert not audit.present(env, "GROQ_API_KEY") and audit.present(env, "NVIDIA_API_KEY") and not audit.present(env, "X")
++
++
++def test_gateway_config_parses_ladder_and_static_audit_has_no_failures():
++    rows = audit.static_audit()
++    assert not [r for r in rows if r["status"] == "FAIL"], rows
++    entries = audit.parse_gateway_config((audit.ROOT / "litellm_config.yaml").read_text(encoding="utf-8"))
++    names = {e["name"] for e in entries}
++    assert {"deepseek-chat", "clip-assured", "local-qwen", "cloudflare-free"} <= names
++    assert all(not e["model"].startswith("openrouter/") or e["model"].endswith(":free") for e in entries)
++
++
++def test_report_never_contains_key_values(tmp_path, monkeypatch):
++    secret = "sk-SUPERSECRET-1234567890"
++    monkeypatch.setattr(audit, "http", lambda *a, **k: (401, "bad", {}, 0.01))
++    rows = audit.live_audit({"GROQ_API_KEY": secret, "DEEPSEEK_API_KEY": secret}, False, False)
++    assert secret not in str(rows)
++    assert [r for r in rows if r["provider"] == "groq"][0]["verdict"] == "AUTH_FAILED"
+diff --git a/backend/tests/unit/test_reaction_hooks_and_recs.py b/backend/tests/unit/test_reaction_hooks_and_recs.py
+new file mode 100644
+index 0000000..632b865
+--- /dev/null
++++ b/backend/tests/unit/test_reaction_hooks_and_recs.py
+@@ -0,0 +1,91 @@
++"""GA2 hooks/boundaries/captions and editing recommendations for reaction clips."""
++from src.auto_director import edit_recommendations as er
++from src.auto_director import reaction_hooks as rh
++
++
++def _moment(mtype="reaction_to_event", kind="laughter", game="screen_flash_banner", r=(40.0, 46.0), g=(36.0, 39.0)):
++    return {"start_time": "00:32", "end_time": "00:50", "evidence": {
++        "moment_type": mtype, "reaction_kind": kind,
++        "reaction_start_sec": r[0], "reaction_end_sec": r[1],
++        "game_event": None if game is None else {"start_sec": g[0], "end_sec": g[1], "type": game}}}
++
++
++def test_event_hook_is_grounded_third_person_and_short():
++    t = rh.reaction_hook_title(_moment())
++    assert 3 <= len(t.split()) <= 9 and t.startswith("Streamer")
++    assert "on-screen" in t and " I " not in f" {t} "
++
++
++def test_hook_never_names_game_events_the_pictures_did_not_show():
++    for game in ("screen_flash_banner", "hud_event_streak", "erratic_motion", "visual_change", None):
++        t = rh.reaction_hook_title(_moment(game=game, mtype="reaction_to_event" if game else "commentary_reaction"))
++        assert not any(w in t.lower() for w in ("gta", "car", "explod", "kill", "crash", "police", "heist"))
++
++
++def test_commentary_has_no_invented_trigger():
++    t = rh.reaction_hook_title(_moment(mtype="commentary_reaction", game=None))
++    assert "on-screen" not in t
++
++
++def test_hooks_vary_across_clips():
++    titles = set()
++    for i in range(12):
++        m = _moment(); m["start_time"] = f"0{i % 10}:{i:02d}"
++        titles.add(rh.reaction_hook_title(m))
++    assert len(titles) >= 2
++
++
++def test_plain_gameplay_moment_gets_no_reaction_hook():
++    assert rh.reaction_hook_title({"evidence": {"detector": "frame_evidence_v1"}}) is None
++
++
++def test_profanity_modes_and_verbatim_quote():
++    words = [{"text": "oh", "start": 40.0, "end": 40.2}, {"text": "shit", "start": 40.3, "end": 40.6}]
++    assert rh.reaction_quote(words, 40, 46, "keep") == "oh shit"
++    assert rh.reaction_quote(words, 40, 46, "mask") == "oh s***"
++    assert rh.reaction_quote(words, 40, 46, "drop") == "oh"
++    assert rh.reaction_quote([], 40, 46) is None
++
++
++def test_boundaries_never_cut_a_word_and_keep_the_payoff():
++    words = [{"text": "wait", "start": 31.5, "end": 32.4}, {"text": "what", "start": 32.5, "end": 33.0},
++             {"text": "haha", "start": 45.6, "end": 46.9}]
++    s, e, notes = rh.refine_window(32.0, 46.3, 40.0, 46.0, 120.0, words)
++    assert s == 31.5 and e >= 46.9 and notes
++
++
++def test_boundaries_extend_while_reaction_still_active():
++    strength = [0.0] * 120
++    for t in range(44, 51):
++        strength[t] = 5.0
++    s, e, notes = rh.refine_window(32.0, 48.0, 44.0, 47.0, 120.0, None, strength)
++    assert e >= 50 + 1.5 and any("extended" in n for n in notes)
++
++
++def test_caption_plan_puts_emphasis_on_reaction_and_event_cue_on_event():
++    words = [{"text": "no", "start": 40.1, "end": 40.3}]
++    plan = rh.caption_plan(_moment(), 32.0, words, (0.7, 0.6, 0.25, 0.3), "keep")
++    assert plan["emphasis"][0]["start"] == 8.0 and plan["emphasis"][0]["style"] == "laugh"
++    assert plan["event_cue"]["at"] == 4.0 and plan["event_cue"]["not_audio_peak"] is True
++    assert plan["position"]["vertical"] == "upper_third" and "facecam" in plan["position"]["avoid"]
++    assert plan["emphasis_words"][0]["text"] == "no"
++
++
++def test_recommendations_contract_and_bounds():
++    m = _moment()
++    rec = er.recommend_edits(m, 32.0, 50.0, facecam_roi=(0.7, 0.6, 0.25, 0.3))
++    assert rec["schema_version"] == 1
++    assert rec["framing"]["layout"] == "facecam_split" and rec["framing"]["facecam_roi"]
++    assert all(z["to_scale"] <= 1.15 and z["start"] >= 0 and z["end"] <= 18.0 for z in rec["zooms"])
++    assert rec["pacing"]["open_on"] == "trigger" and rec["sfx_cues"][0]["requires_library"] is True
++
++
++def test_no_facecam_means_fit_game_only():
++    rec = er.recommend_edits(_moment(), 32.0, 50.0, facecam_roi=None)
++    assert rec["framing"]["layout"] == "game_only" and rec["framing"]["mode"] == "fit"
++    assert all(z["target"] == "center" for z in rec["zooms"])
++
++
++def test_no_trigger_opens_on_reaction():
++    rec = er.recommend_edits(_moment(mtype="commentary_reaction", game=None), 32.0, 50.0)
++    assert rec["pacing"]["open_on"] == "reaction" and rec["sfx_cues"] == []
+diff --git a/tools/gameplay-eval/EVIDENCE.md b/tools/gameplay-eval/EVIDENCE.md
+new file mode 100644
+index 0000000..329372f
+--- /dev/null
++++ b/tools/gameplay-eval/EVIDENCE.md
+@@ -0,0 +1,22 @@
++# Lane A evidence (streamer reactions) — 2026-11-17
++
++Labels: **SYNTHETIC** = generated by tools/gameplay-eval/make_*.py, built and tuned by the same author.
++**REAL** = real Twitch VOD sample, private, never committed (test-footage/ is git-ignored).
++
++## SYNTHETIC matrix (326 s, 8 scenarios, cartoon facecam, synthetic voices)
++| selector | positives found (of 5) | false picks |
++|---|---|---|
++| V9 audio-peak picker | 3 | 3 |
++| new reaction detector, tuning set (variant 0) | 4 | 0 |
++| new reaction detector, held-out set (variant 1) | 5 | 0 |
++Facecam position was supplied for the synthetic runs (YuNet does not recognise a cartoon face).
++
++## REAL sample (Twitch VOD, Spanish-speaking streamer, GTA V with facecam; 4 x 5 min + 4 min, 360p)
++* Facecam auto-found on the real streamer (after switching to cluster-based selection; the first version failed here).
++* Reaction picks (by the detector): 3 in ~20 min of footage, plus ignored silent game events.
++* Visual check of the facecam frames at 2 picks: arms-up celebration + laugh; face-palm + animated explaining -> both look like real reactions.
++  Transcript of the second: "...estoy completamente loco chavales" (faster-whisper base, Spanish).
++* Observed failure mode: in one pick the audio was GAME cutscene dialogue (English), not the streamer; the pick was still right
++  because the facecam showed a real reaction, but voice-only evidence can be fooled by game dialogue.
++* NOT measured: precision/recall on real footage (no labels), recall of missed reactions, other games/streamers/languages.
++* Timing: 13-23 s per 300 s of video on this laptop CPU path (voice + facecam + frame evidence); memory/VRAM not measured.
+diff --git a/tools/provider-audit/audit_providers.py b/tools/provider-audit/audit_providers.py
+new file mode 100644
+index 0000000..4b4e508
+--- /dev/null
++++ b/tools/provider-audit/audit_providers.py
+@@ -0,0 +1,297 @@
++"""Keyless-safe provider audit for SnipNova's AI ladder.
++
++Never prints, logs or writes a key value. Only reports present / missing,
++status codes and a verdict. Free checks only: model-list and key-validity
++endpoints cost nothing. A real inference call is OFF unless you pass --infer,
++and the metered DeepSeek route additionally needs --allow-metered.
++
++  python audit_providers.py --static                # repo/config checks, no network
++  python audit_providers.py --live                  # key + model checks (free endpoints)
++  python audit_providers.py --live --infer          # + one 1-token request per FREE provider
++  python audit_providers.py --live --infer --allow-metered   # + DeepSeek (spends a fraction of a cent)
++  python audit_providers.py --env-file C:\\path\\.env  # read keys from a file instead of the environment
++
++Run it on the machine that holds the real keys (the installed app's .env).
++Exit code 0 = no FAIL. Output: a table plus audit_report.json (no secrets).
++"""
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import re
++import sys
++import time
++import urllib.error
++import urllib.request
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[2]
++
++# name -> (env vars, model-list URL builder, free?, notes)
++PROVIDERS = {
++    "groq": dict(env=["GROQ_API_KEY"], models="https://api.groq.com/openai/v1/models",
++                 chat="https://api.groq.com/openai/v1/chat/completions", cost="free-tier",
++                 site="https://console.groq.com", card=False,
++                 limits="free tier has per-minute and per-day request/token limits that change; check console.groq.com/settings/limits"),
++    "nvidia": dict(env=["NVIDIA_API_KEY"], models="https://integrate.api.nvidia.com/v1/models",
++                   chat="https://integrate.api.nvidia.com/v1/chat/completions", cost="free-credits",
++                   site="https://build.nvidia.com", card=False,
++                   limits="NIM trial access is rate-limited (requests per minute) and may need NVIDIA Developer Program signup"),
++    "openrouter": dict(env=["OPENROUTER_API_KEY"], models="https://openrouter.ai/api/v1/models",
++                       chat="https://openrouter.ai/api/v1/chat/completions", cost="free-only-with-:free-slugs",
++                       site="https://openrouter.ai", card=False,
++                       limits="free (:free) models: low daily request cap unless credits were ever bought; verify at openrouter.ai/settings/credits"),
++    "deepseek": dict(env=["DEEPSEEK_API_KEY"], models="https://api.deepseek.com/models",
++                     chat="https://api.deepseek.com/chat/completions", cost="METERED",
++                     site="https://platform.deepseek.com", card=False,
++                     limits="pay-as-you-go balance; requests fail with 402 when the balance is 0"),
++    "cloudflare": dict(env=["CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID"], models=None, chat=None,
++                       cost="free-allocation", site="https://dash.cloudflare.com", card=False,
++                       limits="Workers AI free allocation is 10,000 Neurons/day on the Workers Free plan"),
++    "huggingface": dict(env=["HF_TOKEN"], models=None, chat=None, cost="free", site="https://huggingface.co",
++                        card=False, limits="needed only for gated models (e.g. pyannote terms click)"),
++    "ollama": dict(env=[], models="http://localhost:11434/api/tags", chat=None, cost="local-free",
++                   site="https://ollama.com", card=False, limits="runs on your GPU/CPU; qwen3:8b needs ~5-6 GB"),
++}
++
++
++def load_env(path: str | None) -> dict[str, str]:
++    env = dict(os.environ)
++    if path:
++        for line in Path(path).read_text(encoding="utf-8", errors="ignore").splitlines():
++            m = re.match(r"\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$", line)
++            if m and not line.lstrip().startswith("#"):
++                env[m.group(1)] = m.group(2).strip().strip('"').strip("'")
++    return env
++
++
++def present(env: dict[str, str], name: str) -> bool:
++    v = env.get(name, "")
++    return bool(v) and v.lower() not in ("changeme", "your_key_here", "xxx")
++
++
++def http(url: str, key: str | None = None, body: dict | None = None, timeout: int = 20, headers: dict | None = None):
++    req = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(),
++                                 method="POST" if body is not None else "GET")
++    req.add_header("User-Agent", "snipnova-provider-audit")
++    if body is not None:
++        req.add_header("Content-Type", "application/json")
++    if key:
++        req.add_header("Authorization", f"Bearer {key}")
++    for k, v in (headers or {}).items():
++        req.add_header(k, v)
++    t0 = time.time()
++    try:
++        with urllib.request.urlopen(req, timeout=timeout) as r:
++            return r.status, r.read().decode("utf-8", "ignore"), dict(r.headers), time.time() - t0
++    except urllib.error.HTTPError as e:
++        return e.code, e.read().decode("utf-8", "ignore")[:400], dict(e.headers or {}), time.time() - t0
++    except Exception as e:  # network down, DNS, timeout
++        return 0, f"{type(e).__name__}", {}, time.time() - t0
++
++
++def classify(status: int, body: str = "") -> str:
++    """Plain verdict for an HTTP status. Pure, unit-tested."""
++    if status == 0:
++        return "UNREACHABLE"
++    if 200 <= status < 300:
++        return "OK"
++    if status in (401, 403):
++        return "AUTH_FAILED"
++    if status == 402:
++        return "OUT_OF_CREDIT"
++    if status == 429:
++        return "RATE_LIMITED_OR_QUOTA"
++    if status == 404:
++        return "NOT_FOUND"
++    if status >= 500:
++        return "PROVIDER_ERROR"
++    return f"HTTP_{status}"
++
++
++# ---- static audit ---------------------------------------------------------
++
++def parse_gateway_config(text: str) -> list[dict]:
++    """Minimal parser for litellm_config.yaml's model_list (no PyYAML needed)."""
++    entries, cur = [], None
++    for raw in text.splitlines():
++        line = raw.split("#", 1)[0].rstrip()
++        m = re.match(r"\s*-\s*model_name:\s*(\S+)", line)
++        if m:
++            cur = {"name": m.group(1), "model": "", "key_env": None, "api_base": None}
++            entries.append(cur)
++            continue
++        if cur is None:
++            continue
++        for field, rx in (("model", r"\s*model:\s*(\S+)"), ("api_base", r"\s*api_base:\s*(\S+)"),
++                          ("key_env", r"\s*api_key:\s*os\.environ/(\S+)")):
++            mm = re.match(rx, line)
++            if mm and not cur.get(field):
++                cur[field] = mm.group(1)
++    return entries
++
++
++def static_audit() -> list[dict]:
++    out = []
++    cfg = ROOT / "litellm_config.yaml"
++    if not cfg.exists():
++        return [dict(check="gateway config", status="FAIL", detail="litellm_config.yaml not found")]
++    entries = parse_gateway_config(cfg.read_text(encoding="utf-8"))
++    out.append(dict(check="gateway routes parsed", status="OK", detail=f"{len(entries)} routes: " + ", ".join(e["name"] for e in entries)))
++    for e in entries:
++        m = e["model"].lower()
++        if "gemini" in m or "gemini" in e["name"].lower():
++            out.append(dict(check=f"{e['name']}: no Gemini", status="FAIL", detail="Gemini route present (banned)"))
++        if m.startswith("openrouter/") and not m.endswith(":free"):
++            out.append(dict(check=f"{e['name']}: OpenRouter free only", status="FAIL", detail=f"paid slug {e['model']}"))
++        if e["key_env"] and e["key_env"] not in sum((p["env"] for p in PROVIDERS.values()), []):
++            out.append(dict(check=f"{e['name']}: key variable known", status="WARN", detail=f"reads {e['key_env']} (not in audit table)"))
++    names = [e["name"] for e in entries]
++    expect = ["deepseek-chat", "clip-assured", "clip-fast", "nim-deepseek", "openrouter-free", "cloudflare-free", "groq-20b", "local-qwen"]
++    missing = [n for n in expect if n not in names]
++    out.append(dict(check="ladder routes present", status="OK" if not missing else "FAIL",
++                    detail="all 8 ladder routes defined" if not missing else f"missing: {missing}"))
++    # where do app services read the keys?
++    readers = {}
++    for p in (ROOT / "backend" / "src").rglob("*.py"):
++        t = p.read_text(encoding="utf-8", errors="ignore")
++        for var in ("GROQ_API_KEY", "DEEPSEEK_API_KEY", "NVIDIA_API_KEY", "OPENROUTER_API_KEY", "CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "HF_TOKEN"):
++            if var in t:
++                readers.setdefault(var, []).append(p.name)
++    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8", errors="ignore") + (ROOT / "compose.override.yml").read_text(encoding="utf-8", errors="ignore")
++    for var in ("GROQ_API_KEY", "DEEPSEEK_API_KEY", "NVIDIA_API_KEY", "OPENROUTER_API_KEY", "CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "HF_TOKEN"):
++        in_compose = var in compose
++        in_cfg = any(e["key_env"] == var for e in entries)
++        used = in_cfg or var in readers
++        out.append(dict(check=f"{var} wired", status="OK" if (in_compose and used) else "WARN",
++                        detail=f"gateway-config={in_cfg} app-code={'yes' if var in readers else 'no'} compose-passes-it={in_compose}"))
++    return out
++
++
++# ---- live audit -----------------------------------------------------------
++
++def gateway_models() -> dict[str, list[str]]:
++    cfg = ROOT / "litellm_config.yaml"
++    by = {"groq": [], "nvidia": [], "openrouter": [], "deepseek": [], "cloudflare": []}
++    for e in parse_gateway_config(cfg.read_text(encoding="utf-8")):
++        m = e["model"]
++        if m.startswith("groq/"):
++            by["groq"].append(m[len("groq/"):])
++        elif m.startswith("openrouter/"):
++            by["openrouter"].append(m[len("openrouter/"):])
++        elif (e.get("api_base") or "").startswith("https://integrate.api.nvidia.com"):
++            by["nvidia"].append(m[len("openai/"):])
++        elif (e.get("api_base") or "").startswith("https://api.deepseek.com"):
++            by["deepseek"].append(m[len("openai/"):])
++        elif "cloudflare" in m:
++            by["cloudflare"].append(m)
++    return by
++
++
++def live_audit(env: dict[str, str], infer: bool, allow_metered: bool) -> list[dict]:
++    rows = []
++    wanted = gateway_models()
++    for name, p in PROVIDERS.items():
++        row = dict(provider=name, cost=p["cost"], site=p["site"], card_required=p["card"], limits=p["limits"],
++                   env={v: ("present" if present(env, v) else "MISSING") for v in p["env"]})
++        if p["env"] and not all(present(env, v) for v in p["env"]):
++            row.update(verdict="KEY_MISSING", detail=f"set {', '.join(p['env'])} in the installed app's .env")
++            rows.append(row)
++            continue
++        key = env.get(p["env"][0]) if p["env"] else None
++        if name == "cloudflare":
++            acct = env["CLOUDFLARE_ACCOUNT_ID"]
++            st, body, _h, dt = http("https://api.cloudflare.com/client/v4/user/tokens/verify", key)
++            row.update(key_check=classify(st), latency=round(dt, 2))
++            row["verdict"] = "OK" if st == 200 else classify(st)
++            if st == 200 and infer:
++                model = "@cf/openai/gpt-oss-120b"
++                st2, body2, _h2, dt2 = http(f"https://api.cloudflare.com/client/v4/accounts/{acct}/ai/v1/chat/completions", key,
++                                            {"model": model, "messages": [{"role": "user", "content": "Reply with: ok"}], "max_tokens": 5})
++                row.update(inference=classify(st2), inference_latency=round(dt2, 2))
++        elif name == "huggingface":
++            st, body, _h, dt = http("https://huggingface.co/api/whoami-v2", key)
++            row.update(key_check=classify(st), latency=round(dt, 2), verdict="OK" if st == 200 else classify(st))
++        elif name == "ollama":
++            st, body, _h, dt = http(p["models"])
++            tags = []
++            try:
++                tags = [m["name"] for m in json.loads(body).get("models", [])]
++            except Exception:
++                pass
++            has = any(t.startswith("qwen3:8b") for t in tags)
++            row.update(server=classify(st), models_found=len(tags), qwen3_8b=has,
++                       verdict="OK" if has else ("MODEL_MISSING" if st == 200 else "UNREACHABLE"),
++                       detail="" if has else "run: ollama pull qwen3:8b (about 5 GB)")
++        else:
++            st, body, hdr, dt = http(p["models"], key)
++            row.update(key_check=classify(st, body), latency=round(dt, 2))
++            ids = []
++            try:
++                ids = [m["id"] for m in json.loads(body).get("data", [])]
++            except Exception:
++                pass
++            missing = [m for m in wanted.get(name, []) if ids and m not in ids]
++            row["models_configured"] = wanted.get(name, [])
++            row["models_missing_from_provider"] = missing
++            row["verdict"] = "OK" if st == 200 and not missing else ("MODEL_NOT_LISTED" if st == 200 else classify(st))
++            if name == "openrouter":
++                for m in wanted["openrouter"]:
++                    if not m.endswith(":free"):
++                        row["verdict"] = "FAIL_PAID_SLUG"
++            if infer and st == 200 and wanted.get(name) and (name != "deepseek" or allow_metered):
++                m = wanted[name][0]
++                st2, body2, hdr2, dt2 = http(p["chat"], key, {"model": m, "messages": [{"role": "user", "content": "Reply with: ok"}], "max_tokens": 8})
++                ok = False
++                try:
++                    ok = bool(json.loads(body2)["choices"][0])
++                except Exception:
++                    pass
++                row.update(inference=classify(st2) if not (st2 == 200 and not ok) else "EMPTY_RESPONSE",
++                           inference_latency=round(dt2, 2), inference_model=m)
++                rl = {k: v for k, v in hdr2.items() if "ratelimit" in k.lower() or "retry-after" in k.lower()}
++                if rl:
++                    row["rate_limit_headers"] = rl
++            elif infer and name == "deepseek" and not allow_metered:
++                row["inference"] = "SKIPPED (metered; pass --allow-metered)"
++        rows.append(row)
++    return rows
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--static", action="store_true")
++    ap.add_argument("--live", action="store_true")
++    ap.add_argument("--infer", action="store_true")
++    ap.add_argument("--allow-metered", action="store_true")
++    ap.add_argument("--env-file")
++    ap.add_argument("--out", default="audit_report.json")
++    a = ap.parse_args()
++    if not (a.static or a.live):
++        a.static = True
++    report = {}
++    fails = 0
++    if a.static:
++        report["static"] = static_audit()
++        print("== STATIC (no network, no keys read)")
++        for r in report["static"]:
++            print(f"  [{r['status']:<4}] {r['check']}: {r['detail']}")
++            fails += r["status"] == "FAIL"
++    if a.live:
++        env = load_env(a.env_file)
++        report["live"] = live_audit(env, a.infer, a.allow_metered)
++        print("== LIVE (key values are never printed)")
++        for r in report["live"]:
++            print(f"  {r['provider']:<12} {r['verdict']:<16} env={r['env']} cost={r['cost']}")
++            for k in ("key_check", "inference", "models_missing_from_provider", "detail"):
++                if r.get(k):
++                    print(f"      {k}: {r[k]}")
++            fails += r["verdict"].startswith(("AUTH", "FAIL", "OUT_OF"))
++    Path(a.out).write_text(json.dumps(report, indent=1))
++    print(f"\nreport written to {a.out} (contains no secrets)")
++    return 1 if fails else 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tools/provider-audit/audit_static_report.json b/tools/provider-audit/audit_static_report.json
+new file mode 100644
+index 0000000..8b1d4fe
+--- /dev/null
++++ b/tools/provider-audit/audit_static_report.json
+@@ -0,0 +1,49 @@
++{
++ "static": [
++  {
++   "check": "gateway routes parsed",
++   "status": "OK",
++   "detail": "15 routes: clip-fast, or-ultra-free, nim-deepseek, clip-assured, groq-20b, local-qwen, deepseek-chat, openrouter-free, cloudflare-free, nim-glm-flash, nim-kimi-k2, nim-mistral-large4, nim-qwen3-235b, nim-llama4-maverick, nim-deepseek-pro"
++  },
++  {
++   "check": "ladder routes present",
++   "status": "OK",
++   "detail": "all 8 ladder routes defined"
++  },
++  {
++   "check": "GROQ_API_KEY wired",
++   "status": "OK",
++   "detail": "gateway-config=True app-code=yes compose-passes-it=True"
++  },
++  {
++   "check": "DEEPSEEK_API_KEY wired",
++   "status": "OK",
++   "detail": "gateway-config=True app-code=no compose-passes-it=True"
++  },
++  {
++   "check": "NVIDIA_API_KEY wired",
++   "status": "OK",
++   "detail": "gateway-config=True app-code=no compose-passes-it=True"
++  },
++  {
++   "check": "OPENROUTER_API_KEY wired",
++   "status": "OK",
++   "detail": "gateway-config=True app-code=yes compose-passes-it=True"
++  },
++  {
++   "check": "CLOUDFLARE_API_KEY wired",
++   "status": "OK",
++   "detail": "gateway-config=True app-code=no compose-passes-it=True"
++  },
++  {
++   "check": "CLOUDFLARE_ACCOUNT_ID wired",
++   "status": "WARN",
++   "detail": "gateway-config=False app-code=no compose-passes-it=True"
++  },
++  {
++   "check": "HF_TOKEN wired",
++   "status": "WARN",
++   "detail": "gateway-config=False app-code=no compose-passes-it=False"
++  }
++ ]
++}
+\ No newline at end of file
+-- 
+2.56.0.windows.2
+

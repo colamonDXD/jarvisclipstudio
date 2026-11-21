@@ -1,0 +1,23 @@
+diff --git a/backend/src/video_utils.py b/backend/src/video_utils.py
+index 0d535b9..15161f3 100644
+--- a/backend/src/video_utils.py
++++ b/backend/src/video_utils.py
+@@ -990,6 +990,18 @@ def create_optimized_clip(
+             if not framed_ok:
+                 raise RuntimeError("ffmpeg reframe render failed")
+ 
++            # The plain path (face-on-top and other reaction layouts) renders
++            # without the EDL graph, so its music bed and SFX were dropped:
++            # mix them in now in an audio-only pass (media/audio_finish.py).
++            if (
++                render_edl
++                and not direct_edl
++                and ((render_edl.get("reframe") or {}).get("delegate") == "plain")
++            ):
++                from .media.audio_finish import finish_plain_path_audio
++
++                finish_plain_path_audio(final_clip_path, render_edl)
++
+             shutil.move(str(final_clip_path), str(output_path))
+             logger.info(f"Successfully created clip with ffmpeg: {output_path}")
+             record_pass_timing(render_timings, "total_seconds", clip_started)

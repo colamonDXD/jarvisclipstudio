@@ -1,0 +1,44 @@
+collect: 0 videos already in D:\SnipNova-Dev\selection-data
+[1/40] LHgpBrrDN8I 2.8 h 'Kai Cenat & Tyla FULL STREAM!' (kai cenat stream full) in 92s
+[2/40] THRBZfHK8CQ 3.8 h 'Kai Cenat & Kevin Hart FULL STREAM!' (kai cenat stream full) in 99s
+[3/40] jQblhs2UNHs 1.7 h 'Kai Cenat & Kevin Hart Put Druski On A Blind Date...' (kai cenat stream full) in 63s
+collect: 3 videos already in D:\SnipNova-Dev\selection-data
+[4/40] kX1PASUTrEo 0.9 h 'Reuniting The Avengers...' (kai cenat stream full) in 48s
+Traceback (most recent call last):
+  File "D:\SnipNova-Dev\v12-base\tools\live\train_selection.py", line 273, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "D:\SnipNova-Dev\v12-base\tools\live\train_selection.py", line 266, in main
+    collect(Path(a.out), a.target, a.per_query, a.min_sec, a.max_sec)
+  File "D:\SnipNova-Dev\v12-base\tools\live\train_selection.py", line 126, in collect
+    print(f"[{len(done)}/{target}] {vid} {d / 3600:.1f} h '{(meta.get('title') or '')[:60]}' "
+  File "C:\Users\Prateek T H\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 46-47: character maps to <undefined>
+COLLECT EXIT 1
+collect: 5 videos already in D:\SnipNova-Dev\selection-data
+[6/40] na7v7dSe0tA 6.0 h 'CLICK THIS STREAM FOR GOOD LUCK 🍀🍀🍀' (ishowspeed stream full) in 122s
+[7/40] J75pIuPdZd8 2.5 h 'LIVE' (ishowspeed stream full) in 62s
+[8/40] 0B2taochBu8 0.8 h 'DESKTOP STREAM FT. MR.BEAST😲' (ishowspeed stream full) in 39s
+[9/40] dUxtcRpYssE 1.3 h '【Just Chatting】My Best Friend's Debut + Special Announcement' (just chatting stream full vod) in 50s
+[10/40] miQWQr4v4HM 0.7 h 'FINISHED MINECRAFT HARDCORE' (minecraft stream full vod) in 52s
+[11/40] 0jSEH6f4Sdo 2.8 h 'I Hunted All 1,202 Minecraft Advancements' (minecraft stream full vod) in 80s
+Traceback (most recent call last):
+  File "D:\SnipNova-Dev\v12-base\tools\live\train_selection.py", line 278, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "D:\SnipNova-Dev\v12-base\tools\live\train_selection.py", line 271, in main
+    collect(Path(a.out), a.target, a.per_query, a.min_sec, a.max_sec)
+  File "D:\SnipNova-Dev\v12-base\tools\live\train_selection.py", line 103, in collect
+    heat = meta.get("heatmap") or []
+           ^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'get'
+COLLECT EXIT 1
+collect: 11 videos already in D:\SnipNova-Dev\selection-data
+[12/40] ENVsRstGyiA 0.8 h 'iShowSpeed Meets Payal Gaming! 😂 (Indian Youtuber)' (ishowspeed stream full) in 41s
+[13/40] MDQpJoiiPi4 4.1 h 'xQc Among Us VOD #9' (xqc stream vod) in 148s
+[14/40] W2rgwr6I1Vk 4.2 h 'xQc Among Us VOD #10' (xqc stream vod) in 111s
+[15/40] 8-OP15Rggos 1.4 h 'Caseoh | Jynxzi Podcast #1' (just chatting stream full vod) in 47s
+collect: 15 videos
+COLLECT EXIT 0

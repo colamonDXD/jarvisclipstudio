@@ -1,0 +1,2 @@
+﻿PROBLEM: licence not allowed: THEBOLDFONT.ttf is UNVERIFIED (allowed: OFL-1.1, Apache-2.0)
+FAIL: 1 problem(s)

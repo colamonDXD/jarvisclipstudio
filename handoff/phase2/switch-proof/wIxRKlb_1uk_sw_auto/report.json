@@ -1,0 +1,117 @@
+{
+ "video": "D:\\SnipNova-Dev\\claude-code\\test-footage\\phase1\\wIxRKlb_1uk.mp4",
+ "niche": "finance_business",
+ "llm": "ollama:qwen3:8b",
+ "stock_broll": false,
+ "timings": {
+  "transcribe_s": 64.4,
+  "select_s": 0.0
+ },
+ "clips": [
+  {
+   "clip": "clip1.mp4",
+   "render_ok": true,
+   "render_s": 40.0,
+   "source_start": 99.87,
+   "source_end": 141.86,
+   "duration": 42.0,
+   "selection": {
+    "virality": null,
+    "hook_type": "fixed-window",
+    "hook_title": null,
+    "reasoning": "Pipeline check only: sentence-aligned window, not an AI selection."
+   },
+   "decisions": {
+    "segments": 6,
+    "transitions": [
+     "hard_cut",
+     "hard_cut",
+     "hard_cut",
+     "hard_cut",
+     "hard_cut"
+    ],
+    "zooms": 1,
+    "broll_planned": 3,
+    "broll_inserted": 0,
+    "broll": [
+     {
+      "at": 13.35,
+      "said": "stock market",
+      "searched": "stock market trading screen",
+      "layout": "cutaway",
+      "inserted": false,
+      "why_not": "no_provider_configured"
+     },
+     {
+      "at": 29.82,
+      "said": "profit",
+      "searched": "business growth chart rising",
+      "layout": "cutaway",
+      "inserted": false,
+      "why_not": "no_provider_configured"
+     },
+     {
+      "at": 2.8,
+      "said": "market",
+      "searched": "stock market chart screen",
+      "layout": "cutaway",
+      "inserted": false,
+      "why_not": "no_provider_configured"
+     }
+    ],
+    "broll_dropped": [
+     "density_cap"
+    ],
+    "music": "corporate",
+    "music_volume": 0.15,
+    "sfx": 0,
+    "overlays": 0,
+    "template": "auto",
+    "captions": "hormozi"
+   },
+   "qc": {
+    "ffprobe": [
+     {
+      "codec_type": "video",
+      "width": 1080,
+      "height": 1920
+     },
+     {
+      "codec_type": "audio",
+      "width": null,
+      "height": null
+     }
+    ],
+    "output_seconds": 41.97,
+    "loudness_lufs": -14.5,
+    "black_seconds": 0,
+    "boundary": {
+     "ok": true,
+     "starts_on_sentence": true,
+     "ends_on_sentence": true,
+     "cuts_a_word": false,
+     "first_words": "The highest level of risk is",
+     "last_words": "dramatically for all kinds of reasons."
+    },
+    "layout": {
+     "broll_applied": false
+    },
+    "reframe_plan": {
+     "attached": true,
+     "delegate": null,
+     "shots": [
+      [
+       "fit",
+       "no_subject"
+      ]
+     ]
+    }
+   },
+   "frames": [
+    "clip1_8pct.png",
+    "clip1_50pct.png",
+    "clip1_90pct.png"
+   ]
+  }
+ ]
+}

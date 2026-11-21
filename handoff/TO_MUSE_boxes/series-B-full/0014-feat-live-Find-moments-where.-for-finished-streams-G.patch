@@ -1,0 +1,443 @@
+From 87550cd907ac183b7e1beb6596f99e59b24a3627 Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 17:46:14 +0530
+Subject: [PATCH 14/27] feat(live): "Find moments where..." for finished
+ streams: GPU full transcript, keyword+reaction search, request-bound picks
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/api/routes/live.py      |   3 +-
+ backend/src/live/session.py         |   1 +
+ backend/src/live/vod.py             | 234 +++++++++++++++++++++++++---
+ backend/src/workers/live_worker.py  |   1 +
+ backend/tests/unit/test_live_vod.py |  47 +++++-
+ frontend/src/app/live/page.tsx      |  10 ++
+ 6 files changed, 271 insertions(+), 25 deletions(-)
+
+diff --git a/backend/src/api/routes/live.py b/backend/src/api/routes/live.py
+index 5e44cf4..84b7a4e 100644
+--- a/backend/src/api/routes/live.py
++++ b/backend/src/api/routes/live.py
+@@ -100,7 +100,8 @@ def validate_settings(data: Dict[str, Any]) -> Dict[str, Any]:
+     if not isinstance(max_clips, int) or isinstance(max_clips, bool) or not 1 <= max_clips <= 60:
+         raise HTTPException(status_code=422, detail="max_clips must be a whole number from 1 to 60")
+     return {"layout_template": layout, "niche": niche, "streamer_words_only": words_only, "max_clips": max_clips,
+-            "credit": _text(data, "credit", 40), "hook_title": _text(data, "hook_title", 80)}
++            "credit": _text(data, "credit", 40), "hook_title": _text(data, "hook_title", 80),
++            "request": _text(data, "request", 200)}
+ 
+ 
+ @router.get("/status")
+diff --git a/backend/src/live/session.py b/backend/src/live/session.py
+index afa7779..bbbcffa 100644
+--- a/backend/src/live/session.py
++++ b/backend/src/live/session.py
+@@ -49,6 +49,7 @@ class LiveSettings:
+     layout_template: Optional[str] = "facecam_red"
+     credit: Optional[str] = None
+     hook_title: Optional[str] = None
++    request: Optional[str] = None      # "Find moments where..." (finished streams)
+     streamer_words_only: bool = True
+     min_talk_share: float = 0.5
+     max_clips: int = 30
+diff --git a/backend/src/live/vod.py b/backend/src/live/vod.py
+index 3bbc72d..e98b1ff 100644
+--- a/backend/src/live/vod.py
++++ b/backend/src/live/vod.py
+@@ -268,7 +268,7 @@ For each pick give start and end in absolute seconds: start right before the hoo
+ on silence), end just after the payoff, {min_len:.0f}-{max_len:.0f} seconds long. Give a short
+ punchy title (3-8 words, no emojis) and one line why.
+ 
+-Answer with ONLY a JSON array:
++{request_rule}Answer with ONLY a JSON array:
+ [{{"id": <candidate id>, "start": <sec>, "end": <sec>, "title": "...", "why": "...", "virality": <0-100>}}]
+ 
+ Candidates:
+@@ -289,7 +289,8 @@ def _transcript_lines(words: List[Dict[str, Any]]) -> str:
+     return "\n".join(lines) or "(no speech)"
+ 
+ 
+-def llm_pick(candidates: List[Dict[str, Any]], count: int) -> Optional[List[Dict[str, Any]]]:
++def _chat(prompt: str, timeout: float = 180.0) -> Optional[str]:
++    """One completion from the app's LLM gateway (free models), or None."""
+     base = (os.getenv("OPENAI_BASE_URL") or "").rstrip("/")
+     key = os.getenv("OPENAI_API_KEY") or ""
+     model = (os.getenv("LIVE_VOD_LLM") or os.getenv("LLM") or "").split(":", 1)[-1]
+@@ -297,22 +298,45 @@ def llm_pick(candidates: List[Dict[str, Any]], count: int) -> Optional[List[Dict
+         return None
+     import httpx
+ 
+-    blocks = []
+-    for c in candidates:
+-        blocks.append(f"### id {c['id']} - reaction at {c['onset']:.0f}s ({time.strftime('%H:%M:%S', time.gmtime(c['onset']))}), "
+-                      f"signals {','.join(c.get('signals') or [])}, strength {c.get('peak', 0):.1f}, heat {c.get('heat', 0):.2f}\n"
+-                      f"{_transcript_lines(c.get('words') or [])}")
+-    prompt = PICK_PROMPT.format(count=count, min_len=MIN_LEN, max_len=MAX_LEN, candidates="\n\n".join(blocks))
+     try:
+-        response = httpx.post(f"{base}/chat/completions", timeout=180,
++        response = httpx.post(f"{base}/chat/completions", timeout=timeout,
+                               headers={"Authorization": f"Bearer {key}"} if key else {},
+                               json={"model": model, "temperature": 0.2,
+                                     "messages": [{"role": "user", "content": prompt}]})
+-        text = response.json()["choices"][0]["message"]["content"]
++        return response.json()["choices"][0]["message"]["content"]
++    except Exception as exc:
++        logger.warning("LLM gateway unavailable (%s)", exc)
++        return None
++
++
++REQUEST_RULE = """The user asked for: "{request}".
++Only pick candidates that clearly match this request (it decides, before virality). Return
++fewer than {count} if fewer match, or an empty array if none does.
++
++"""
++
++
++def llm_pick(candidates: List[Dict[str, Any]], count: int,
++             request: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
++    """The model's picks; None when the model is unavailable (the caller then
++    ranks by signals). With a ``request`` an empty list means nothing matched."""
++    blocks = []
++    for c in candidates:
++        blocks.append(f"### id {c['id']} - moment at {c['onset']:.0f}s ({time.strftime('%H:%M:%S', time.gmtime(c['onset']))}), "
++                      f"signals {','.join(c.get('signals') or []) or 'none'}, strength {c.get('peak', 0):.1f}, "
++                      f"heat {c.get('heat', 0):.2f}\n"
++                      f"{_transcript_lines(c.get('words') or [])}")
++    rule = REQUEST_RULE.format(request=request.replace('"', "'"), count=count) if request else ""
++    prompt = PICK_PROMPT.format(count=count, min_len=MIN_LEN, max_len=MAX_LEN, candidates="\n\n".join(blocks),
++                                request_rule=rule)
++    text = _chat(prompt)
++    if text is None:
++        return None
++    try:
+         match = re.search(r"\[.*\]", text, re.S)
+         picks = json.loads(match.group(0)) if match else []
+     except Exception as exc:
+-        logger.warning("Clip picking model unavailable (%s); using the strongest signals", exc)
++        logger.warning("Clip picking model gave no usable answer (%s); using the strongest signals", exc)
+         return None
+     by_id = {c["id"]: c for c in candidates}
+     out = []
+@@ -330,9 +354,153 @@ def llm_pick(candidates: List[Dict[str, Any]], count: int) -> Optional[List[Dict
+         end = min(end, start + MAX_LEN)
+         out.append({**c, "start": round(start, 2), "end": round(end, 2), "title": str(p.get("title") or "")[:80] or None,
+                     "why": str(p.get("why") or "")[:200], "virality": p.get("virality")})
++    if request:
++        return out[:count]  # [] = nothing matched the request: an honest answer
+     return out[:count] or None
+ 
+ 
++# --------------------------------------------------------------------------
++# "Find moments where..." (a request typed by the user)
++# --------------------------------------------------------------------------
++
++EXPAND_PROMPT = """A user wants clips from a long gaming/IRL livestream that match: "{request}".
++List 15-30 lowercase words or short phrases a streamer would SAY at such moments (slang,
++exclamations, game terms, synonyms), and how much loud reactions matter for this request
++(0 = not at all, e.g. "when he talks about his mom"; 1 = a lot, e.g. "every time he rages").
++Answer with ONLY JSON: {{"keywords": ["...", "..."], "reaction_weight": 0.0}}"""
++
++STOPWORDS = frozenset("a an the and or of to in on at for with when where every time he she they his her their is are was "
++                      "be that this it moments moment clip clips find show me all any about from".split())
++
++
++def expand_request(request: str) -> Dict[str, Any]:
++    """Search words for a request (the model expands it; the request's own words always count)."""
++    own = [w for w in re.findall(r"[a-z0-9']+", request.lower()) if w not in STOPWORDS and len(w) > 2]
++    keywords, weight = list(own), 0.5
++    text = _chat(EXPAND_PROMPT.format(request=request.replace('"', "'")), timeout=90)
++    if text:
++        try:
++            data = json.loads(re.search(r"\{.*\}", text, re.S).group(0))
++            keywords += [str(k).lower().strip() for k in data.get("keywords") or [] if str(k).strip()]
++            weight = max(0.0, min(1.0, float(data.get("reaction_weight", weight))))
++        except Exception:
++            pass
++    seen, uniq = set(), []
++    for k in keywords:
++        if k and k not in seen:
++            seen.add(k)
++            uniq.append(k)
++    return {"keywords": uniq[:40], "reaction_weight": weight}
++
++
++def transcribe_full(audio: Path, duration: float, progress: Optional[Callable[[str], None]] = None,
++                    chunk_sec: float = 600.0) -> Optional[List[Dict[str, Any]]]:
++    """The whole stream's speech as segments [{start, end, text}], on the GPU.
++
++    Uses the transformers Whisper pipeline (batched, fp16): the GPU-ready
++    path in the app image (faster-whisper's CUDA build needs cuBLAS 12, the
++    image ships CUDA 13). None when there is no GPU or the model cannot load:
++    the caller then searches the reaction candidates only.
++    """
++    try:
++        import numpy as np
++        import torch
++        from transformers import pipeline
++
++        if not torch.cuda.is_available():
++            return None
++        name = os.getenv("LIVE_SEARCH_ASR_MODEL", "openai/whisper-large-v3-turbo")
++        asr = pipeline("automatic-speech-recognition", model=name, dtype=torch.float16, device="cuda:0")
++    except Exception as exc:
++        logger.warning("GPU transcription unavailable (%s); searching the reaction moments only", exc)
++        return None
++    segments: List[Dict[str, Any]] = []
++    t0 = time.time()
++    try:
++        for start in range(0, int(duration), int(chunk_sec)):
++            length = min(chunk_sec, duration - start)
++            raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{start:.1f}", "-t", f"{length:.1f}", "-i", str(audio),
++                                  "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "-"], capture_output=True).stdout
++            if len(raw) < 32000:
++                continue
++            samples = np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0
++            out = asr({"raw": samples, "sampling_rate": 16000}, chunk_length_s=30, batch_size=16,
++                      return_timestamps=True, generate_kwargs={"task": "transcribe"})
++            for chunk in out.get("chunks") or []:
++                ts = chunk.get("timestamp") or (None, None)
++                if ts[0] is None:
++                    continue
++                s0 = start + float(ts[0])
++                s1 = start + float(ts[1] if ts[1] is not None else ts[0] + 5)
++                segments.append({"start": s0, "end": s1, "text": str(chunk.get("text", "")).strip()})
++            if progress:
++                done = min(duration, start + length)
++                rate = done / max(time.time() - t0, 1e-6)
++                progress(f"Reading the whole stream: {done / 3600:.1f}/{duration / 3600:.1f} h ({rate:.0f}x real time)")
++    finally:
++        del asr
++        try:
++            torch.cuda.empty_cache()
++        except Exception:
++            pass
++    return segments
++
++
++def _segment_words(seg: Dict[str, Any]) -> List[Dict[str, Any]]:
++    """Approximate word timings inside a transcript segment (even spread)."""
++    words = seg["text"].split()
++    if not words:
++        return []
++    step = max(0.05, (seg["end"] - seg["start"]) / len(words))
++    return [{"text": w, "start": seg["start"] + i * step, "end": seg["start"] + (i + 1) * step} for i, w in enumerate(words)]
++
++
++def search_windows(segments: List[Dict[str, Any]], expansion: Dict[str, Any], series: Dict[str, List[float]],
++                   heatmap: Sequence[Dict[str, float]], limit: int, window: float = 60.0, step: float = 20.0) -> List[Dict[str, Any]]:
++    """Candidate moments for a request: windows ranked by matching words, the
++    streamer's reaction strength there (weighted by the request) and heat."""
++    keywords = expansion.get("keywords") or []
++    weight = float(expansion.get("reaction_weight", 0.5))
++    if not segments or not keywords:
++        return []
++    from .voice_scan import VoiceTrack
++
++    track = VoiceTrack(baseline_sec=240.0)
++    n = min(len(series.get(k, [])) for k in ("vocal", "f0", "laugh")) if series else 0
++    for sec in range(n):
++        track.times.append(float(sec))
++        for k in ("vocal", "f0", "laugh"):
++            track.feats[k].append(series[k][sec])
++    flags = track.onsets() if n else []
++    patterns = [re.compile(rf"\b{re.escape(k)}", re.I) for k in keywords]
++    end_time = max(s["end"] for s in segments)
++    scored = []
++    t = 0.0
++    while t < end_time:
++        inside = [s for s in segments if s["end"] > t and s["start"] < t + window]
++        text = " ".join(s["text"] for s in inside)
++        hits = sum(len(p.findall(text)) for p in patterns)
++        if hits:
++            near = [f for f in flags if t <= f["onset"] < t + window]
++            peak = max((float(f["peak"]) for f in near), default=0.0)
++            onset = max(near, key=lambda f: f["peak"])["onset"] if near else (inside[0]["start"] if inside else t)
++            score = hits * (1.0 + 1.5 * heat_at(heatmap, onset)) + weight * peak
++            words = [w for s in inside for w in _segment_words(s)]
++            scored.append({"onset": float(onset), "end": float(onset) + 1.0, "peak": peak,
++                           "signals": sorted({x for f in near for x in f.get("signals") or []}),
++                           "heat": round(heat_at(heatmap, onset), 3), "score": round(score, 2), "hits": hits,
++                           "words": words})
++        t += step
++    scored.sort(key=lambda c: -c["score"])
++    picked: List[Dict[str, Any]] = []
++    for c in scored:
++        if all(abs(c["onset"] - p["onset"]) >= MIN_GAP for p in picked):
++            picked.append(c)
++        if len(picked) >= limit:
++            break
++    return picked
++
++
+ def signal_pick(candidates: List[Dict[str, Any]], voiced: Sequence[float], count: int) -> List[Dict[str, Any]]:
+     out = []
+     for c in candidates[:count]:
+@@ -439,24 +607,44 @@ class VodSession:
+             return
+         series = scan_audio(audio, duration, workers=int(os.getenv("LIVE_VOD_SCAN_WORKERS", "4")),
+                             progress=lambda text: self._progress(text, duration))
+-        candidates = find_candidates(series, info["heatmap"], want * VodPlan.candidates_per_clip)
++        request = (getattr(s, "request", None) or "").strip() or None
++        candidates: List[Dict[str, Any]] = []
++        if request:
++            # "Find moments where...": read the whole stream on the GPU and
++            # search it; without a GPU, fall back to more reaction moments.
++            self._progress(f'Finding "{request}": preparing the search', duration)
++            expansion = expand_request(request)
++            segments = transcribe_full(audio, duration, progress=lambda text: self._progress(text, duration))
++            if segments:
++                candidates = search_windows(segments, expansion, series, info["heatmap"],
++                                            want * VodPlan.candidates_per_clip)
++                logger.info("VOD search %r: %d segments, %d keywords -> %d candidates",
++                            request, len(segments), len(expansion["keywords"]), len(candidates))
++        if not candidates:
++            candidates = find_candidates(series, info["heatmap"],
++                                         want * (VodPlan.candidates_per_clip + (2 if request else 0)))
+         if not candidates:
+             raise RuntimeError("no reactions found in the audio")
+         for i, c in enumerate(candidates):
+             c["id"] = i + 1
+-        windows = [(max(0.0, c["onset"] + CANDIDATE_WINDOW[0]), min(duration, c["onset"] + CANDIDATE_WINDOW[1]))
+-                   for c in candidates]
+-        for batch_start in range(0, len(candidates), BATCH):
++        need = [i for i, c in enumerate(candidates) if not c.get("words")]
++        windows = [(max(0.0, candidates[i]["onset"] + CANDIDATE_WINDOW[0]),
++                    min(duration, candidates[i]["onset"] + CANDIDATE_WINDOW[1])) for i in need]
++        for batch_start in range(0, len(need), BATCH):
+             if self._stop.is_set():
+                 return
+-            self._progress(f"Reading what was said: {min(batch_start + BATCH, len(candidates))}/{len(candidates)} moments",
+-                           duration)
+-            batch = list(range(batch_start, min(batch_start + BATCH, len(candidates))))
+-            words = transcribe_windows(audio, [windows[i] for i in batch])
+-            for i, w in zip(batch, words):
+-                candidates[i]["words"] = w
+-        self._progress("Picking the clips most likely to go viral", duration)
+-        picks = llm_pick(candidates, want) or signal_pick(candidates, series.get("voiced_frac") or [], want)
++            self._progress(f"Reading what was said: {min(batch_start + BATCH, len(need))}/{len(need)} moments", duration)
++            batch = list(range(batch_start, min(batch_start + BATCH, len(need))))
++            words = transcribe_windows(audio, [windows[j] for j in batch])
++            for j, w in zip(batch, words):
++                candidates[need[j]]["words"] = w
++        self._progress(f'Picking the moments that match "{request}"' if request
++                       else "Picking the clips most likely to go viral", duration)
++        picks = llm_pick(candidates, want, request=request)
++        if picks is None:
++            picks = signal_pick(candidates, series.get("voiced_frac") or [], want)
++        if not picks:
++            self._progress(f'No moment matched "{request}"', duration)
+         logger.info("VOD %s: %d candidates -> %d picks in %.0fs", s.url, len(candidates), len(picks), time.time() - t0)
+         from .finisher import render_live_clip
+ 
+diff --git a/backend/src/workers/live_worker.py b/backend/src/workers/live_worker.py
+index 1a19597..4ab9326 100644
+--- a/backend/src/workers/live_worker.py
++++ b/backend/src/workers/live_worker.py
+@@ -58,6 +58,7 @@ def settings_from_row(row: Dict[str, Any]) -> LiveSettings:
+     return LiveSettings(
+         url=row["url"], niche=s.get("niche") or "gaming",
+         layout_template=s.get("layout_template"), credit=s.get("credit"), hook_title=s.get("hook_title"),
++        request=s.get("request"),
+         streamer_words_only=bool(s.get("streamer_words_only", True)),
+         max_clips=int(s.get("max_clips") or (10 if s.get("mode") == "vod" else 30)),
+     )
+diff --git a/backend/tests/unit/test_live_vod.py b/backend/tests/unit/test_live_vod.py
+index 5b190b6..ba7f0a4 100644
+--- a/backend/tests/unit/test_live_vod.py
++++ b/backend/tests/unit/test_live_vod.py
+@@ -79,7 +79,7 @@ def test_session_runs_audio_first_and_downloads_only_the_picks(monkeypatch, tmp_
+     monkeypatch.setattr(V, "download_audio", fake_audio)
+     monkeypatch.setattr(V, "scan_audio", lambda a, d, workers=4, progress=None: _series(3600, [600, 1800]))
+     monkeypatch.setattr(V, "transcribe_window", lambda a, s, e: [{"text": "bro", "start": s + 1, "end": s + 2}])
+-    monkeypatch.setattr(V, "llm_pick", lambda c, n: None)
++    monkeypatch.setattr(V, "llm_pick", lambda c, n, request=None: None)
+ 
+     def fake_section(url, s, e, out, max_height=1080):
+         calls["sections"].append((round(s), round(e)))
+@@ -132,3 +132,48 @@ def test_several_windows_go_in_one_request_and_words_map_back(monkeypatch, tmp_p
+     assert len(calls) == 1
+     assert [w["text"] for w in out[0]] == ["first"] and abs(out[0][0]["start"] - 15.0) < 0.01
+     assert [w["text"] for w in out[1]] == ["second"] and abs(out[1][0]["start"] - 102.0) < 0.01
++
++
++# ---- "Find moments where..." ------------------------------------------------
++
++def test_request_words_always_count_even_without_a_model(monkeypatch):
++    monkeypatch.setattr(V, "_chat", lambda prompt, timeout=90: None)
++    out = V.expand_request("every time he crashes the car")
++    assert out["keywords"][:2] == ["crashes", "car"] and out["reaction_weight"] == 0.5
++
++
++def test_model_expansion_is_merged_and_clamped(monkeypatch):
++    monkeypatch.setattr(V, "_chat", lambda prompt, timeout=90: 'sure: {"keywords": ["Crashed", "wrecked", "crashes"], "reaction_weight": 3}')
++    out = V.expand_request("crashes")
++    assert out["keywords"] == ["crashes", "crashed", "wrecked"] and out["reaction_weight"] == 1.0
++
++
++def test_search_ranks_windows_by_matching_words_and_reactions():
++    segments = [{"start": 100.0, "end": 110.0, "text": "bro I just crashed the car again"},
++                {"start": 900.0, "end": 905.0, "text": "nice weather today"},
++                {"start": 1500.0, "end": 1510.0, "text": "crashed it, totally wrecked, crashed"}]
++    series = _series(1800, [1502])
++    picks = V.search_windows(segments, {"keywords": ["crash", "wrecked"], "reaction_weight": 1.0}, series, [], limit=5)
++    assert [round(p["onset"]) // 100 for p in picks][:2] == [15, 1]  # more hits + a reaction first
++    assert all("weather" not in " ".join(w["text"] for w in p["words"]) for p in picks)
++
++
++def test_request_with_no_match_returns_nothing_instead_of_random_clips(monkeypatch):
++    monkeypatch.setattr(V, "_chat", lambda prompt, timeout=180: "[]")
++    assert V.llm_pick([{"id": 1, "onset": 10.0}], 3, request="when he talks about cats") == []
++    monkeypatch.setattr(V, "_chat", lambda prompt, timeout=180: None)
++    assert V.llm_pick([{"id": 1, "onset": 10.0}], 3, request="x") is None  # model down: caller ranks by signals
++
++
++def test_the_request_reaches_the_model_prompt(monkeypatch):
++    seen = {}
++    monkeypatch.setattr(V, "_chat", lambda prompt, timeout=180: seen.setdefault("p", prompt) and "[]")
++    V.llm_pick([{"id": 1, "onset": 10.0}], 3, request="every time he crashes")
++    assert 'The user asked for: "every time he crashes"' in seen["p"]
++
++
++def test_without_a_gpu_full_transcription_is_skipped(monkeypatch, tmp_path):
++    import torch
++
++    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
++    assert V.transcribe_full(tmp_path / "a.m4a", 100.0) is None
+diff --git a/frontend/src/app/live/page.tsx b/frontend/src/app/live/page.tsx
+index edbf2db..1b1b1ce 100644
+--- a/frontend/src/app/live/page.tsx
++++ b/frontend/src/app/live/page.tsx
+@@ -157,6 +157,7 @@ export default function LivePage() {
+   const [credit, setCredit] = useState("");
+   const [title, setTitle] = useState("");
+   const [clipCount, setClipCount] = useState("10");
++  const [request, setRequest] = useState("");
+   const [busy, setBusy] = useState(false);
+   const selected = useRef<string | null>(null);
+ 
+@@ -214,6 +215,7 @@ export default function LivePage() {
+           credit: credit.trim() || null,
+           hook_title: title.trim() || null,
+           max_clips: Math.max(1, Math.min(30, parseInt(clipCount, 10) || 10)),
++          request: request.trim() || null,
+         }),
+       });
+       const body = await response.json().catch(() => ({}));
+@@ -298,6 +300,14 @@ export default function LivePage() {
+           <Input id="live-url" value={url} onChange={(e) => setUrl(e.target.value)}
+             placeholder="https://www.youtube.com/watch?v=…  or  https://www.twitch.tv/…" className="mt-1.5" />
+         </div>
++        <div className="sm:col-span-2">
++          <Label htmlFor="live-request">Find moments where… (optional, finished streams)</Label>
++          <Input id="live-request" value={request} maxLength={200} onChange={(e) => setRequest(e.target.value)}
++            placeholder="e.g. every time he crashes · when he talks about Lucia · funniest fails" className="mt-1.5" />
++          <p className="mt-1 text-xs text-muted-foreground">
++            Leave empty to get the most viral moments. With a request, the whole stream is read and only matching moments are clipped.
++          </p>
++        </div>
+         <div>
+           <Label htmlFor="live-layout">Layout</Label>
+           <select id="live-layout" value={layout} onChange={(e) => setLayout(e.target.value)}
+-- 
+2.56.0.windows.2
+

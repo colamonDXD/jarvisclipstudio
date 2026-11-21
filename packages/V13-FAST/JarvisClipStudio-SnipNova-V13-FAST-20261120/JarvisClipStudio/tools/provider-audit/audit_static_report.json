@@ -1,0 +1,49 @@
+{
+ "static": [
+  {
+   "check": "gateway routes parsed",
+   "status": "OK",
+   "detail": "15 routes: clip-fast, or-ultra-free, nim-deepseek, clip-assured, groq-20b, local-qwen, deepseek-chat, openrouter-free, cloudflare-free, nim-glm-flash, nim-kimi-k2, nim-mistral-large4, nim-qwen3-235b, nim-llama4-maverick, nim-deepseek-pro"
+  },
+  {
+   "check": "ladder routes present",
+   "status": "OK",
+   "detail": "all 8 ladder routes defined"
+  },
+  {
+   "check": "GROQ_API_KEY wired",
+   "status": "OK",
+   "detail": "gateway-config=True app-code=yes compose-passes-it=True"
+  },
+  {
+   "check": "DEEPSEEK_API_KEY wired",
+   "status": "OK",
+   "detail": "gateway-config=True app-code=no compose-passes-it=True"
+  },
+  {
+   "check": "NVIDIA_API_KEY wired",
+   "status": "OK",
+   "detail": "gateway-config=True app-code=no compose-passes-it=True"
+  },
+  {
+   "check": "OPENROUTER_API_KEY wired",
+   "status": "OK",
+   "detail": "gateway-config=True app-code=yes compose-passes-it=True"
+  },
+  {
+   "check": "CLOUDFLARE_API_KEY wired",
+   "status": "OK",
+   "detail": "gateway-config=True app-code=no compose-passes-it=True"
+  },
+  {
+   "check": "CLOUDFLARE_ACCOUNT_ID wired",
+   "status": "WARN",
+   "detail": "gateway-config=False app-code=no compose-passes-it=True"
+  },
+  {
+   "check": "HF_TOKEN wired",
+   "status": "WARN",
+   "detail": "gateway-config=False app-code=no compose-passes-it=False"
+  }
+ ]
+}

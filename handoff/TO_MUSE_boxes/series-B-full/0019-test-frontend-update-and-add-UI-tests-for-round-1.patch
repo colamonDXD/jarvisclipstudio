@@ -1,0 +1,616 @@
+From ee997a9535826b547bcba562f33e232df36d7e13 Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 19:07:33 +0530
+Subject: [PATCH 19/27] test(frontend): update and add UI tests for round 1
+
+---
+ frontend/src/app/live/page.test.tsx           | 204 ++++++++++++++++++
+ .../src/components/home-app-broll.test.tsx    |   8 +
+ .../src/components/home-app-framing.test.tsx  |  51 ++++-
+ .../home-app-gaming-layout.test.tsx           |  80 ++++---
+ .../src/components/home-app-template.test.tsx |  29 +++
+ .../src/components/layout-picker.test.tsx     |  74 +++++++
+ 6 files changed, 400 insertions(+), 46 deletions(-)
+ create mode 100644 frontend/src/app/live/page.test.tsx
+ create mode 100644 frontend/src/components/layout-picker.test.tsx
+
+diff --git a/frontend/src/app/live/page.test.tsx b/frontend/src/app/live/page.test.tsx
+new file mode 100644
+index 0000000..7a76957
+--- /dev/null
++++ b/frontend/src/app/live/page.test.tsx
+@@ -0,0 +1,204 @@
++// frontend/src/app/live/page.test.tsx — NEW: tests for the Live clipping page.
++import { fireEvent, render, screen, waitFor } from "@testing-library/react";
++import { beforeEach, expect, it, vi } from "vitest";
++import { toast } from "sonner";
++import LivePage from "./page";
++
++vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
++
++vi.mock("next/navigation", () => ({
++  usePathname: () => "/live",
++  useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
++}));
++
++function makeFetch(statusEnabled: boolean, extraHandlers?: (url: string) => Response | null) {
++  return vi.fn(async (input: RequestInfo | URL) => {
++    const url = String(input);
++    if (extraHandlers) {
++      const result = extraHandlers(url);
++      if (result) return result;
++    }
++    if (url.includes("/api/live/status")) {
++      return Response.json({ enabled: statusEnabled });
++    }
++    if (url.includes("/api/live/sessions") && !url.includes("/stop") && !url.includes("/sessions/")) {
++      return Response.json({ sessions: [] });
++    }
++    return Response.json({});
++  });
++}
++
++beforeEach(() => {
++  vi.resetAllMocks();
++  vi.unstubAllGlobals();
++});
++
++// --- Test 1: status disabled shows "not switched on" ---
++it("when /api/live/status returns disabled, shows 'not switched on'", async () => {
++  vi.stubGlobal("fetch", makeFetch(false));
++  render(<LivePage />);
++
++  await screen.findByText(/not switched on/i);
++  expect(screen.getByText(/not switched on/i)).toBeInTheDocument();
++});
++
++// --- Test 2: 422 with detail.message shows that message in a toast ---
++it("a 422 with detail.message shows that message in a toast error", async () => {
++  vi.stubGlobal(
++    "fetch",
++    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
++      const url = String(input);
++      if (url.includes("/api/live/status")) return Response.json({ enabled: true });
++      if (url.includes("/api/live/sessions") && init?.method === "POST") {
++        return new Response(
++          JSON.stringify({ detail: { message: "Stream is offline right now" } }),
++          { status: 422, headers: { "Content-Type": "application/json" } }
++        );
++      }
++      if (url.includes("/api/live/sessions")) return Response.json({ sessions: [] });
++      return Response.json({});
++    })
++  );
++
++  render(<LivePage />);
++  // Wait for the page to load (enabled state resolved).
++  await screen.findByRole("button", { name: /start clipping/i });
++
++  // Fill in the URL and submit.
++  fireEvent.change(screen.getByLabelText(/stream link/i), {
++    target: { value: "https://www.twitch.tv/teststreamer" },
++  });
++  fireEvent.click(screen.getByRole("button", { name: /start clipping/i }));
++
++  await waitFor(() =>
++    expect(toast.error).toHaveBeenCalledWith("Stream is offline right now")
++  );
++});
++
++// --- Test 3: a session in mode "vod" shows its progress_message ---
++it("a session in mode 'vod' and status 'recording' shows the progress_message", async () => {
++  const vodSession = {
++    id: "sess-1",
++    url: "https://www.youtube.com/watch?v=abc123",
++    status: "recording",
++    settings: {},
++    recording: true,
++    buffered_seconds: 300,
++    restarts: 0,
++    last_error: null,
++    progress_message: "Analysing audio — 42% done",
++    mode: "vod",
++    started_at: null,
++    created_at: new Date().toISOString(),
++  };
++
++  vi.stubGlobal(
++    "fetch",
++    vi.fn(async (input: RequestInfo | URL) => {
++      const url = String(input);
++      if (url.includes("/api/live/status")) return Response.json({ enabled: true });
++      if (url.match(/\/api\/live\/sessions\/sess-1$/)) {
++        return Response.json({ session: vodSession, clips: [] });
++      }
++      if (url.includes("/api/live/sessions")) {
++        return Response.json({ sessions: [vodSession] });
++      }
++      return Response.json({});
++    })
++  );
++
++  render(<LivePage />);
++
++  await screen.findByText("Analysing audio — 42% done");
++  expect(screen.getByText("Analysing audio — 42% done")).toBeInTheDocument();
++});
++
++// --- Test 4: "Skipped moments (n)" lists reasons ---
++it("'Skipped moments (n)' lists the reason for each rejected clip", async () => {
++  const session = {
++    id: "sess-2",
++    url: "https://www.twitch.tv/videos/9999",
++    status: "ended",
++    settings: {},
++    recording: false,
++    buffered_seconds: 1200,
++    restarts: 0,
++    last_error: null,
++    progress_message: null,
++    mode: "live",
++    started_at: null,
++    created_at: new Date().toISOString(),
++  };
++
++  const clips = [
++    {
++      id: "clip-1",
++      n: 1,
++      status: "ready",
++      reason: null,
++      onset_at: null,
++      signals: ["laugh"],
++      strength: 0.9,
++      talk_share: 0.8,
++      has_preview: true,
++      has_clip: true,
++      duration: 30,
++      created_at: new Date().toISOString(),
++    },
++    {
++      id: "clip-2",
++      n: null,
++      status: "rejected",
++      reason: "strength below threshold",
++      onset_at: null,
++      signals: [],
++      strength: 0.1,
++      talk_share: 0.2,
++      has_preview: false,
++      has_clip: false,
++      duration: null,
++      created_at: new Date().toISOString(),
++    },
++    {
++      id: "clip-3",
++      n: null,
++      status: "rejected",
++      reason: "too close to previous clip",
++      onset_at: null,
++      signals: [],
++      strength: 0.2,
++      talk_share: 0.5,
++      has_preview: false,
++      has_clip: false,
++      duration: null,
++      created_at: new Date().toISOString(),
++    },
++  ];
++
++  vi.stubGlobal(
++    "fetch",
++    vi.fn(async (input: RequestInfo | URL) => {
++      const url = String(input);
++      if (url.includes("/api/live/status")) return Response.json({ enabled: true });
++      if (url.match(/\/api\/live\/sessions\/sess-2$/)) {
++        return Response.json({ session, clips });
++      }
++      if (url.includes("/api/live/sessions")) {
++        return Response.json({ sessions: [session] });
++      }
++      return Response.json({});
++    })
++  );
++
++  render(<LivePage />);
++
++  // The <details> summary shows the count.
++  const summary = await screen.findByText(/skipped moments \(2\)/i);
++  expect(summary).toBeInTheDocument();
++
++  // Open the details element so the content is visible.
++  fireEvent.click(summary);
++
++  expect(await screen.findByText(/strength below threshold/i)).toBeInTheDocument();
++  expect(screen.getByText(/too close to previous clip/i)).toBeInTheDocument();
++});
+diff --git a/frontend/src/components/home-app-broll.test.tsx b/frontend/src/components/home-app-broll.test.tsx
+index 4baf887..9ea31c1 100644
+--- a/frontend/src/components/home-app-broll.test.tsx
++++ b/frontend/src/components/home-app-broll.test.tsx
+@@ -1,3 +1,6 @@
++// home-app-broll.test.tsx — updated for round 1 UI.
++// B-roll controls are independent of the LayoutPicker change, so the
++// core assertions are unchanged; file kept in sync with the new test harness.
+ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+ import { beforeEach, expect, it, vi } from "vitest";
+ 
+@@ -35,6 +38,11 @@ const libraryTracks = [
+ ];
+ 
+ beforeEach(() => {
++  vi.stubGlobal("ResizeObserver", class ResizeObserver {
++    observe() {}
++    unobserve() {}
++    disconnect() {}
++  });
+   vi.stubGlobal(
+     "fetch",
+     vi.fn(async (input: RequestInfo | URL) => {
+diff --git a/frontend/src/components/home-app-framing.test.tsx b/frontend/src/components/home-app-framing.test.tsx
+index 08be2f1..f463687 100644
+--- a/frontend/src/components/home-app-framing.test.tsx
++++ b/frontend/src/components/home-app-framing.test.tsx
+@@ -1,3 +1,5 @@
++// home-app-framing.test.tsx — updated for round 1 UI (LayoutPicker replaces
++// the old Framing toggle; aria-labels come from LayoutPicker's OPTIONS array).
+ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+ import { beforeEach, expect, it, vi } from "vitest";
+ 
+@@ -35,6 +37,11 @@ const libraryTracks = [
+ ];
+ 
+ beforeEach(() => {
++  vi.stubGlobal("ResizeObserver", class ResizeObserver {
++    observe() {}
++    unobserve() {}
++    disconnect() {}
++  });
+   vi.stubGlobal(
+     "fetch",
+     vi.fn(async (input: RequestInfo | URL) => {
+@@ -75,15 +82,13 @@ async function submitWithUrl() {
+ it("defaults to Auto framing and always sends framing_mode", async () => {
+   render(<HomeApp />, { wrapper: TooltipProvider });
+ 
+-  expect(screen.getByRole("radio", { name: "Fit (whole picture)" })).toHaveAttribute(
+-    "aria-checked",
+-    "false"
+-  );
++  // LayoutPicker renders a radiogroup; Auto card is selected by default.
++  const autoCard = screen.getByRole("radio", { name: "Auto · Picks per clip" });
++  expect(autoCard).toHaveAttribute("aria-checked", "true");
+ 
+   const body = await submitWithUrl();
+   expect(body.framing_mode).toBe("auto");
+-  // The default template is Plain: the framing control must stay live
+-  // there (Plain + Fit is the combination this control exists for).
++  // The default template is Plain.
+   expect(body.template_mode).toBe("plain");
+ });
+ 
+@@ -94,25 +99,49 @@ it("keeps the framing control enabled while Plain is picked", async () => {
+     "aria-checked",
+     "true"
+   );
+-  expect(screen.getByRole("radio", { name: "Fit (whole picture)" })).toBeEnabled();
+-  expect(screen.getByRole("radio", { name: "Crop (full screen)" })).toBeEnabled();
++  // LayoutPicker cards should not be disabled in Plain mode.
++  expect(screen.getByRole("radio", { name: "Full screen · Whole picture" })).toBeEnabled();
++  expect(screen.getByRole("radio", { name: "Crop · Zoom on the face" })).toBeEnabled();
+ });
+ 
+-it("sends framing_mode fit when Fit is picked", async () => {
++it("sends framing_mode fit when Full screen is picked", async () => {
+   render(<HomeApp />, { wrapper: TooltipProvider });
+ 
+-  fireEvent.click(screen.getByRole("radio", { name: "Fit (whole picture)" }));
++  fireEvent.click(screen.getByRole("radio", { name: "Full screen · Whole picture" }));
+ 
+   const body = await submitWithUrl();
+   expect(body.framing_mode).toBe("fit");
+   expect(body.template_mode).toBe("plain");
++  // Full screen is not a face-on-top card: no layout_template.
++  expect(body).not.toHaveProperty("layout_template");
+ });
+ 
+ it("sends framing_mode crop when Crop is picked", async () => {
+   render(<HomeApp />, { wrapper: TooltipProvider });
+ 
+-  fireEvent.click(screen.getByRole("radio", { name: "Crop (full screen)" }));
++  fireEvent.click(screen.getByRole("radio", { name: "Crop · Zoom on the face" }));
+ 
+   const body = await submitWithUrl();
+   expect(body.framing_mode).toBe("crop");
++  expect(body).not.toHaveProperty("layout_template");
++});
++
++it("picking Face on top · gold sends layout_template facecam_gold and framing_mode auto", async () => {
++  render(<HomeApp />, { wrapper: TooltipProvider });
++
++  fireEvent.click(screen.getByRole("radio", { name: "Face on top · Gold divider" }));
++
++  const body = await submitWithUrl();
++  expect(body.layout_template).toBe("facecam_gold");
++  expect(body.framing_mode).toBe("auto");
++});
++
++it("picking Face on top · red sends layout_template facecam_red and framing_mode auto", async () => {
++  render(<HomeApp />, { wrapper: TooltipProvider });
++
++  fireEvent.click(screen.getByRole("radio", { name: "Face on top · Red divider" }));
++
++  const body = await submitWithUrl();
++  expect(body.layout_template).toBe("facecam_red");
++  expect(body.framing_mode).toBe("auto");
+ });
+diff --git a/frontend/src/components/home-app-gaming-layout.test.tsx b/frontend/src/components/home-app-gaming-layout.test.tsx
+index 77a8f2c..8fd3a8b 100644
+--- a/frontend/src/components/home-app-gaming-layout.test.tsx
++++ b/frontend/src/components/home-app-gaming-layout.test.tsx
+@@ -1,15 +1,15 @@
++// home-app-gaming-layout.test.tsx — updated for round 1 UI.
++// The LayoutPicker replaces the old Gaming-layout row: it is always visible,
++// not gated on the Gaming niche. We keep the core behavioural assertions:
++// a face-on-top card sends layout_template + credit; Auto sends neither;
++// and add the new: layout_template travels for any niche (not just gaming).
++
+ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+ import { beforeEach, expect, it, vi } from "vitest";
+ 
+ import { TooltipProvider } from "@/components/ui/tooltip";
+ import HomeApp from "./home-app";
+ 
+-// Adapted from Claude's Phase 2 home-app-gaming-layout tests (written
+-// against the V9 home-app) to the Studio Console create page: same four
+-// behaviours — the picker renders only for the Gaming niche, a picked
+-// template sends layout_template, the credit line travels trimmed and
+-// only when non-empty, and Auto (the default) sends no layout fields.
+-
+ vi.mock("next/navigation", () => ({
+   usePathname: () => "/",
+   useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
+@@ -37,7 +37,11 @@ const billingSummary = {
+ };
+ 
+ beforeEach(() => {
+-  // Radix Select scrolls the active option into view; jsdom lacks it.
++  vi.stubGlobal("ResizeObserver", class ResizeObserver {
++    observe() {}
++    unobserve() {}
++    disconnect() {}
++  });
+   HTMLElement.prototype.scrollIntoView = vi.fn();
+   vi.stubGlobal(
+     "fetch",
+@@ -57,11 +61,6 @@ beforeEach(() => {
+   );
+ });
+ 
+-async function pickNiche(label: string) {
+-  fireEvent.click(screen.getByRole("combobox", { name: "Niche" }));
+-  fireEvent.click(await screen.findByRole("option", { name: label }));
+-}
+-
+ async function submitWithUrl() {
+   fireEvent.change(screen.getByLabelText("YouTube, Twitch, or Kick URL"), {
+     target: { value: "https://www.twitch.tv/videos/2922436506" },
+@@ -81,53 +80,64 @@ async function submitWithUrl() {
+   return JSON.parse(String(init?.body));
+ }
+ 
+-it("the gaming layout picker only appears for the Gaming niche", async () => {
++it("the layout picker is always visible (not gated on Gaming niche)", async () => {
+   render(<HomeApp />, { wrapper: TooltipProvider });
+-  expect(screen.queryByRole("group", { name: "Gaming layout" })).toBeNull();
+-
+-  await pickNiche("Gaming");
+-  expect(await screen.findByRole("group", { name: "Gaming layout" })).toBeInTheDocument();
+-}, 30000);
++  // LayoutPicker shows as a radiogroup labelled "Layout" immediately.
++  expect(screen.getByRole("radiogroup", { name: "Layout" })).toBeInTheDocument();
++  expect(screen.getByRole("radio", { name: "Auto · Picks per clip" })).toBeInTheDocument();
++});
+ 
+-it("Face top · red sends the template and the credit line", async () => {
++it("Face on top · red sends layout_template and credit line trimmed", async () => {
+   render(<HomeApp />, { wrapper: TooltipProvider });
+-  await pickNiche("Gaming");
+-  fireEvent.click(await screen.findByRole("radio", { name: "Face top · red" }));
++  fireEvent.click(screen.getByRole("radio", { name: "Face on top · Red divider" }));
+   fireEvent.change(screen.getByLabelText("Credit, e.g. @iShowSpeed"), {
+     target: { value: "  @KaiCenat " },
+   });
+ 
+   const body = await submitWithUrl();
+-  expect(body.niche_override).toBe("gaming");
+   expect(body.layout_template).toBe("facecam_red");
+   expect(body.layout_credit).toBe("@KaiCenat");
+-}, 30000);
++});
+ 
+-it("Face top · gold without a credit sends no credit field", async () => {
++it("Face on top · gold without a credit sends no credit field", async () => {
+   render(<HomeApp />, { wrapper: TooltipProvider });
+-  await pickNiche("Gaming");
+-  fireEvent.click(await screen.findByRole("radio", { name: "Face top · gold" }));
++  fireEvent.click(screen.getByRole("radio", { name: "Face on top · Gold divider" }));
+ 
+   const body = await submitWithUrl();
+   expect(body.layout_template).toBe("facecam_gold");
+   expect(body).not.toHaveProperty("layout_credit");
+-}, 30000);
++});
+ 
+ it("Auto (the default) sends no layout fields", async () => {
+   render(<HomeApp />, { wrapper: TooltipProvider });
+-  await pickNiche("Gaming");
+ 
+   const body = await submitWithUrl();
+   expect(body).not.toHaveProperty("layout_template");
+   expect(body).not.toHaveProperty("layout_credit");
+-}, 30000);
++});
+ 
+-it("the picker disables itself when framing is not Auto", async () => {
++it("layout_template travels for a non-gaming niche when a face-on-top card is picked", async () => {
+   render(<HomeApp />, { wrapper: TooltipProvider });
+-  await pickNiche("Gaming");
+-  expect(await screen.findByRole("radio", { name: "Face top · red" })).toBeEnabled();
++  // Pick a non-gaming niche (Podcast & news).
++  fireEvent.click(screen.getByRole("combobox", { name: "Niche" }));
++  fireEvent.click(await screen.findByRole("option", { name: "Podcast & news" }));
++
++  fireEvent.click(screen.getByRole("radio", { name: "Face on top · Gold divider" }));
+ 
+-  fireEvent.click(screen.getByRole("radio", { name: "Fit (whole picture)" }));
+-  expect(screen.getByRole("radio", { name: "Face top · red" })).toBeDisabled();
+-  expect(screen.getByText("Gaming layout (applies when Framing is Auto)")).toBeInTheDocument();
++  const body = await submitWithUrl();
++  expect(body.niche_override).toBe("podcast_news");
++  expect(body.layout_template).toBe("facecam_gold");
+ }, 30000);
++
++it("credit input only appears after a face-on-top card is picked", async () => {
++  render(<HomeApp />, { wrapper: TooltipProvider });
++  // Default is Auto — no credit input.
++  expect(screen.queryByLabelText("Credit, e.g. @iShowSpeed")).toBeNull();
++
++  fireEvent.click(screen.getByRole("radio", { name: "Face on top · Red divider" }));
++  expect(screen.getByLabelText("Credit, e.g. @iShowSpeed")).toBeInTheDocument();
++
++  // Switch back to Auto — credit input disappears.
++  fireEvent.click(screen.getByRole("radio", { name: "Auto · Picks per clip" }));
++  expect(screen.queryByLabelText("Credit, e.g. @iShowSpeed")).toBeNull();
++});
+diff --git a/frontend/src/components/home-app-template.test.tsx b/frontend/src/components/home-app-template.test.tsx
+index 275344b..9581591 100644
+--- a/frontend/src/components/home-app-template.test.tsx
++++ b/frontend/src/components/home-app-template.test.tsx
+@@ -1,3 +1,5 @@
++// home-app-template.test.tsx — updated for round 1 UI.
++// Adds the "Title on clips" switch assertions (hook_title_enabled field).
+ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+ import { beforeEach, expect, it, vi } from "vitest";
+ 
+@@ -35,6 +37,11 @@ const libraryTracks = [
+ ];
+ 
+ beforeEach(() => {
++  vi.stubGlobal("ResizeObserver", class ResizeObserver {
++    observe() {}
++    unobserve() {}
++    disconnect() {}
++  });
+   vi.stubGlobal(
+     "fetch",
+     vi.fn(async (input: RequestInfo | URL) => {
+@@ -105,3 +112,25 @@ it("sends template_mode auto when Auto template is picked", async () => {
+   const body = await submitWithUrl();
+   expect(body.template_mode).toBe("auto");
+ });
++
++it("Title on clips switch is ON by default and sends hook_title_enabled true", async () => {
++  render(<HomeApp />, { wrapper: TooltipProvider });
++
++  const titleSwitch = screen.getByRole("switch", { name: "Title on clips" });
++  expect(titleSwitch).toBeChecked();
++
++  const body = await submitWithUrl();
++  expect(body.hook_title_enabled).toBe(true);
++});
++
++it("Title on clips switch OFF sends hook_title_enabled false", async () => {
++  render(<HomeApp />, { wrapper: TooltipProvider });
++
++  const titleSwitch = screen.getByRole("switch", { name: "Title on clips" });
++  expect(titleSwitch).toBeChecked();
++  fireEvent.click(titleSwitch);
++  expect(titleSwitch).not.toBeChecked();
++
++  const body = await submitWithUrl();
++  expect(body.hook_title_enabled).toBe(false);
++});
+diff --git a/frontend/src/components/layout-picker.test.tsx b/frontend/src/components/layout-picker.test.tsx
+new file mode 100644
+index 0000000..bf2a8f9
+--- /dev/null
++++ b/frontend/src/components/layout-picker.test.tsx
+@@ -0,0 +1,74 @@
++// layout-picker.test.tsx — NEW: unit tests for the LayoutPicker component.
++import { fireEvent, render, screen } from "@testing-library/react";
++import { expect, it, vi } from "vitest";
++
++import { LayoutPicker } from "./layout-picker";
++
++it("renders all five layout option cards", () => {
++  render(<LayoutPicker value="auto" onChange={vi.fn()} />);
++
++  expect(screen.getByRole("radio", { name: "Auto · Picks per clip" })).toBeInTheDocument();
++  expect(screen.getByRole("radio", { name: "Face on top · Red divider" })).toBeInTheDocument();
++  expect(screen.getByRole("radio", { name: "Face on top · Gold divider" })).toBeInTheDocument();
++  expect(screen.getByRole("radio", { name: "Full screen · Whole picture" })).toBeInTheDocument();
++  expect(screen.getByRole("radio", { name: "Crop · Zoom on the face" })).toBeInTheDocument();
++});
++
++it("marks the current value as checked", () => {
++  render(<LayoutPicker value="facecam_gold" onChange={vi.fn()} />);
++
++  expect(screen.getByRole("radio", { name: "Face on top · Gold divider" })).toHaveAttribute(
++    "aria-checked",
++    "true"
++  );
++  expect(screen.getByRole("radio", { name: "Auto · Picks per clip" })).toHaveAttribute(
++    "aria-checked",
++    "false"
++  );
++});
++
++it("calls onChange with the picked value when a card is clicked", () => {
++  const onChange = vi.fn();
++  render(<LayoutPicker value="auto" onChange={onChange} />);
++
++  fireEvent.click(screen.getByRole("radio", { name: "Full screen · Whole picture" }));
++  expect(onChange).toHaveBeenCalledWith("fit");
++
++  fireEvent.click(screen.getByRole("radio", { name: "Crop · Zoom on the face" }));
++  expect(onChange).toHaveBeenCalledWith("crop");
++
++  fireEvent.click(screen.getByRole("radio", { name: "Face on top · Red divider" }));
++  expect(onChange).toHaveBeenCalledWith("facecam_red");
++
++  fireEvent.click(screen.getByRole("radio", { name: "Face on top · Gold divider" }));
++  expect(onChange).toHaveBeenCalledWith("facecam_gold");
++});
++
++it("calls onChange with 'auto' when Auto is clicked", () => {
++  const onChange = vi.fn();
++  render(<LayoutPicker value="fit" onChange={onChange} />);
++
++  fireEvent.click(screen.getByRole("radio", { name: "Auto · Picks per clip" }));
++  expect(onChange).toHaveBeenCalledWith("auto");
++});
++
++it("disables all cards when disabled prop is set", () => {
++  render(<LayoutPicker value="auto" onChange={vi.fn()} disabled />);
++
++  const cards = screen.getAllByRole("radio");
++  expect(cards).toHaveLength(5);
++  cards.forEach((card) => expect(card).toBeDisabled());
++});
++
++it("does not call onChange when disabled and clicked", () => {
++  const onChange = vi.fn();
++  render(<LayoutPicker value="auto" onChange={onChange} disabled />);
++
++  fireEvent.click(screen.getByRole("radio", { name: "Full screen · Whole picture" }));
++  expect(onChange).not.toHaveBeenCalled();
++});
++
++it("has a radiogroup container labelled 'Layout'", () => {
++  render(<LayoutPicker value="auto" onChange={vi.fn()} />);
++  expect(screen.getByRole("radiogroup", { name: "Layout" })).toBeInTheDocument();
++});
+-- 
+2.56.0.windows.2
+

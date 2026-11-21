@@ -1,0 +1,635 @@
+From 83c2887e111bf15a9b1e614ce6354a07bd3af48a Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 22:56:34 +0530
+Subject: [PATCH 10/22] fix(reaction): pass Sanji's fixture decoy: mic channel,
+ screams, face, coincidence
+
+Fixture v2 (decoy: loudest explosion, still face, silent mic) ranked
+the decoy #1 because no reaction episode formed and the fallback ranked
+game events by strength alone. Measured causes and fixes, each behind a
+switch:
+
+- Split stereo is read on the mic channel (L/R corr 0.0 on the fixture;
+  real streams mix the mic into both channels, corr ~1, unchanged).
+  REACTION_MIC_CHANNEL.
+- Face activity is measured on the YuNet face patch (expression change
+  plus head travel vs face size) instead of the whole facecam rectangle,
+  whose background dominated. REACTION_FACE_ACTIVITY=roi restores it.
+- REACTION_FUSION: a scream (pitch z >= 4 with vocal z >= 1.5) counts;
+  on a known mic channel the streamer's own top-1 % loudest seconds with
+  a raised voice are bursts (per-task, contract s3); a laugh pulse needs
+  the voice raised in that second; unreacted game events rank by
+  coincidence = min(sqrt(event / task max), reaction level), and only
+  those with coincidence >= 0.25 survive next to real reactions.
+
+Fixture v2 (tools/phase2/score_fixture.py): 6/7 checks PASS (R3 #1, R1
+second with its setup, decoy out); R2 still missed (no measurable face
+or game event there). Synthetic VOD matrix (score_streamer.py vod_v1):
+positives 2/5 -> 5/5; the one negative ranks last (6th of 6, score 14
+vs 21 for the weakest positive). 38 reaction tests pass.
+
+Also: gate_compare.py resolves its output path before changing directory.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                                  |   7 +
+ backend/src/auto_director/reaction_moments.py | 299 +++++++++++++++++-
+ backend/tests/unit/test_reaction_fusion.py    | 117 +++++++
+ tools/phase2/gate_compare.py                  |   6 +-
+ 4 files changed, 412 insertions(+), 17 deletions(-)
+ create mode 100644 backend/tests/unit/test_reaction_fusion.py
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index e4f8af6..9f95390 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,13 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-17
++- **Fixed:** Streamer clip picking no longer puts the loudest game moment first when the streamer didn't react to it. Several changes work together:
++  - **Mic on its own channel:** when the recording has the mic on one side and the game on the other, the app listens to the mic alone.
++  - **Screams count:** a scream counts as a reaction even when it isn't much louder than the streamer's normal talk.
++  - **Face measured itself:** the facecam's movement is measured on the face, not the room behind it.
++  - **Reaction and gameplay together:** a game event only ranks high when the streamer actually responds to it.
++
++  On the reference test video the scream now ranks first and the loud explosion with no reaction is left out. Set `REACTION_FUSION=0`, `REACTION_MIC_CHANNEL=0` or `REACTION_FACE_ACTIVITY=roi` to switch the parts off.
+ - **Under the hood:** Streamer moments now also carry the reaction contract's fields. These are a 0–1 strength for each signal (facecam reaction, voice burst, emotional words, gameplay event; empty when not measured, never a fake zero), a fused 0–100 score, a one-sentence reason, and a layout recommendation. Existing fields are unchanged. Set `REACTION_CONTRACT_FIELDS=0` to leave them out.
+ - **New:** Two "Face on top, game below" layouts for streamer clips, in the style of popular gaming pages. The streamer's facecam fills the top of the frame, cropped tight, and the gameplay fills the bottom. The captions sit on the seam a couple of punchy words at a time. A small "credit @creator" line can go at the bottom. **Red** has a red divider and white captions with a red outline; **Gold** has a gold divider and the spoken word in yellow. Pick one under "Gaming layout" on the create page when the niche is Gaming, and optionally type the creator's name for the credit. Clips without a facecam keep the normal layout.
+ - **Improved:** Streamer clips now find the facecam even when it sits half-way down the side of the screen or the face is small, and even when the game shows no faces. The app looks for the camera window itself, checks there is a face in it, and then puts the streamer on top and the game below. It ignores video calls (several people in fixed windows) and stream overlays with a printed face. Set `FACECAM_RECT_DETECT=0` to switch this off.
+diff --git a/backend/src/auto_director/reaction_moments.py b/backend/src/auto_director/reaction_moments.py
+index 99b7cff..1a504a5 100644
+--- a/backend/src/auto_director/reaction_moments.py
++++ b/backend/src/auto_director/reaction_moments.py
+@@ -51,22 +51,25 @@ SR = 16000
+ _WIN, _HOP = 640, 160            # 40 ms window, 10 ms hop
+ _F0_LO, _F0_HI = 80, 600          # Hz
+ _VOICE_BINS = (19, 217)           # ~300–3400 Hz at 1024-point FFT
+-VOICE = ("vocal", "pitch", "laugh", "lexical")
++VOICE = ("vocal", "pitch", "laugh", "lexical", "mic_loud")
+ _SCALE_FLOOR = {"vocal": 2.0, "pitch": 18.0, "laugh": 0.12, "face": 0.8, "lexical": 1.0}
+ _ACTIVE_Z = 3.0
+ _REACT_GAP_SEC = 2
+ _MIN_REACT_SEC = 1
+ _EVENT_LEAD_SEC = 7.0   # a reaction this soon after a game event is "to" it
+ _EVENT_SLACK_SEC = 1.5  # ...or this much before (anticipation / lag)
+-_WEIGHT = {"vocal": 1.0, "pitch": 1.0, "laugh": 1.6, "face": 0.8, "lexical": 1.0}
++_WEIGHT = {"vocal": 1.0, "pitch": 1.0, "laugh": 1.6, "face": 0.8, "lexical": 1.0, "mic_loud": 1.0}
+ 
+ 
+ # --------------------------------------------------------------------------
+ # Voice evidence
+ # --------------------------------------------------------------------------
+ 
+-def _decode_blocks(video_path: Path | str, block_sec: int = 120):
+-    cmd = ["ffmpeg", "-v", "error", "-i", str(video_path), "-vn", "-ac", "1",
++def _decode_blocks(video_path: Path | str, block_sec: int = 120, channel: Optional[int] = None):
++    # channel=None decodes the mono mix (every stream so far); an index
++    # decodes that one channel (the mic of a split mic/game recording).
++    layout = ["-ac", "1"] if channel is None else ["-af", f"pan=mono|c0=c{int(channel)}"]
++    cmd = ["ffmpeg", "-v", "error", "-i", str(video_path), "-vn", *layout,
+            "-ar", str(SR), "-f", "s16le", "-"]
+     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+     size = SR * block_sec * 2
+@@ -138,15 +141,79 @@ def _laugh_score(env: np.ndarray) -> np.ndarray:
+     return out
+ 
+ 
+-def extract_voice_evidence(video_path: Path | str) -> dict[str, np.ndarray]:
+-    """Per-second voice features of the mixed audio. Empty dict when the
+-    source has no audio."""
++_SPLIT_CORR_MAX = 0.8        # L/R this correlated = one mix, not a split recording
++_MIC_VOICED_MARGIN = 0.10    # the mic channel must be clearly more voiced
++
++
++def _stereo_probe(video_path: Path | str, offsets: tuple[float, ...], seconds: float = 30.0) -> Optional[np.ndarray]:
++    parts = []
++    for offset in offsets:
++        cmd = ["ffmpeg", "-v", "error", "-ss", f"{max(0.0, offset):.2f}", "-t", f"{seconds:.2f}",
++               "-i", str(video_path), "-vn", "-ac", "2", "-ar", str(SR), "-f", "s16le", "-"]
++        try:
++            raw = subprocess.run(cmd, capture_output=True, timeout=120).stdout
++        except Exception:
++            continue
++        pcm = np.frombuffer(raw, dtype=np.int16)
++        if len(pcm) >= 4 * _WIN:
++            parts.append(pcm[: len(pcm) // 2 * 2].reshape(-1, 2).astype(np.float32) / 32768.0)
++    return np.concatenate(parts) if parts else None
++
++
++def pick_voice_channel(video_path: Path | str, duration: Optional[float] = None) -> Optional[int]:
++    """The mic channel of a split recording (mic on one side, game on the
++    other), or None to keep the mono mix.
++
++    Streams mix the mic into both channels, so L and R are nearly identical
++    (correlation ~1) and nothing changes. When they differ, the mic is the
++    channel with clearly more voiced frames; reading it alone keeps an
++    explosion on the game channel from drowning the streamer's scream.
++    Switch: REACTION_MIC_CHANNEL (default on).
++    """
++    import os
++
++    if os.getenv("REACTION_MIC_CHANNEL", "1").strip().lower() in {"0", "false", "no", "off"}:
++        return None
++    total = float(duration or 0)
++    if total <= 0:
++        try:
++            total = float(subprocess.run(
++                ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(video_path)],
++                capture_output=True, text=True, timeout=30,
++            ).stdout.strip() or 0)
++        except Exception:
++            total = 0.0
++    offsets = tuple(total * f for f in (0.15, 0.5, 0.8)) if total > 120 else (0.0,)
++    pcm = _stereo_probe(video_path, offsets, 30.0 if total > 120 else 120.0)
++    if pcm is None or pcm.shape[0] < 4 * _WIN:
++        return None
++    left, right = pcm[:, 0], pcm[:, 1]
++    if float(np.std(left)) < 1e-4 or float(np.std(right)) < 1e-4:
++        return None
++    corr = float(np.corrcoef(left, right)[0, 1])
++    if not np.isfinite(corr) or corr > _SPLIT_CORR_MAX:
++        return None
++    voiced = [float(np.mean(_frame_features(ch)["voiced"])) for ch in (left, right)]
++    if max(voiced) < 0.1 or abs(voiced[0] - voiced[1]) < _MIC_VOICED_MARGIN:
++        return None
++    channel = int(np.argmax(voiced))
++    logger.info("Split stereo (L/R corr %.2f): reading the mic on channel %d (voiced %.2f vs %.2f)",
++                corr, channel, voiced[channel], voiced[1 - channel])
++    return channel
++
++
++def extract_voice_evidence(video_path: Path | str, duration: Optional[float] = None) -> dict[str, np.ndarray]:
++    """Per-second voice features of the streamer's audio: the mic channel of
++    a split recording, else the mixed audio. Empty dict when the source has
++    no audio."""
+     vloud: list[float] = []
+     f0s: list[float] = []
+     vfrac: list[float] = []
+     total_db: list[float] = []
++    mic_db: list[float] = []
+     env_all: list[np.ndarray] = []
+-    for block in _decode_blocks(video_path):
++    channel = pick_voice_channel(video_path, duration)
++    for block in _decode_blocks(video_path, channel=channel):
+         if len(block) < _WIN * 2:
+             continue
+         ff = _frame_features(block)
+@@ -163,6 +230,7 @@ def extract_voice_evidence(video_path: Path | str) -> dict[str, np.ndarray]:
+             vloud.append(float(np.percentile(vdb[i][v], 90)) if v.sum() >= 5 else np.nan)
+             f0s.append(float(np.median(f0[i][v])) if v.sum() >= 5 else np.nan)
+             total_db.append(float(np.percentile(tdb[i], 90)))
++            mic_db.append(float(np.percentile(vdb[i], 98)))
+     if not vloud:
+         return {}
+     vloud_a = np.array(vloud)
+@@ -178,8 +246,13 @@ def extract_voice_evidence(video_path: Path | str) -> dict[str, np.ndarray]:
+     env = np.concatenate(env_all)
+     laugh = _laugh_score(env)
+     n = min(len(vloud_a), len(laugh))
+-    return {"vocal": vloud_a[:n], "f0": f0_a[:n], "voiced_frac": np.array(vfrac)[:n],
++    out = {"vocal": vloud_a[:n], "f0": f0_a[:n], "voiced_frac": np.array(vfrac)[:n],
+             "laugh": laugh[:n], "total_db": np.array(total_db)[:n]}
++    if channel is not None:
++        # Only on a known mic channel: in a mixed stream the loudest
++        # voice-band frames are as likely an explosion as a scream.
++        out["mic_loud"] = np.array(mic_db)[:n]
++    return out
+ 
+ 
+ # --------------------------------------------------------------------------
+@@ -252,6 +325,115 @@ def find_facecam(video_path: Path | str, duration: float, samples: int = 14) ->
+     return x0, y0, min(1.0 - x0, fw + 2 * px), min(1.0 - y0, fh + 2 * py)
+ 
+ 
++_FACE_FPS = 4
++_FACE_PATCH = 48
++_FACE_MIN_COVERAGE = 0.3
++
++
++def face_activity_mode() -> str:
++    """REACTION_FACE_ACTIVITY: "face" (default) measures the face itself;
++    "roi" restores the whole-rectangle frame difference."""
++    import os
++
++    value = os.getenv("REACTION_FACE_ACTIVITY", "face").strip().lower()
++    return "roi" if value in {"roi", "0", "off", "false", "legacy"} else "face"
++
++
++def extract_face_activity(video_path: Path | str, roi: tuple[float, float, float, float]) -> np.ndarray:
++    """Per-second activity of the streamer's FACE inside the facecam.
++
++    The whole-rectangle difference (``extract_facecam_activity``) is
++    dominated by whatever moves behind the streamer (a room, a window,
++    lighting), so a still face over a busy background out-scored a laughing
++    one. Here YuNet finds the face at 4 fps and each second scores:
++
++    * expression change: the face patch, aligned to its own box, against the
++      previous frame's (mouth, eyes, brows; head translation cancels out);
++    * head movement: box-centre travel relative to the face size.
++
++    Frames without a face fall back to the rectangle difference. When the
++    face is visible in under 30 % of frames the old measure is returned.
++    """
++    try:
++        import cv2
++
++        from ..media.face_detection import open_yunet_detector
++
++        detector = open_yunet_detector()
++    except Exception:
++        detector = None
++    if detector is None:
++        return extract_facecam_activity(video_path, roi)
++    x, y, w, h = roi
++    width = 224
++    cmd = ["ffmpeg", "-v", "error", "-i", str(video_path), "-an", "-vf",
++           f"fps={_FACE_FPS},crop=iw*{w:.4f}:ih*{h:.4f}:iw*{x:.4f}:ih*{y:.4f},"
++           f"scale={width}:-2,format=bgr24", "-f", "rawvideo", "-"]
++    probe = subprocess.run(
++        ["ffmpeg", "-v", "error", "-i", str(video_path), "-an", "-frames:v", "1", "-vf",
++         f"crop=iw*{w:.4f}:ih*{h:.4f}:iw*{x:.4f}:ih*{y:.4f},scale={width}:-2",
++         "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
++        capture_output=True, timeout=60,
++    ).stdout
++    height = len(probe) // (width * 3)
++    if height <= 0:
++        return extract_facecam_activity(video_path, roi)
++    frame_size = width * height * 3
++    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
++    values: list[float] = []
++    roi_values: list[float] = []
++    has_face: list[bool] = []
++    prev_patch = prev_box = prev_small = None
++    try:
++        assert proc.stdout is not None
++        while True:
++            buf = proc.stdout.read(frame_size)
++            if len(buf) < frame_size:
++                break
++            frame = np.frombuffer(buf, dtype=np.uint8).reshape(height, width, 3)
++            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
++            small = cv2.resize(gray, (64, 48), interpolation=cv2.INTER_AREA).astype(np.float32)
++            roi_diff = float(np.abs(small - prev_small).mean()) if prev_small is not None else 0.0
++            prev_small = small
++            faces = [f for f in detector.detect(frame) if f[3] >= height * 0.15]
++            if not faces:
++                values.append(np.nan)
++                roi_values.append(roi_diff)
++                has_face.append(False)
++                prev_patch = prev_box = None
++                continue
++            fx, fy, fw, fh = max(faces, key=lambda f: f[2] * f[3])[:4]
++            x0, y0 = max(0, int(fx)), max(0, int(fy))
++            x1, y1 = min(width, int(fx + fw)), min(height, int(fy + fh))
++            patch = cv2.resize(gray[y0:y1, x0:x1], (_FACE_PATCH, _FACE_PATCH),
++                               interpolation=cv2.INTER_AREA).astype(np.float32)
++            score = 0.0
++            if prev_patch is not None and prev_box is not None:
++                expression = float(np.abs(patch - prev_patch).mean())
++                travel = float(np.hypot(fx + fw / 2 - prev_box[0], fy + fh / 2 - prev_box[1]))
++                score = expression + 40.0 * travel / max(fh, 1.0)
++            values.append(score)
++            roi_values.append(roi_diff)
++            has_face.append(True)
++            prev_patch, prev_box = patch, (fx + fw / 2, fy + fh / 2)
++    finally:
++        if proc.stdout:
++            proc.stdout.close()
++        proc.kill()
++        proc.wait()
++    if not values or float(np.mean(has_face)) < _FACE_MIN_COVERAGE:
++        return extract_facecam_activity(video_path, roi)
++    face_vals = np.array(values, dtype=float)
++    roi_arr = np.array(roi_values, dtype=float)
++    # Put the fallback frames on the face scale: the median face score over
++    # the median rectangle difference of the frames that had both.
++    both = np.isfinite(face_vals) & (roi_arr > 0)
++    ratio = (float(np.median(face_vals[both])) / max(float(np.median(roi_arr[both])), 1e-6)) if both.any() else 1.0
++    filled = np.where(np.isfinite(face_vals), face_vals, roi_arr * ratio)
++    n = len(filled) // _FACE_FPS
++    return np.array([float(np.mean(filled[i * _FACE_FPS:(i + 1) * _FACE_FPS])) for i in range(n)])
++
++
+ def extract_facecam_activity(video_path: Path | str, roi: tuple[float, float, float, float]) -> np.ndarray:
+     """Per-second motion inside the facecam rectangle (mean abs diff, 8 fps)."""
+     x, y, w, h = roi
+@@ -347,6 +529,12 @@ def reaction_series(voice: dict[str, np.ndarray], face: Optional[np.ndarray],
+         # Pitch only counts while the streamer is actually voicing loudly.
+         zs["pitch"] = np.where(voice["voiced_frac"] > 0.25, zs["pitch"], 0.0)
+         zs["laugh"] = _robust_z(voice["laugh"], _SCALE_FLOOR["laugh"])
++        if fusion_enabled():
++            # A laugh pulse at a speech->silence edge is an artifact: a laugh
++            # needs the voice itself raised in that second.
++            zs["laugh"] = np.where(zs["vocal"] >= 1.0, zs["laugh"], np.minimum(zs["laugh"], 0.0))
++            if "mic_loud" in voice:
++                zs["mic_loud"] = _robust_z(voice["mic_loud"], _SCALE_FLOOR["vocal"], rel=0.0)
+     if lexical is not None and len(lexical) and float(np.max(lexical)) > 0:
+         zs["lexical"] = _robust_z(lexical, _SCALE_FLOOR["lexical"], rel=0.0)
+     if face is not None and len(face):
+@@ -357,15 +545,35 @@ def reaction_series(voice: dict[str, np.ndarray], face: Optional[np.ndarray],
+     n = min(len(v) for v in zs.values())
+     zs = {k: v[:n] for k, v in zs.items()}
+     strength = np.zeros(n)
++    mic_burst = None
++    if fusion_enabled() and "mic_loud" in zs and "vocal" in zs and n >= 10:
++        loud = voice["mic_loud"][:n]
++        mic_burst = (loud >= np.percentile(loud, 100 - _MIC_BURST_PCT)) & (zs["vocal"] >= _SCREAM_VOCAL_Z)
++        # Mark those seconds as an active voice signal, so the episode is a
++        # vocal burst (not a "silent facecam") and counts as the voice modality.
++        zs["mic_loud"] = np.where(mic_burst, np.maximum(zs["mic_loud"], _ACTIVE_Z), zs["mic_loud"])
+     for i in range(n):
+         active = [k for k in zs if zs[k][i] >= _ACTIVE_Z]
+         top = max(zs[k][i] for k in zs)
+         voice_active = [k for k in active if k in VOICE]
+         # Agreement: two signals, or a strong laugh on its own. A face-only
+-        # or pitch-only second never counts alone.
+-        if len(active) >= 2 or (("laugh" in active) and zs["laugh"][i] >= 5.0):
++        # or pitch-only second never counts alone. A scream counts: pitch far
++        # above the streamer's own (z >= _SCREAM_PITCH_Z) WITH a raised voice
++        # (vocal z >= _SCREAM_VOCAL_Z) -- two cues of one voice, the way a
++        # shout is vocal + pitch (REACTION_FUSION; off restores the old rule).
++        scream = (
++            fusion_enabled()
++            and "pitch" in active and "vocal" in zs
++            and zs["pitch"][i] >= _SCREAM_PITCH_Z and zs["vocal"][i] >= _SCREAM_VOCAL_Z
++        )
++        if len(active) >= 2 or (("laugh" in active) and zs["laugh"][i] >= 5.0) or scream:
+             if voice_active or len(active) >= 2:
+                 strength[i] = sum(_WEIGHT[k] * (zs[k][i] - _ACTIVE_Z + 1.0) for k in active)
++        # On a known mic channel: one of the streamer's own loudest seconds
++        # (top _MIC_BURST_PCT %) with the voice raised is a burst, even when
++        # their talk swings too much for a fixed z bar (per-task, contract §3).
++        if strength[i] == 0 and mic_burst is not None and mic_burst[i]:
++            strength[i] = 1.0 + max(0.0, float(zs["mic_loud"][i]))
+     return strength, zs, voice_present
+ 
+ 
+@@ -519,6 +727,57 @@ def correlate(reactions: list[dict[str, Any]], game_eps: list[Episode], streamer
+ 
+ 
+ _VOICE_ONLY_CAP = 55.0
++_SCREAM_PITCH_Z = 4.0
++_SCREAM_VOCAL_Z = 1.5
++_SILENT_ACTION_CAP = 40.0
++_COINCIDENCE_KEEP = 0.25
++_MIC_BURST_PCT = 1.0
++
++
++def fusion_enabled() -> bool:
++    """REACTION_FUSION (default on): the scream rule and coincidence ranking
++    of unreacted game events. Off restores the previous behaviour."""
++    import os
++
++    return os.getenv("REACTION_FUSION", "1").strip().lower() not in {"0", "false", "no", "off"}
++
++
++def reaction_level(zs: dict[str, np.ndarray], start: float, end: float) -> float:
++    """How much the streamer reacts in [start, end): the strongest of their
++    own signals (face, voice, reaction words) mapped to 0-1 (z 6 = 1).
++    0 when every measured signal stays at or below the streamer's normal."""
++    best = 0.0
++    for key in ("face", "vocal", "pitch", "laugh", "lexical", "mic_loud"):
++        series = zs.get(key)
++        if series is None or len(series) == 0:
++            continue
++        a = max(0, int(np.floor(start)))
++        b = min(len(series), max(a + 1, int(np.ceil(end))))
++        if a < len(series):
++            best = max(best, float(np.max(series[a:b])))
++    return float(np.clip(best / 6.0, 0.0, 1.0))
++
++
++def rank_unreacted_events(items: list[dict[str, Any]], zs: dict[str, np.ndarray],
++                          game_eps: list[Episode]) -> None:
++    """Coincidence for game events with no reaction episode (contract §2:
++    a top rank needs reaction evidence AND context, never one alone).
++
++    Each ``silent_action`` item gets ``coincidence`` = min(event strength
++    relative to the task's strongest event, the streamer's reaction level
++    around it). The loudest explosion while the streamer sits still and
++    silent therefore ranks below a weaker event the streamer visibly or
++    audibly responds to.
++    """
++    peak = max((g.strength for g in game_eps), default=0.0)
++    for it in items:
++        if it.get("type") != "silent_action" or it.get("event") is None:
++            continue
++        # Square root: event strengths are heavy-tailed, and one huge
++        # explosion must not flatten every other event in the task.
++        event_level = float(np.sqrt(float(it["event"].strength) / peak)) if peak > 0 else 0.0
++        level = reaction_level(zs, it["start"] - 1.0, it["end"] + 3.0)
++        it["coincidence"] = round(min(event_level, level), 3)
+ 
+ 
+ def modalities(it: dict[str, Any]) -> set[str]:
+@@ -537,7 +796,9 @@ def modalities(it: dict[str, Any]) -> set[str]:
+ def _score(it: dict[str, Any]) -> float:
+     base = 38.0 + 7.0 * float(np.sqrt(max(it["strength"], 0.0)))
+     if it["type"] == "silent_action":
+-        return float(min(40.0, base * it["mult"]))
++        if "coincidence" in it:
++            return float(_SILENT_ACTION_CAP * it["coincidence"])
++        return float(min(_SILENT_ACTION_CAP, base * it["mult"]))
+     kind_bonus = {"laughter": 8.0, "shout": 6.0, "vocal_burst": 3.0, "silent_facecam": 0.0}.get(it["kind"], 0.0)
+     score = float(min(98.0, (base + kind_bonus) * it["mult"]))
+     # Coincidence rule: a top-ranked moment needs at least TWO modalities —
+@@ -606,7 +867,7 @@ def contract_fields(
+     game_event: Optional[np.ndarray],
+ ) -> dict[str, Any]:
+     """signals / fused_score / reason for one moment window (contract §2)."""
+-    acoustic = [zs[k] for k in ("vocal", "pitch", "laugh") if k in zs]
++    acoustic = [zs[k] for k in ("vocal", "pitch", "laugh", "mic_loud") if k in zs]
+     voice_z = (
+         max(_window_peak(s, start, end) or 0.0 for s in acoustic)
+         if voice_present and acoustic else None
+@@ -702,7 +963,10 @@ def select_streamer_moments(
+         roi = facecam_roi
+         if face is None:
+             roi = roi or find_facecam(video_path, duration)
+-            face = extract_facecam_activity(video_path, roi) if roi else None
++            face = (
++                (extract_face_activity if face_activity_mode() == "face" else extract_facecam_activity)(video_path, roi)
++                if roi else None
++            )
+         words_s = _words_in_seconds(words, duration)
+         lexical = lexical_series(words_s, int(duration) + 1) if words_s else None
+         strength, zs, voice_present = reaction_series(voice, face, lexical)
+@@ -715,6 +979,8 @@ def select_streamer_moments(
+         game_eps = find_game_episodes(g_event, g_zs, None)
+         items = correlate(_episodes(strength, zs), game_eps, streamer_present)
+         check_voice_source(items, video_path, roi)
++        if fusion_enabled():
++            rank_unreacted_events(items, zs, game_eps)
+     except Exception:
+         logger.warning("Streamer-reaction detection failed for %s", video_path, exc_info=True)
+         return []
+@@ -725,7 +991,10 @@ def select_streamer_moments(
+     # Game events the streamer ignored are only a last resort: when the
+     # streamer reacted to anything, an unreacted explosion is not a clip.
+     if any(i["type"] in ("reaction_to_event", "commentary_reaction") for i in items):
+-        items = [i for i in items if i["type"] != "silent_action"]
++        # Under REACTION_FUSION an event the streamer partly responds to
++        # (coincidence >= _COINCIDENCE_KEEP) stays, ranked below real reactions.
++        items = [i for i in items if i["type"] != "silent_action"
++                 or (fusion_enabled() and i.get("coincidence", 0.0) >= _COINCIDENCE_KEEP)]
+     for it in sorted(items, key=lambda i: -_score(i)):
+         score = _score(it)
+         if it["type"] == "silent_facecam" and score < 45:
+diff --git a/backend/tests/unit/test_reaction_fusion.py b/backend/tests/unit/test_reaction_fusion.py
+new file mode 100644
+index 0000000..ec7c414
+--- /dev/null
++++ b/backend/tests/unit/test_reaction_fusion.py
+@@ -0,0 +1,117 @@
++"""Reaction fusion fixes found with Sanji's streamer fixture v2 (2026-11-17).
++
++* Split stereo (mic on one channel, game on the other): the mic is read alone.
++* A scream counts: pitch far above the streamer's own with a raised voice.
++* On a known mic channel, the streamer's own loudest seconds are bursts.
++* A laugh pulse needs the voice raised in that second.
++* Unreacted game events rank by coincidence (event AND reaction), so the
++  loudest explosion with a still, silent streamer is not a top pick.
++* REACTION_FUSION=0 restores the previous behaviour.
++"""
++
++import shutil
++import subprocess
++
++import numpy as np
++import pytest
++
++from src.auto_director import reaction_moments as rm
++from src.auto_director.gameplay_moments import Episode
++
++needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
++
++
++@pytest.fixture(autouse=True)
++def _defaults(monkeypatch):
++    for key in ("REACTION_FUSION", "REACTION_MIC_CHANNEL", "REACTION_FACE_ACTIVITY"):
++        monkeypatch.delenv(key, raising=False)
++
++
++def _stereo(path, left, right, seconds=8):
++    subprocess.run(
++        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"{left}:duration={seconds}",
++         "-f", "lavfi", "-i", f"{right}:duration={seconds}",
++         "-filter_complex", "[0:a][1:a]join=inputs=2:channel_layout=stereo[a]",
++         "-map", "[a]", "-ar", "16000", str(path)],
++        check=True, capture_output=True,
++    )
++
++
++@needs_ffmpeg
++def test_split_stereo_reads_the_voiced_channel(tmp_path):
++    split = tmp_path / "split.wav"
++    _stereo(split, "anoisesrc=color=pink:amplitude=0.3", "sine=frequency=440:sample_rate=16000")
++    assert rm.pick_voice_channel(split, 8.0) == 1
++    same = tmp_path / "same.wav"
++    _stereo(same, "sine=frequency=440:sample_rate=16000", "sine=frequency=440:sample_rate=16000")
++    assert rm.pick_voice_channel(same, 8.0) is None
++
++
++@needs_ffmpeg
++def test_mic_channel_switch_off(tmp_path, monkeypatch):
++    split = tmp_path / "split.wav"
++    _stereo(split, "anoisesrc=color=pink:amplitude=0.3", "sine=frequency=440:sample_rate=16000")
++    monkeypatch.setenv("REACTION_MIC_CHANNEL", "0")
++    assert rm.pick_voice_channel(split, 8.0) is None
++
++
++def _voice(seconds=60):
++    rng = np.random.default_rng(7)
++    return {
++        "vocal": 30 + rng.normal(0, 0.5, seconds),
++        "f0": 140 + rng.normal(0, 3, seconds),
++        "voiced_frac": np.full(seconds, 0.6),
++        "laugh": np.abs(rng.normal(0.1, 0.02, seconds)),
++        "total_db": np.full(seconds, 40.0),
++    }
++
++
++def test_scream_rule_needs_high_pitch_and_a_raised_voice(monkeypatch):
++    v = _voice()
++    v["f0"][30:32] += 140          # pitch far above the streamer's own
++    v["vocal"][30:32] += 4.5       # voice raised, but below the shout bar
++    strength, zs, _ = rm.reaction_series(v, None, None)
++    assert zs["pitch"][30] >= rm._SCREAM_PITCH_Z and zs["vocal"][30] < rm._ACTIVE_Z
++    assert strength[30] > 0
++    monkeypatch.setenv("REACTION_FUSION", "0")
++    strength_off, _, _ = rm.reaction_series(v, None, None)
++    assert strength_off[30] == 0
++
++
++def test_mic_burst_makes_a_vocal_burst_episode():
++    v = _voice(150)
++    rng = np.random.default_rng(8)
++    v["mic_loud"] = 40 + rng.normal(0, 2.2, 150)    # talk that swings a lot
++    v["mic_loud"][107:109] = 46.5                   # the loudest seconds of the file
++    v["vocal"][107:109] += 4.5
++    strength, zs, _ = rm.reaction_series(v, None, None)
++    assert strength[107] > 0 and strength[108] > 0
++    episodes = rm._episodes(strength, zs)
++    assert any(e["start"] <= 107 <= e["end"] and e["kind"] == "vocal_burst" for e in episodes)
++
++
++def test_laugh_needs_a_raised_voice():
++    v = _voice()
++    v["laugh"][20] = 1.5           # a pulse at a speech -> silence edge
++    _, zs, _ = rm.reaction_series(v, None, None)
++    assert zs["laugh"][20] <= 0.0
++
++
++def _episode(start, end, strength):
++    return Episode(start=start, end=end, peak=start + 1, strength=strength,
++                   features={}, event_type="action")
++
++
++def test_coincidence_ranks_a_reacted_event_above_a_louder_ignored_one():
++    zs = {"vocal": np.zeros(60), "face": np.zeros(60)}
++    zs["face"][12:15] = 3.0        # the streamer reacts to the small event
++    loud, small = _episode(40, 46, 200.0), _episode(10, 13, 50.0)
++    items = [
++        {"type": "silent_action", "start": 40, "end": 46, "event": loud, "strength": 50.0, "mult": 0.45},
++        {"type": "silent_action", "start": 10, "end": 13, "event": small, "strength": 12.5, "mult": 0.45},
++    ]
++    rm.rank_unreacted_events(items, zs, [loud, small])
++    ignored, reacted = items
++    assert ignored["coincidence"] == 0.0
++    assert reacted["coincidence"] > 0.25
++    assert rm._score(reacted) > rm._score(ignored)
+diff --git a/tools/phase2/gate_compare.py b/tools/phase2/gate_compare.py
+index 9d5e3ca..6bfe525 100644
+--- a/tools/phase2/gate_compare.py
++++ b/tools/phase2/gate_compare.py
+@@ -66,6 +66,8 @@ def main() -> int:
+     ap.add_argument("--out", required=True)
+     ap.add_argument("--clips", default=str(ROOT / "test-footage" / "gate_compare_clips"))
+     a = ap.parse_args()
++    out_path = Path(a.out).resolve()
++    clips_dir = Path(a.clips).resolve()
+     backend = Path(a.repo).resolve() / "backend"
+     sys.path.insert(0, str(backend))
+     os.chdir(backend)
+@@ -76,7 +78,7 @@ def main() -> int:
+         source = ROOT / "test-footage" / rel
+         if not source.exists():
+             continue
+-        clip = _excerpt(source, Path(a.clips))
++        clip = _excerpt(source, clips_dir)
+         width, height, _ = _probe(clip)
+         t = time.time()
+         try:
+@@ -87,7 +89,7 @@ def main() -> int:
+                "seconds": round(time.time() - t, 1)}
+         rows.append(row)
+         print(json.dumps(row), flush=True)
+-    Path(a.out).write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
++    out_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+     return 0
+ 
+ 
+-- 
+2.56.0.windows.2
+

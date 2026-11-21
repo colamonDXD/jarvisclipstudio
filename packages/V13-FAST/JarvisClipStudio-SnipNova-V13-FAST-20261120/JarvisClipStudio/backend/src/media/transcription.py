@@ -1,0 +1,1253 @@
+"""Transcription helpers for the video pipeline."""
+
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+import gc
+import os
+from pathlib import Path
+import assemblyai as aai
+from ..config import get_config
+import httpx
+import json
+import re
+import time
+from .common import (
+    ANALYSIS_LONG_UTTERANCE_MAX_DURATION_MS,
+    ANALYSIS_LONG_UTTERANCE_MAX_WORDS,
+    ANALYSIS_SEGMENT_MAX_DURATION_MS,
+    ANALYSIS_SEGMENT_MAX_WORDS,
+    ANALYSIS_SEGMENT_MIN_WORDS,
+    ANALYSIS_UTTERANCE_SPLIT_THRESHOLD_MS,
+    ANALYSIS_UTTERANCE_SPLIT_THRESHOLD_WORDS,
+    TRANSCRIPT_CACHE_SCHEMA_VERSION,
+    _FASTER_WHISPER_AVAILABLE,
+    _FASTER_WHISPER_MODEL_CACHE,
+    _WHISPER_AVAILABLE,
+    _WHISPER_MODEL_CACHE,
+    _ctranslate2,
+    _faster_whisper,
+    _whisper,
+    logger,
+)
+from . import separation
+from .ffmpeg import (
+    run_ffmpeg_command,
+    select_audio_stream_index,
+)
+from .vram import log_vram, request_ollama_unload
+
+
+def transcription_audio_path(video_path: Path) -> Path:
+    """Where the transcription audio for ``video_path`` lives (or would).
+
+    The single naming rule for the extracted MP3, shared with the
+    audio-peaks pass in media.timeline: that pass reads this file when
+    it exists instead of decoding the full source audio a second time.
+    """
+    return video_path.with_name(f"{video_path.stem}.transcription.mp3")
+
+
+def stem_transcription_audio_path(video_path: Path) -> Path:
+    """Where the vocals-stem transcription audio for ``video_path`` lives.
+
+    Kept distinct from :func:`transcription_audio_path`: the two caches
+    hold different audio (separated vocals vs the raw mix) and must
+    never satisfy each other's cache check.
+    """
+    return video_path.with_name(f"{video_path.stem}.transcription.vocals.mp3")
+
+
+def _extract_stem_transcription_audio(video_path: Path, vocals_stem: Path) -> Optional[Path]:
+    """Extract the transcription MP3 from a separated vocals stem.
+
+    Returns None on any failure; the caller then falls back to the
+    original source audio, so a corrupt stem can never block or poison
+    transcription.
+    """
+    audio_path = stem_transcription_audio_path(video_path)
+    if audio_path.exists() and audio_path.stat().st_size > 0:
+        return audio_path
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(vocals_stem),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-b:a",
+        "64k",
+        str(audio_path),
+    ]
+    try:
+        result = run_ffmpeg_command(command, timeout=900)
+    except FileNotFoundError:
+        logger.warning("ffmpeg is not available; cannot extract stem audio")
+        return None
+    if result.returncode != 0 or not audio_path.exists() or audio_path.stat().st_size == 0:
+        logger.warning(
+            "Failed to extract transcription audio from the vocals stem; "
+            "falling back to the original audio"
+        )
+        return None
+    logger.info("Prepared stem transcription audio: %s", audio_path)
+    return audio_path
+
+
+def _prepare_audio_for_transcription(
+    video_path: Path, *, vocals_stem: Optional[Path] = None
+) -> Path:
+    """Extract a compact audio-only file for transcription.
+
+    With ``vocals_stem`` (voice/music separation, opt-in tasks only)
+    the MP3 is extracted from the separated vocals instead of the raw
+    mix; any failure there falls through to the original extraction
+    below, which is otherwise byte-identical to the pre-feature path.
+    """
+    if vocals_stem is not None:
+        stem_audio = _extract_stem_transcription_audio(video_path, vocals_stem)
+        if stem_audio is not None:
+            return stem_audio
+    audio_path = transcription_audio_path(video_path)
+    if audio_path.exists() and audio_path.stat().st_size > 0:
+        return audio_path
+
+    # Transcribe the same track the renderer cuts, not ffmpeg's implicit pick.
+    audio_stream = select_audio_stream_index(video_path)
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video_path),
+        *(["-map", f"0:a:{audio_stream}"] if audio_stream is not None else []),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-b:a",
+        "64k",
+        str(audio_path),
+    ]
+    try:
+        result = run_ffmpeg_command(command, timeout=900)
+    except FileNotFoundError:
+        logger.warning(
+            "ffmpeg is not available; falling back to source video for transcription"
+        )
+        return video_path
+
+    if result.returncode != 0 or not audio_path.exists() or audio_path.stat().st_size == 0:
+        logger.warning(
+            "Failed to extract transcription audio with ffmpeg; falling back to source video"
+        )
+        return video_path
+
+    logger.info(
+        "Prepared transcription audio: %s (%.2f MB)",
+        audio_path,
+        audio_path.stat().st_size / (1024 * 1024),
+    )
+    return audio_path
+
+
+def _submit_and_wait_for_assemblyai_transcript(
+    transcriber,
+    media_path: Path,
+    config_obj,
+    timeout_seconds: int,
+):
+    """Submit a transcript job and poll with a total timeout."""
+    # Uploads are safe to retry: they do not create a paid transcript. Keep the
+    # transcript POST outside this loop because a timeout may hide its success.
+    for attempt in range(1, 4):
+        try:
+            audio_url = transcriber.upload_file(str(media_path))
+            break
+        except (httpx.TransportError, aai.AssemblyAIError) as error:
+            status = getattr(error, "status_code", None)
+            retryable = isinstance(error, httpx.TransportError) or status in {408, 429, 500, 502, 503, 504}
+            if not retryable:
+                raise
+            if attempt == 3:
+                raise RuntimeError(
+                    "AssemblyAI audio upload unavailable after 3 attempts"
+                    + (f" (HTTP {status})." if status else ".")
+                ) from None
+            logger.warning("AssemblyAI audio upload failed (HTTP %s); retrying upload (%s/3)", status, attempt)
+            time.sleep(2.0 ** attempt)
+    submitted = transcriber.submit(audio_url, config=config_obj)
+    if not submitted.id:
+        raise RuntimeError("AssemblyAI did not return a transcript ID")
+
+    logger.info("AssemblyAI transcript submitted: %s", submitted.id)
+    deadline = time.monotonic() + timeout_seconds
+    next_log_at = 0.0
+    consecutive_failures = 0
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"AssemblyAI transcript {submitted.id} did not complete within {timeout_seconds}s"
+            )
+        # The SDK poller uses the upload timeout (often 900s) for every GET.
+        # Bound each poll without changing the shared client's timeout.
+        try:
+            response = submitted._client.http_client.get(  # noqa: SLF001
+                f"{aai.api.ENDPOINT_TRANSCRIPT}/{submitted.id}",
+                timeout=min(30.0, remaining),
+            )
+            response.raise_for_status()
+            response = aai.types.TranscriptResponse(**response.json())
+            consecutive_failures = 0
+        except (httpx.TransportError, httpx.HTTPStatusError) as error:
+            if isinstance(error, httpx.HTTPStatusError) and error.response.status_code not in {408, 429, 500, 502, 503, 504}:
+                raise
+            consecutive_failures += 1
+            logger.warning("AssemblyAI status polling unavailable; retrying the existing transcript")
+            time.sleep(min(30.0, 2.0 ** min(consecutive_failures, 4),
+                           max(0.0, deadline - time.monotonic())))
+            continue
+        transcript = aai.Transcript.from_response(
+            client=submitted._client,  # noqa: SLF001
+            response=response,
+        )
+
+        if transcript.status in (
+            aai.TranscriptStatus.completed,
+            aai.TranscriptStatus.error,
+        ):
+            return transcript
+
+        now = time.monotonic()
+        if now >= deadline:
+            raise TimeoutError(
+                f"AssemblyAI transcript {submitted.id} did not complete within {timeout_seconds}s"
+            )
+
+        if now >= next_log_at:
+            logger.info(
+                "AssemblyAI transcript %s still %s",
+                submitted.id,
+                transcript.status,
+            )
+            next_log_at = now + 30
+
+        time.sleep(min(aai.settings.polling_interval, max(0.0, deadline - now)))
+
+
+def _assemblyai_speech_models_value(speech_model: str) -> List[str]:
+    """Prefer Universal-3.5 Pro; retain Universal-2 for unsupported languages.
+
+    Explicit low-cost aliases remain available for self-hosted configurations.
+    Legacy quality aliases upgrade to the current Pro model.
+    """
+    normalized = (speech_model or "universal-3-5-pro").strip().lower()
+    if normalized in {"nano", "universal-2"}:
+        return ["universal-2"]
+    return ["universal-3-5-pro", "universal-2"]
+
+
+def _get_whisper_model(model_name: str = "base"):
+    """Load and cache a Whisper model by name."""
+    if not _WHISPER_AVAILABLE:
+        raise RuntimeError(
+            "Whisper is not installed. Install it with: uv add openai-whisper"
+        )
+    if model_name not in _WHISPER_MODEL_CACHE:
+        logger.info("Loading Whisper model: %s", model_name)
+        _WHISPER_MODEL_CACHE[model_name] = _whisper.load_model(model_name)
+    return _WHISPER_MODEL_CACHE[model_name]
+
+
+def transcribe_with_whisper(
+    video_path: Path,
+    model_name: str = "base",
+    language: Optional[str] = None,
+    *,
+    vocals_stem: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Transcribe video using local Whisper with word-level timestamps.
+
+    ``language`` None lets Whisper detect it; AssemblyAI-style codes such as
+    ``en_us`` are reduced to the ISO 639-1 base Whisper expects.
+    """
+    # The historical call shape is kept when no stem is in play, so the
+    # default path is literally the pre-feature one.
+    if vocals_stem is not None:
+        audio_path = _prepare_audio_for_transcription(
+            video_path, vocals_stem=vocals_stem
+        )
+    else:
+        audio_path = _prepare_audio_for_transcription(video_path)
+    model = _get_whisper_model(model_name)
+    whisper_language = language.split("_", 1)[0] if language else None
+    logger.info(
+        "Starting Whisper transcription with model: %s (language: %s)",
+        model_name,
+        whisper_language or "auto",
+    )
+    return model.transcribe(str(audio_path), word_timestamps=True, language=whisper_language)
+
+
+# Models that need noticeably more activation memory per batched window at
+# float16: the distilled/large class. On a 6 GB laptop GPU, batch 16 with
+# these can OOM where medium at batch 16 fits, so their CUDA default is 8.
+# See docs/transcription-speed.md for the research behind these numbers.
+_FASTER_WHISPER_LARGE_MODELS = frozenset(
+    {
+        "large",
+        "large-v1",
+        "large-v2",
+        "large-v3",
+        "large-v3-turbo",
+        "turbo",
+        "distil-large-v2",
+        "distil-large-v3",
+        "distil-large-v3.5",
+    }
+)
+
+
+def _resolve_faster_whisper_batch_size(model_name: str, device: str) -> int:
+    """Resolve the batched-inference batch size for one transcription.
+
+    ``WHISPER_BATCH_SIZE`` (exposed as ``Config.whisper_batch_size``) wins
+    when set to a positive value. Otherwise large-class models on CUDA
+    default to 8 and everything else to 16 — the value the pipeline has
+    always used, so an unset env leaves default behaviour unchanged.
+    """
+    configured = getattr(get_config(), "whisper_batch_size", 0) or 0
+    if configured > 0:
+        return max(1, min(64, int(configured)))
+    normalized = (model_name or "").strip().lower()
+    is_large = normalized in _FASTER_WHISPER_LARGE_MODELS or normalized.endswith(
+        ("distil-large-v3.5-ct2", "distil-large-v3-ct2")
+    )
+    if device == "cuda" and is_large:
+        return 8
+    return 16
+
+
+def _is_cuda_oom_error(error: BaseException) -> bool:
+    """Best-effort detection of a CUDA out-of-memory failure.
+
+    CTranslate2 raises RuntimeError with the CUDA error text embedded
+    (for example "CUDA failed with error out of memory"); matching the
+    message keeps this decoupled from any specific exception class.
+    """
+    message = str(error).lower()
+    return "out of memory" in message or "cuda_error_out_of_memory" in message
+
+
+_CUDA_UNUSABLE_REASON: Optional[str] = None
+
+
+def _mark_cuda_unusable(error: BaseException) -> None:
+    """Remember for this process that CUDA cannot run faster-whisper."""
+    global _CUDA_UNUSABLE_REASON
+    if _CUDA_UNUSABLE_REASON is None:
+        _CUDA_UNUSABLE_REASON = str(error)[:200]
+        logger.warning("faster-whisper: CUDA unusable on this host (%s); using CPU int8 from now on",
+                       _CUDA_UNUSABLE_REASON)
+
+
+def _is_cuda_unusable_error(error: BaseException) -> bool:
+    """A CUDA failure that a CPU retry fixes: out of memory, or the CUDA
+    runtime libraries missing on this host (a GPU is visible but cuBLAS /
+    cuDNN cannot be loaded — the usual state of a Windows machine running
+    outside the Docker image, which ships those libraries)."""
+    if _is_cuda_oom_error(error):
+        return True
+    message = str(error).lower()
+    return any(marker in message for marker in (
+        "cublas", "cudnn", "cannot be loaded", "libcuda", "cuda driver", "no cuda gpus",
+    ))
+
+
+def _faster_whisper_device_and_compute_type() -> tuple:
+    """Pick the fastest CTranslate2 execution settings for this machine.
+
+    CUDA runs float16; CPU falls back to int8, the fastest CPU compute type
+    with negligible accuracy loss for transcription.
+    """
+    forced = os.environ.get("WHISPER_DEVICE", "").strip().lower()
+    if forced == "cpu" or _CUDA_UNUSABLE_REASON is not None:
+        return "cpu", "int8"
+    try:
+        if forced == "cuda" or (
+            _ctranslate2 is not None and _ctranslate2.get_cuda_device_count() > 0
+        ):
+            return "cuda", "float16"
+    except Exception:  # pragma: no cover - defensive: probe failure means CPU
+        pass
+    return "cpu", "int8"
+
+
+def _get_faster_whisper_model(
+    model_name: str = "base",
+    device: Optional[str] = None,
+    compute_type: Optional[str] = None,
+):
+    """Load and cache a faster-whisper model by name.
+
+    Models loaded with an explicit device/compute override (the CPU
+    fallback used after a CUDA OOM) are cached under a distinct key so the
+    regular CUDA instance is neither clobbered nor returned by mistake.
+    """
+    if not _FASTER_WHISPER_AVAILABLE:
+        raise RuntimeError(
+            "faster-whisper is not installed. Install it with: uv add faster-whisper"
+        )
+    if device is None and compute_type is None:
+        cache_key = model_name
+    else:
+        auto_device, auto_compute = _faster_whisper_device_and_compute_type()
+        device = device or auto_device
+        compute_type = compute_type or auto_compute
+        cache_key = f"{model_name}@{device}/{compute_type}"
+    if cache_key not in _FASTER_WHISPER_MODEL_CACHE:
+        if device is None or compute_type is None:
+            device, compute_type = _faster_whisper_device_and_compute_type()
+        logger.info(
+            "Loading faster-whisper model: %s (device: %s, compute: %s)",
+            model_name,
+            device,
+            compute_type,
+        )
+        _FASTER_WHISPER_MODEL_CACHE[cache_key] = _faster_whisper.WhisperModel(
+            model_name, device=device, compute_type=compute_type
+        )
+    return _FASTER_WHISPER_MODEL_CACHE[cache_key]
+
+
+def release_faster_whisper_models() -> int:
+    """Drop every cached faster-whisper model, freeing its GPU memory.
+
+    The cache otherwise holds the model for the life of the worker
+    process: on the reference 6 GB card a resident medium model
+    (~2-3.5 GB working set) sits next to whatever the next stage loads
+    — worst case the local LLM's ~5.5 GB during classification, which
+    is the one genuinely likely VRAM collision (Wave-4 VRAM scoping,
+    section 3). Eviction is cheap insurance: the model reloads in
+    seconds on the next transcription, and transcripts are cached
+    per-source downstream, so a reload rarely re-runs inference.
+
+    Returns how many cached models were released. Best-effort by
+    contract: eviction must never fail a stage, so it swallows its
+    own errors and reports 0.
+    """
+    try:
+        released = len(_FASTER_WHISPER_MODEL_CACHE)
+        if released:
+            _FASTER_WHISPER_MODEL_CACHE.clear()
+            gc.collect()
+            logger.info(
+                "Released %d cached faster-whisper model(s) to free GPU memory",
+                released,
+            )
+        return released
+    except Exception:  # pragma: no cover - defensive: eviction never fails a stage
+        return 0
+
+
+def _faster_whisper_result_to_whisper_dict(segments, info) -> Dict[str, Any]:
+    """Convert faster-whisper output to the openai-whisper result shape.
+
+    Both engines report timings in seconds, so only the attribute-style
+    segment/word objects need flattening into the plain dicts every consumer
+    (analysis formatting, transcript cache, captions) already understands:
+    ``{"text", "language", "segments": [{"start", "end", "text", "words":
+    [{"word", "start", "end", "probability"}]}]}``.
+    """
+    segment_dicts: List[Dict[str, Any]] = []
+    text_parts: List[str] = []
+    for segment in segments:
+        segment_dicts.append(
+            {
+                "id": getattr(segment, "id", len(segment_dicts)),
+                # Cast to plain floats: faster-whisper may hand back numpy
+                # scalars, which downstream JSON caching cannot serialize.
+                "start": float(segment.start),
+                "end": float(segment.end),
+                "text": segment.text,
+                "words": [
+                    {
+                        "word": word.word,
+                        "start": float(word.start),
+                        "end": float(word.end),
+                        "probability": float(word.probability),
+                    }
+                    for word in segment.words or []
+                ],
+            }
+        )
+        text_parts.append(segment.text)
+
+    return {
+        "text": "".join(text_parts),
+        "language": getattr(info, "language", None),
+        "segments": segment_dicts,
+    }
+
+
+def transcribe_with_faster_whisper(
+    video_path: Path,
+    model_name: str = "base",
+    language: Optional[str] = None,
+    *,
+    vocals_stem: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Transcribe video using faster-whisper with word-level timestamps.
+
+    Returns the same dict shape as :func:`transcribe_with_whisper` so no
+    downstream consumer changes. Silence is skipped with the VAD filter and
+    the batched pipeline is used when the installed faster-whisper provides
+    it, falling back to the plain sequential transcribe on any failure.
+    """
+    if vocals_stem is not None:
+        audio_path = _prepare_audio_for_transcription(
+            video_path, vocals_stem=vocals_stem
+        )
+    else:
+        audio_path = _prepare_audio_for_transcription(video_path)
+    try:
+        model = _get_faster_whisper_model(model_name)
+    except Exception as error:
+        if not _is_cuda_unusable_error(error):
+            raise
+        # A WhisperModel constructor OOM used to propagate and fail
+        # the whole transcription stage (Wave-4 VRAM scoping, section
+        # 2). Retry the load once on CPU int8 — the same last rung the
+        # batched ladder below already falls back to.
+        logger.warning(
+            "faster-whisper model load ran out of GPU memory; "
+            "falling back to the CPU int8 model"
+        )
+        model = _get_faster_whisper_model(
+            model_name, device="cpu", compute_type="int8"
+        )
+    whisper_language = language.split("_", 1)[0] if language else None
+    logger.info(
+        "Starting faster-whisper transcription with model: %s (language: %s)",
+        model_name,
+        whisper_language or "auto",
+    )
+    transcribe_kwargs: Dict[str, Any] = {
+        "language": whisper_language,
+        "word_timestamps": True,
+        "vad_filter": True,
+    }
+
+    segments = None
+    info = None
+    batched_pipeline_cls = getattr(_faster_whisper, "BatchedInferencePipeline", None)
+    if batched_pipeline_cls is not None:
+        device, _compute_type = _faster_whisper_device_and_compute_type()
+        batch_size = _resolve_faster_whisper_batch_size(model_name, device)
+        active_model = model
+        # A CUDA OOM mid-transcription is usually the batch, not the model:
+        # retry once with the batch halved, then once on CPU int8, before
+        # giving up on the batched path. Non-OOM failures keep the historic
+        # behaviour of a single attempt before the sequential fallback.
+        for attempt in range(3):
+            try:
+                batched = batched_pipeline_cls(model=active_model)
+                raw_segments, info = batched.transcribe(
+                    str(audio_path), batch_size=batch_size, **transcribe_kwargs
+                )
+                # The segments are a lazy generator: materialize inside the
+                # try so decode failures also fall back a level.
+                segments = list(raw_segments)
+                break
+            except Exception as error:
+                segments = None
+                info = None
+                if device != "cuda" or not _is_cuda_unusable_error(error):
+                    logger.warning(
+                        "Batched faster-whisper transcription failed; "
+                        "falling back to sequential transcription",
+                        exc_info=True,
+                    )
+                    break
+                if not _is_cuda_oom_error(error):
+                    # CUDA runtime libraries missing: a smaller batch can
+                    # never help, and a further GPU call after this failure
+                    # can hang. Remember it and go straight to CPU int8.
+                    _mark_cuda_unusable(error)
+                    attempt = max(attempt, 1)
+                if attempt == 0 and batch_size > 1:
+                    batch_size = max(1, batch_size // 2)
+                    logger.warning(
+                        "Batched faster-whisper transcription ran out of GPU "
+                        "memory; retrying with batch_size=%d",
+                        batch_size,
+                    )
+                    continue
+                if attempt <= 1:
+                    logger.warning(
+                        "Batched faster-whisper transcription cannot use the GPU "
+                        "(%s) at batch_size=%d; falling back to CPU int8",
+                        "out of memory" if _is_cuda_oom_error(error) else "CUDA libraries unavailable",
+                        batch_size,
+                    )
+                    try:
+                        active_model = _get_faster_whisper_model(
+                            model_name, device="cpu", compute_type="int8"
+                        )
+                    except Exception:
+                        logger.warning(
+                            "CPU fallback model could not be loaded; "
+                            "falling back to sequential transcription",
+                            exc_info=True,
+                        )
+                        break
+                    continue
+                logger.warning(
+                    "Batched faster-whisper transcription failed on the CPU "
+                    "fallback; falling back to sequential transcription",
+                    exc_info=True,
+                )
+                break
+        # If every batched attempt failed after an OOM fallback, `model` is
+        # still the CUDA instance; re-point it at the CPU fallback (when one
+        # was loaded) so the sequential retry does not OOM the same way.
+        if segments is None and active_model is not model:
+            model = active_model
+
+    if segments is None:
+        try:
+            raw_segments, info = model.transcribe(
+                str(audio_path), **transcribe_kwargs
+            )
+            segments = list(raw_segments)
+        except Exception as error:
+            if not _is_cuda_unusable_error(error):
+                raise
+            # The sequential path had no OOM handling at all: the
+            # failure the batched ladder absorbs used to fail the
+            # stage outright. Retry once on the CPU int8 model —
+            # unless the model in hand already IS that model (the
+            # batched ladder re-points `model` at its CPU fallback
+            # after its own OOM retries), where a retry would only
+            # repeat the failure, and unless the fallback cannot even
+            # load, where the original error is the honest one.
+            try:
+                cpu_model = _get_faster_whisper_model(
+                    model_name, device="cpu", compute_type="int8"
+                )
+            except Exception:
+                cpu_model = None
+            if cpu_model is None or cpu_model is model:
+                raise
+            logger.warning(
+                "Sequential faster-whisper transcription ran out of GPU "
+                "memory; retrying on the CPU int8 model"
+            )
+            raw_segments, info = cpu_model.transcribe(
+                str(audio_path), **transcribe_kwargs
+            )
+            segments = list(raw_segments)
+
+    if not segments:
+        # VAD rescue (diagnosis, 2026-11-19, captions-fix lane): the
+        # Silero VAD at its default threshold can reject EVERY second of
+        # a real streamer window — Kai Cenat talking over gameplay came
+        # back with zero segments, so the clip burned no captions at
+        # all. When (and only when) the VAD run found nothing at all,
+        # retry once without the filter: on that window the retry
+        # recovered the streamer's actual speech (22 words). Content
+        # where the VAD finds speech is untouched, because the unfiltered
+        # pass is strictly noisier (it hallucinates over music and game
+        # noise — measured on the same clips), so it must never replace
+        # a non-empty result. No initial_prompt is used anywhere here:
+        # measured on the same audio, a prompt made the model transcribe
+        # the prompt itself / invent lyrics over the game mix.
+        try:
+            raw_segments, info = model.transcribe(
+                str(audio_path),
+                language=whisper_language,
+                word_timestamps=True,
+                vad_filter=False,
+            )
+            segments = list(raw_segments)
+            if segments:
+                logger.warning(
+                    "faster-whisper VAD found no speech; the unfiltered "
+                    "retry recovered %d segments",
+                    len(segments),
+                )
+        except Exception:
+            logger.warning(
+                "faster-whisper VAD rescue retry failed; keeping the "
+                "empty transcript",
+                exc_info=True,
+            )
+
+    return _faster_whisper_result_to_whisper_dict(segments, info)
+
+
+def _whisper_result_to_transcript_data(whisper_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a Whisper result dict to the standard transcript-cache format.
+
+    Whisper reports timings in seconds; the cache (and AssemblyAI path) stores
+    milliseconds, so each timestamp is multiplied by 1000 here.
+    """
+    words_data: List[Dict[str, Any]] = []
+    utterances_data: List[Dict[str, Any]] = []
+
+    for segment in whisper_result.get("segments") or []:
+        seg_words = [
+            {
+                "text": w.get("word", w.get("text", "")),
+                "start": int(w["start"] * 1000) if isinstance(w.get("start"), float) else int(w.get("start", 0)),
+                "end": int(w["end"] * 1000) if isinstance(w.get("end"), float) else int(w.get("end", 0)),
+                "confidence": w.get("probability", w.get("confidence", 1.0)),
+                "speaker": None,
+            }
+            for w in segment.get("words") or []
+        ]
+        utterances_data.append(
+            {
+                "text": segment.get("text", ""),
+                "start": int(segment["start"] * 1000) if "start" in segment else 0,
+                "end": int(segment["end"] * 1000) if "end" in segment else 0,
+                "speaker": None,
+                "words": seg_words,
+            }
+        )
+        words_data.extend(seg_words)
+
+    return {
+        "version": TRANSCRIPT_CACHE_SCHEMA_VERSION,
+        "words": words_data,
+        "utterances": utterances_data,
+        "text": whisper_result.get("text", ""),
+        "language_code": whisper_result.get("language"),
+    }
+
+
+def transcribe_with_youtube_captions(video_url: str) -> Optional[str]:
+    """Extract a plain-text transcript from a YouTube video's captions via yt-dlp.
+
+    Only valid for YouTube-sourced videos. Returns plain text without word-level
+    timestamps, so subtitle generation is not supported on this path.
+    """
+    try:
+        import yt_dlp
+    except ImportError:
+        logger.error("yt-dlp is required for YouTube caption extraction")
+        return None
+
+    video_id = None
+    match = re.search(r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{11})", video_url)
+    if match:
+        video_id = match.group(1)
+
+    if not video_id:
+        logger.error("Could not extract YouTube video ID from URL: %s", video_url)
+        return None
+
+    temp_dir = Path(get_config().temp_dir)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    subs_path = temp_dir / f"{video_id}.en.vtt"
+
+    try:
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": ["en"],
+            "subtitlesformat": "vtt",
+            "skip_download": True,
+            "outtmpl": str(temp_dir / video_id),
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([video_url])
+
+        if subs_path.exists():
+            text = subs_path.read_text(encoding="utf-8")
+            lines = []
+            for line in text.splitlines():
+                stripped = line.strip()
+                if (
+                    stripped
+                    and not stripped.startswith("WEBVTT")
+                    and not stripped.startswith("Kind:")
+                    and not stripped.startswith("Language:")
+                    and "-->" not in line
+                    and not stripped.startswith("NOTE")
+                    and not re.match(r"^\d+$", stripped)
+                ):
+                    lines.append(stripped)
+            return " ".join(lines)
+
+        logger.warning("No English captions found for video %s", video_id)
+        return None
+
+    except Exception as e:
+        logger.error("Failed to extract YouTube captions: %s", e)
+        return None
+    finally:
+        for f in temp_dir.glob(f"{video_id}.*"):
+            if f.suffix in (".vtt", ".srt", ".ttml", ".json"):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+
+def get_video_transcript(
+    video_path: Path,
+    speech_model: str = "universal",
+    source_url: Optional[str] = None,
+    *,
+    separation_opt_in: bool = False,
+) -> str:
+    """Get a video transcript using the configured provider.
+
+    Dispatches to AssemblyAI, local Whisper, faster-whisper, or YouTube
+    captions based on ``TRANSCRIPTION_PROVIDER``. ``source_url`` enables the
+    youtube_captions provider, which needs the original URL rather than a
+    local file path.
+
+    ``separation_opt_in`` is the task's stored opt-in for voice/music
+    separation: when it is set AND the deployment enables the feature,
+    the source's vocals stem is separated (or reused from the stem
+    cache) and the audio-based providers transcribe that instead of
+    the raw mix. Separation returns None on any failure, in which case
+    transcription proceeds on the original audio exactly as before.
+    """
+    logger.info(f"Getting transcript for: {video_path}")
+    runtime_config = get_config()
+    provider = runtime_config.transcription_provider
+    log_vram("transcription_start")
+    if provider in ("whisper", "faster_whisper"):
+        # A local model is about to load onto the card. If the host
+        # Ollama still holds its ~5.5 GB model from an earlier local-LLM
+        # stage, ask it to unload first — a courtesy request only: it
+        # may refuse or be absent, and transcription proceeds either
+        # way (Wave-4 VRAM scoping, Option B item 2).
+        request_ollama_unload()
+
+    vocals_stem: Optional[Path] = None
+    if separation_opt_in and separation.separation_enabled():
+        # Separation is about to load its own model; a whisper model
+        # left resident by an earlier task must not sit next to it on
+        # a small card (Wave-4 VRAM scoping, section 3, item 2).
+        release_faster_whisper_models()
+        vocals_stem = separation.separate_vocals(video_path)
+        if vocals_stem is not None:
+            logger.info("Transcribing the separated vocals stem: %s", vocals_stem)
+
+    try:
+        # Handlers are called with the historical argument shape unless a
+        # stem actually exists — the no-separation path stays untouched.
+        stem_kwargs: Dict[str, Any] = (
+            {"vocals_stem": vocals_stem} if vocals_stem is not None else {}
+        )
+        if provider == "whisper":
+            return _get_transcript_with_whisper(
+                video_path, runtime_config, **stem_kwargs
+            )
+        if provider == "faster_whisper":
+            return _get_transcript_with_faster_whisper(
+                video_path, runtime_config, **stem_kwargs
+            )
+        if provider == "youtube_captions":
+            if not source_url:
+                raise ValueError(
+                    "youtube_captions provider requires a YouTube URL. "
+                    "Pass source_url to get_video_transcript()."
+                )
+            return _get_transcript_with_youtube_captions(source_url)
+        return _get_transcript_with_assemblyai(
+            video_path, speech_model, runtime_config, **stem_kwargs
+        )
+    finally:
+        log_vram("transcription_end")
+
+
+def _get_transcript_with_assemblyai(
+    video_path: Path,
+    speech_model: str,
+    runtime_config,
+    *,
+    vocals_stem: Optional[Path] = None,
+) -> str:
+    """Get transcript using AssemblyAI with word-level timing for precise subtitles."""
+    # A job owns its client: concurrent jobs must not mutate shared SDK settings.
+    client = aai.Client(settings=aai.Settings(
+        api_key=runtime_config.assembly_ai_api_key,
+        base_url=aai.settings.base_url,
+        http_timeout=getattr(runtime_config, "assembly_ai_request_timeout_seconds", 60),
+    ))
+    transcriber = aai.Transcriber(client=client)
+
+    # AssemblyAI now requires the plural `speech_models` list; the singular
+    # `best`/`nano`/`universal` values were deprecated server-side.
+    selected_model = getattr(runtime_config, "assembly_ai_speech_model", "") or speech_model
+    speech_models_value = _assemblyai_speech_models_value(selected_model)
+
+    # Without a language, AssemblyAI assumes US English and garbles everything
+    # else; detection also routes to the first listed model that supports it.
+    language = runtime_config.transcription_language
+    config_obj = aai.TranscriptionConfig(
+        speaker_labels=True,
+        punctuate=True,
+        format_text=True,
+        speech_models=speech_models_value,
+        language_code=language or None,
+        language_detection=None if language else True,
+    )
+
+    try:
+        logger.info("Starting AssemblyAI transcription")
+        if vocals_stem is not None:
+            transcription_media_path = _prepare_audio_for_transcription(
+                video_path, vocals_stem=vocals_stem
+            )
+        else:
+            transcription_media_path = _prepare_audio_for_transcription(video_path)
+        # Once submitted, a polling timeout must not submit another paid job or
+        # restart the full transcription budget. Retry status GETs above instead.
+        transcript = _submit_and_wait_for_assemblyai_transcript(
+            transcriber,
+            transcription_media_path,
+            config_obj,
+            runtime_config.assembly_ai_http_timeout_seconds,
+        )
+
+        if transcript is None:
+            raise RuntimeError("AssemblyAI transcription did not return a transcript")
+
+        if transcript.status == aai.TranscriptStatus.error:
+            logger.error(f"AssemblyAI transcription failed: {transcript.error}")
+            raise Exception(f"Transcription failed: {transcript.error}")
+
+        response = getattr(transcript, "json_response", None) or {}
+        logger.info(
+            "AssemblyAI transcript language: %s (confidence: %s)",
+            response.get("language_code") or language or "unknown",
+            response.get("language_confidence"),
+        )
+
+        formatted_lines = format_transcript_for_analysis(transcript)
+        cache_transcript_data(video_path, transcript)
+
+        result = "\n".join(formatted_lines)
+        logger.info(
+            f"Transcript formatted: {len(formatted_lines)} segments, {len(result)} chars"
+        )
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in AssemblyAI transcription: {e}")
+        raise
+    finally:
+        client.http_client.close()
+
+
+def _get_transcript_with_whisper(
+    video_path: Path, runtime_config, *, vocals_stem: Optional[Path] = None
+) -> str:
+    """Get transcript using local Whisper with word-level timestamps."""
+    model_name = runtime_config.whisper_model
+    logger.info("Starting Whisper transcription with model: %s", model_name)
+    whisper_result = transcribe_with_whisper(
+        video_path,
+        model_name,
+        runtime_config.transcription_language or None,
+        vocals_stem=vocals_stem,
+    )
+
+    formatted_lines = format_transcript_for_analysis(whisper_result)
+    cache_transcript_data(video_path, whisper_result)
+
+    result = "\n".join(formatted_lines)
+    logger.info(
+        "Whisper transcript formatted: %d segments, %d chars",
+        len(formatted_lines),
+        len(result),
+    )
+    return result
+
+
+def _get_transcript_with_faster_whisper(
+    video_path: Path, runtime_config, *, vocals_stem: Optional[Path] = None
+) -> str:
+    """Get transcript using local faster-whisper with word-level timestamps."""
+    model_name = runtime_config.whisper_model
+    logger.info("Starting faster-whisper transcription with model: %s", model_name)
+    whisper_result = transcribe_with_faster_whisper(
+        video_path,
+        model_name,
+        runtime_config.transcription_language or None,
+        vocals_stem=vocals_stem,
+    )
+
+    formatted_lines = format_transcript_for_analysis(whisper_result)
+    cache_transcript_data(video_path, whisper_result)
+
+    result = "\n".join(formatted_lines)
+    logger.info(
+        "faster-whisper transcript formatted: %d segments, %d chars",
+        len(formatted_lines),
+        len(result),
+    )
+    return result
+
+
+def _get_transcript_with_youtube_captions(source_url: str) -> str:
+    """Get transcript from YouTube captions (plain text, no word timings)."""
+    logger.info("Extracting YouTube captions for: %s", source_url)
+    transcript = transcribe_with_youtube_captions(source_url)
+    if not transcript:
+        raise RuntimeError(
+            "YouTube caption extraction failed or returned no captions. "
+            "Falling back requires a different TRANSCRIPTION_PROVIDER."
+        )
+    logger.info("YouTube caption transcript: %d chars", len(transcript))
+    return transcript
+
+
+def cache_transcript_data(video_path: Path, transcript) -> None:
+    """Cache transcript data for subtitle generation.
+
+    Handles both AssemblyAI transcript objects and Whisper result dicts.
+    """
+    cache_path = video_path.with_suffix(".transcript_cache.json")
+
+    if isinstance(transcript, dict):
+        cache_data = _whisper_result_to_transcript_data(transcript)
+        with open(cache_path, "w") as f:
+            json.dump(cache_data, f)
+        logger.info("Cached %d words to %s", len(cache_data["words"]), cache_path)
+        return
+
+    words_data = []
+    if transcript.words:
+        words_data = [_serialize_transcript_word(word) for word in transcript.words]
+
+    utterances_data = []
+    if getattr(transcript, "utterances", None):
+        utterances_data = [
+            {
+                "text": utterance.text,
+                "start": utterance.start,
+                "end": utterance.end,
+                "speaker": getattr(utterance, "speaker", None),
+                "words": [
+                    _serialize_transcript_word(word)
+                    for word in getattr(utterance, "words", []) or []
+                ],
+            }
+            for utterance in transcript.utterances
+        ]
+
+    response = getattr(transcript, "json_response", None)
+    language_code = response.get("language_code") if isinstance(response, dict) else None
+    if not language_code:
+        language_code = getattr(getattr(transcript, "config", None), "language_code", None)
+
+    cache_data = {
+        "version": TRANSCRIPT_CACHE_SCHEMA_VERSION,
+        "words": words_data,
+        "utterances": utterances_data,
+        "text": transcript.text,
+        # Lets language-specific cleanup (e.g. default filler words) avoid
+        # cutting ordinary words in other languages.
+        "language_code": language_code if isinstance(language_code, str) else None,
+    }
+
+    with open(cache_path, "w") as f:
+        json.dump(cache_data, f)
+
+    logger.info(f"Cached {len(words_data)} words to {cache_path}")
+
+
+def load_cached_transcript_data(video_path: Path) -> Optional[Dict]:
+    """Load cached AssemblyAI transcript data."""
+    cache_path = video_path.with_suffix(".transcript_cache.json")
+
+    if not cache_path.exists():
+        return None
+
+    try:
+        with open(cache_path, "r") as f:
+            payload = json.load(f)
+            if "version" not in payload:
+                payload["version"] = TRANSCRIPT_CACHE_SCHEMA_VERSION
+                payload.setdefault("utterances", [])
+            return payload
+    except Exception as e:
+        logger.warning(f"Failed to load transcript cache: {e}")
+        return None
+
+
+def _serialize_transcript_word(word) -> Dict[str, Any]:
+    if isinstance(word, dict):
+        return {
+            "text": word.get("word", word.get("text", "")),
+            "start": int(word["start"] * 1000) if isinstance(word.get("start"), float) else int(word.get("start", 0)),
+            "end": int(word["end"] * 1000) if isinstance(word.get("end"), float) else int(word.get("end", 0)),
+            "confidence": word.get("probability", word.get("confidence", 1.0)),
+            "speaker": word.get("speaker"),
+        }
+    return {
+        "text": word.text,
+        "start": word.start,
+        "end": word.end,
+        "confidence": word.confidence if hasattr(word, "confidence") else 1.0,
+        "speaker": getattr(word, "speaker", None),
+    }
+
+
+def _join_transcript_tokens(tokens: List[str]) -> str:
+    text = " ".join(token.strip() for token in tokens if token and token.strip())
+    for before, after in (
+        (" ,", ","),
+        (" .", "."),
+        (" !", "!"),
+        (" ?", "?"),
+        (" ;", ";"),
+        (" :", ":"),
+        (" n't", "n't"),
+        (" 're", "'re"),
+        (" 've", "'ve"),
+        (" 'll", "'ll"),
+        (" 'd", "'d"),
+        (" 'm", "'m"),
+        (" 's", "'s"),
+    ):
+        text = text.replace(before, after)
+    return text.strip()
+
+
+def _format_words_for_analysis(
+    words: List[Any],
+    speaker: Optional[str] = None,
+    *,
+    min_words_per_segment: int = ANALYSIS_SEGMENT_MIN_WORDS,
+    max_words_per_segment: int = ANALYSIS_SEGMENT_MAX_WORDS,
+    max_duration_ms: int = ANALYSIS_SEGMENT_MAX_DURATION_MS,
+) -> List[str]:
+    if not words:
+        return []
+
+    formatted_lines: List[str] = []
+    current_words: List[Any] = []
+    current_start: Optional[int] = None
+
+    def flush_segment() -> None:
+        nonlocal current_words, current_start
+        if not current_words:
+            return
+        start_time = format_ms_to_timestamp(current_words[0].start)
+        end_time = format_ms_to_timestamp(current_words[-1].end)
+        text = _join_transcript_tokens([word.text for word in current_words])
+        if text:
+            speaker_prefix = f"Speaker {speaker}: " if speaker else ""
+            formatted_lines.append(f"[{start_time} - {end_time}] {speaker_prefix}{text}")
+        current_words = []
+        current_start = None
+
+    for word in words:
+        if current_start is None:
+            current_start = word.start
+
+        current_words.append(word)
+        duration_ms = word.end - current_start
+        segment_word_count = len(current_words)
+        ends_sentence = str(word.text).endswith((".", "!", "?"))
+
+        should_flush = False
+        if segment_word_count >= max_words_per_segment:
+            should_flush = True
+        elif (
+            ends_sentence
+            and segment_word_count >= min_words_per_segment
+        ):
+            should_flush = True
+        elif (
+            duration_ms >= max_duration_ms
+            and segment_word_count >= min_words_per_segment
+        ):
+            should_flush = True
+
+        if should_flush:
+            flush_segment()
+
+    flush_segment()
+    return formatted_lines
+
+
+def format_transcript_for_analysis(transcript) -> List[str]:
+    """Format transcripts into readable timestamped segments for AI analysis.
+
+    Handles both AssemblyAI transcript objects (utterances/words with ms
+    timings) and Whisper result dicts (segments with second-based timings).
+    """
+    # Whisper result dict: treat each segment as an utterance, converting the
+    # second-based timings to milliseconds to match the timestamp formatter.
+    if isinstance(transcript, dict):
+        formatted_lines = []
+        for segment in transcript.get("segments") or []:
+            start_ms = int(segment.get("start", 0) * 1000)
+            end_ms = int(segment.get("end", 0) * 1000)
+            formatted_lines.append(
+                f"[{format_ms_to_timestamp(start_ms)} - {format_ms_to_timestamp(end_ms)}] "
+                f"{segment.get('text', '').strip()}"
+            )
+        return formatted_lines
+
+    utterances = getattr(transcript, "utterances", None) or []
+    if utterances:
+        formatted_lines = []
+        for utterance in utterances:
+            utterance_words = list(getattr(utterance, "words", []) or [])
+            utterance_duration = max(0, int(utterance.end) - int(utterance.start))
+            if utterance_words and (
+                utterance_duration > ANALYSIS_UTTERANCE_SPLIT_THRESHOLD_MS
+                or len(utterance_words) > ANALYSIS_UTTERANCE_SPLIT_THRESHOLD_WORDS
+            ):
+                formatted_lines.extend(
+                    _format_words_for_analysis(
+                        utterance_words,
+                        getattr(utterance, "speaker", None),
+                        max_words_per_segment=ANALYSIS_LONG_UTTERANCE_MAX_WORDS,
+                        max_duration_ms=ANALYSIS_LONG_UTTERANCE_MAX_DURATION_MS,
+                    )
+                )
+                continue
+
+            start_time = format_ms_to_timestamp(utterance.start)
+            end_time = format_ms_to_timestamp(utterance.end)
+            speaker = getattr(utterance, "speaker", None)
+            speaker_prefix = f"Speaker {speaker}: " if speaker else ""
+            formatted_lines.append(
+                f"[{start_time} - {end_time}] {speaker_prefix}{utterance.text}"
+            )
+        return formatted_lines
+
+    formatted_lines = []
+    words = getattr(transcript, "words", None) or []
+    if not words:
+        return formatted_lines
+
+    logger.info(f"Processing {len(words)} words with precise timing")
+    return _format_words_for_analysis(words)
+
+
+def format_ms_to_timestamp(ms: int) -> str:
+    """Format milliseconds to MM:SS format."""
+    seconds = ms // 1000
+    minutes = seconds // 60
+    seconds = seconds % 60
+    return f"{minutes:02d}:{seconds:02d}"

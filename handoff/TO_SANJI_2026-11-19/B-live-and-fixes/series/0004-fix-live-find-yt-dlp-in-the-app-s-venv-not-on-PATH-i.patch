@@ -1,0 +1,103 @@
+From aa9167b8c30da5a3c02a5cc79858b0896f40ed3b Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Wed, 18 Nov 2026 20:58:40 +0530
+Subject: [PATCH 04/13] fix(live): find yt-dlp in the app's venv (not on PATH
+ in the image)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/api/routes/live.py          |  4 ++--
+ backend/src/live/__init__.py            | 16 ++++++++++++++++
+ backend/src/live/recorder.py            |  4 +++-
+ backend/tests/unit/test_live_moments.py | 13 +++++++++++++
+ 4 files changed, 34 insertions(+), 3 deletions(-)
+
+diff --git a/backend/src/api/routes/live.py b/backend/src/api/routes/live.py
+index f4cfdcd..ad3ea07 100644
+--- a/backend/src/api/routes/live.py
++++ b/backend/src/api/routes/live.py
+@@ -29,7 +29,7 @@ from ...auth_headers import resolve_authenticated_user_id
+ from ...auto_director.niche import validate_niche_override
+ from ...config import get_config
+ from ...database import get_db
+-from ...live import live_clipping_enabled
++from ...live import live_clipping_enabled, yt_dlp_binary
+ from ...live.finisher import LAYOUTS
+ from ...repositories.live_repository import LiveRepository
+ from ...utils.async_helpers import run_in_thread
+@@ -54,7 +54,7 @@ def live_root() -> Path:
+ def probe_live_status(url: str) -> str:
+     """yt-dlp's ``live_status`` for a page: is_live, was_live, not_live, is_upcoming, or error."""
+     try:
+-        out = subprocess.run(["yt-dlp", "-q", "--no-warnings", "--skip-download", "--print", "live_status", url],
++        out = subprocess.run([yt_dlp_binary(), "-q", "--no-warnings", "--skip-download", "--print", "live_status", url],
+                              capture_output=True, text=True, timeout=45)
+     except (OSError, subprocess.TimeoutExpired) as exc:
+         logger.warning("Live status probe failed: %s", exc)
+diff --git a/backend/src/live/__init__.py b/backend/src/live/__init__.py
+index 26e3b23..626089d 100644
+--- a/backend/src/live/__init__.py
++++ b/backend/src/live/__init__.py
+@@ -15,7 +15,23 @@ Scope and rules (handoff/LIVE_CLIPPING_FEASIBILITY.md):
+ from __future__ import annotations
+ 
+ import os
++import shutil
++import sys
++from pathlib import Path
+ 
+ 
+ def live_clipping_enabled() -> bool:
+     return os.getenv("LIVE_CLIPPING", "off").strip().lower() in ("on", "1", "true", "yes")
++
++
++def yt_dlp_binary() -> str:
++    """yt-dlp on PATH, else the one installed next to this Python (the app
++    image keeps it in ``/app/.venv/bin``, which is not on PATH)."""
++    found = shutil.which("yt-dlp")
++    if found:
++        return found
++    for name in ("yt-dlp", "yt-dlp.exe"):
++        candidate = Path(sys.executable).parent / name
++        if candidate.is_file():
++            return str(candidate)
++    return "yt-dlp"
+diff --git a/backend/src/live/recorder.py b/backend/src/live/recorder.py
+index 1b06c0a..02a77c9 100644
+--- a/backend/src/live/recorder.py
++++ b/backend/src/live/recorder.py
+@@ -105,7 +105,9 @@ class LiveRecorder:
+     def _resolve_page(self) -> List[str]:
+         """Fresh stream URLs for a page (they expire): [video(+audio)] HLS."""
+         fmt = (f"bv*[height<={self.max_height}]+ba/b[height<={self.max_height}]/b")
+-        cmd = ["yt-dlp", "-q", "--no-warnings", "-g", "-f", fmt, self.source]
++        from . import yt_dlp_binary
++
++        cmd = [yt_dlp_binary(), "-q", "--no-warnings", "-g", "-f", fmt, self.source]
+         if shutil.which("node"):
+             cmd[1:1] = ["--js-runtimes", "node"]
+         result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+diff --git a/backend/tests/unit/test_live_moments.py b/backend/tests/unit/test_live_moments.py
+index ff2e960..0e77686 100644
+--- a/backend/tests/unit/test_live_moments.py
++++ b/backend/tests/unit/test_live_moments.py
+@@ -41,3 +41,16 @@ def test_game_subtitle_seconds_drop_their_words():
+     ]
+     kept = drop_game_words(words, [False, True, False, True, False])
+     assert [w["text"] for w in kept] == ["bro", "what"]
++
++
++def test_yt_dlp_is_found_next_to_python_when_not_on_path(monkeypatch, tmp_path):
++    import shutil
++    import sys
++
++    from src.live import yt_dlp_binary
++
++    exe = tmp_path / "yt-dlp"
++    exe.write_text("")
++    monkeypatch.setattr(shutil, "which", lambda name: None)
++    monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
++    assert yt_dlp_binary() == str(exe)
+-- 
+2.56.0.windows.2
+

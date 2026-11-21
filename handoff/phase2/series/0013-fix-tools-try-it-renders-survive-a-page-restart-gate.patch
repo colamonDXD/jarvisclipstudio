@@ -1,0 +1,67 @@
+From 50060cc53ee43d5b2948000731e6d250b39ca620 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 23:47:15 +0530
+Subject: [PATCH 13/22] fix(tools): try-it renders survive a page restart;
+ gate-compare clip manifest
+
+Renders now start in their own process group, so Ctrl+C in the page's
+terminal no longer kills a running job (it killed the owner's first run).
+GATE_COMPARE_CLIPS.md lists every comparison clip's public source and
+exact excerpt so the table can be reproduced on Linux.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/phase2/GATE_COMPARE_CLIPS.md | 23 +++++++++++++++++++++++
+ tools/phase2/try_it.py             |  6 +++++-
+ 2 files changed, 28 insertions(+), 1 deletion(-)
+ create mode 100644 tools/phase2/GATE_COMPARE_CLIPS.md
+
+diff --git a/tools/phase2/GATE_COMPARE_CLIPS.md b/tools/phase2/GATE_COMPARE_CLIPS.md
+new file mode 100644
+index 0000000..da3f3b3
+--- /dev/null
++++ b/tools/phase2/GATE_COMPARE_CLIPS.md
+@@ -0,0 +1,23 @@
++# Gate-comparison clip list (tools/phase2/gate_compare.py)
++
++Each case is a 40 s excerpt starting 60 % into the local file, re-encoded libx264 CRF 20.
++`Expected` = should the facecam (reaction) layout engage. Twitch files are 300 s sections
++downloaded with yt-dlp `--download-sections`; YouTube sources are CC BY (Phase 2 niches).
++
++| Local file | What it is | Expected | Source and exact excerpt |
++|---|---|---|---|
++| `real_hd/kai_sa_20000_hd.mp4` | Kai Cenat 1080p, cam mid-left | True | https://www.twitch.tv/videos/2922436506 at 1080p60, section 20000-20300 s; excerpt = VOD 20180.0-20220.0 s |
++| `real_more/kai_sa_20000.mp4` | Kai Cenat 360p, cam mid-left | True | https://www.twitch.tv/videos/2922436506 at 360p30, section 20000-20300 s; excerpt = VOD 20180.0-20220.0 s |
++| `real_more/kai_gta4_30000.mp4` | Kai Cenat GTA IV, small top-left cam | True | https://www.twitch.tv/videos/2924282282 at 360p30, section 30000-30300 s; excerpt = VOD 30180.0-30220.0 s |
++| `real_more/kai_gta4_9000.mp4` | Kai Cenat GTA IV, looking down at desk | True | https://www.twitch.tv/videos/2924282282 at 360p30, section 9000-9300 s; excerpt = VOD 9180.0-9220.0 s |
++| `real_twitch/vicens_1800.mp4` | Vicens GTA V, cam left | True | https://www.twitch.tv/vicens/video/2930536698 at 360p30, section 1800-2100 s; excerpt = VOD 1980.0-2020.0 s |
++| `real_twitch/vicens_4200.mp4` | Vicens GTA V, cam left | True | https://www.twitch.tv/vicens/video/2930536698 at 360p30, section 4200-4500 s; excerpt = VOD 4380.0-4420.0 s |
++| `real_twitch/vicens_7200.mp4` | Vicens GTA V, cam left | True | https://www.twitch.tv/vicens/video/2930536698 at 360p30, section 7200-7500 s; excerpt = VOD 7380.0-7420.0 s |
++| `real_twitch/vicens_sample.mp4` | Vicens GTA V, cam left | True | Twitch VOD https://www.twitch.tv/vicens/video/2930536698, 240 s sample, section offset NOT recorded (use the three offset clips) |
++| `real_more/speed_tw_2400.mp4` | iShowSpeed Omegle split (two people) | False | https://www.twitch.tv/videos/2930619788 at 360p30, section 2400-2700 s; excerpt = VOD 2580.0-2620.0 s |
++| `real_more/speed_tw_7000.mp4` | iShowSpeed full-frame cam | False | https://www.twitch.tv/videos/2930619788 at 360p30, section 7000-7300 s; excerpt = VOD 7180.0-7220.0 s |
++| `phase2_src/1oXjtK5Nsjw.mp4` | Video-call podcast, two windows | False | https://www.youtube.com/watch?v=1oXjtK5Nsjw (as downloaded (yt-dlp best <=480p)); excerpt = 432.0-472.0 s of the file (file = first 720 s) |
++| `phase2_src/D3cAyFmhi_M.mp4` | Travel vlog | False | https://www.youtube.com/watch?v=D3cAyFmhi_M (as downloaded (yt-dlp best <=480p)); excerpt = 603.2-643.2 s of the file |
++| `phase2_src/dwZK6iQlyEw.mp4` | Stand-up comedy | False | https://www.youtube.com/watch?v=dwZK6iQlyEw (as downloaded (yt-dlp best <=480p)); excerpt = 367.6-407.6 s of the file |
++| `phase2_src/TkHlhgTutFs.mp4` | Talking head speech | False | https://www.youtube.com/watch?v=TkHlhgTutFs (as downloaded (yt-dlp best <=480p)); excerpt = 165.6-205.6 s of the file |
++| `phase2_src/-m-gudHhLxc.mp4` | Lecture: slides + presenter window | None | https://www.youtube.com/watch?v=-m-gudHhLxc (as downloaded (yt-dlp best <=480p)); excerpt = 434.9-474.9 s of the file |
+diff --git a/tools/phase2/try_it.py b/tools/phase2/try_it.py
+index 5693bb3..b1fa84b 100644
+--- a/tools/phase2/try_it.py
++++ b/tools/phase2/try_it.py
+@@ -116,7 +116,11 @@ async def run(video: UploadFile = File(...), niche: str = Form("gaming"), clips:
+     if os.name == "nt":
+         env["PYTHONPATH"] = str(SHIM) + os.pathsep + env.get("PYTHONPATH", "")
+     log = (folder / "log.txt").open("wb")
+-    proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT, env=env)
++    # Own process group: Ctrl+C in the page's terminal (restarting the page)
++    # must not kill a render that is already running.
++    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
++    proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT, env=env,
++                            creationflags=flags, start_new_session=(os.name != "nt"))
+     (folder / "meta.json").write_text(json.dumps({
+         "name": f"{video.filename} · {niche}{' · ' + template if template else ''}",
+         "stem": stem, "pid": proc.pid, "started": time.time(),
+-- 
+2.56.0.windows.2
+

@@ -1,0 +1,69 @@
+{
+  "language": "en",
+  "text": "Oh my gosh, oh my gosh, oh my gosh.",
+  "segments": [
+    {
+      "start": 17.49,
+      "end": 23.78,
+      "text": " Oh my gosh, oh my gosh, oh my gosh.",
+      "no_speech_prob": 0.07012939453125,
+      "avg_logprob": -0.376562496026357,
+      "words": [
+        {
+          "word": " Oh",
+          "start": 17.49,
+          "end": 17.57,
+          "probability": 0.65771484375
+        },
+        {
+          "word": " my",
+          "start": 17.57,
+          "end": 17.57,
+          "probability": 0.8515625
+        },
+        {
+          "word": " gosh,",
+          "start": 17.57,
+          "end": 17.81,
+          "probability": 0.9228515625
+        },
+        {
+          "word": " oh",
+          "start": 17.95,
+          "end": 19.03,
+          "probability": 0.85986328125
+        },
+        {
+          "word": " my",
+          "start": 19.03,
+          "end": 19.09,
+          "probability": 0.9951171875
+        },
+        {
+          "word": " gosh,",
+          "start": 19.09,
+          "end": 19.41,
+          "probability": 0.998046875
+        },
+        {
+          "word": " oh",
+          "start": 19.47,
+          "end": 20.13,
+          "probability": 0.96826171875
+        },
+        {
+          "word": " my",
+          "start": 23.46,
+          "end": 23.54,
+          "probability": 0.99560546875
+        },
+        {
+          "word": " gosh.",
+          "start": 23.54,
+          "end": 23.78,
+          "probability": 0.99658203125
+        }
+      ]
+    }
+  ]
+}

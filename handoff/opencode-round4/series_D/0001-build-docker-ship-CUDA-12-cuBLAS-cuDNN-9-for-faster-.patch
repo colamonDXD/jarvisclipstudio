@@ -1,0 +1,147 @@
+From 3dde9641fcfd2e002867540f6fe63b170c85a899 Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 19:03:59 +0530
+Subject: [PATCH] build(docker): ship CUDA 12 cuBLAS/cuDNN 9 for faster-whisper
+
+The worker image's ctranslate2 4.8.5 is linked against CUDA 12 cuBLAS
+and cuDNN 9, while torch 2.13 ships CUDA 13. WhisperModel(device="cuda")
+therefore failed with "libcublas.so.12 is not found".
+
+- pyproject: add nvidia-cublas-cu12 and nvidia-cudnn-cu12 to the cuda
+  extra (Linux only).
+- uv.lock: lock the two wheels plus the nvrtc dependency.
+- Dockerfile: point LD_LIBRARY_PATH at their lib folders in the venv.
+
+Measured in a throwaway --gpus all container on an RTX 4050 Laptop
+(6 GB): faster-whisper large-v3-turbo, fp16, batch 16 transcribes a
+20-minute English stream at 64.8x real time with 3.3 GB peak device
+memory; small runs at 70.9x. Both produce monotonic segment timestamps
+covering the full file.
+
+Co-Authored-By: DeepSeek V4.1 Flash Free <noreply@deepseek.com>
+---
+ backend/Dockerfile     |  6 ++++++
+ backend/pyproject.toml | 11 ++++++++++-
+ backend/uv.lock        | 39 +++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 55 insertions(+), 1 deletion(-)
+
+diff --git a/backend/Dockerfile b/backend/Dockerfile
+index 0fe1170..fd5a80a 100644
+--- a/backend/Dockerfile
++++ b/backend/Dockerfile
+@@ -40,6 +40,12 @@ RUN uv venv .venv && \
+       uv sync --frozen --extra cuda; \
+     fi
+ 
++# faster-whisper's ctranslate2 is linked against CUDA 12 cuBLAS and cuDNN 9
++# (the cuda extra above installs them next to torch's CUDA 13 libraries).
++# Point the loader at the cu12 wheels so WhisperModel(device="cuda") loads
++# instead of failing with "libcublas.so.12 is not found".
++ENV LD_LIBRARY_PATH="/app/.venv/lib/python3.11/site-packages/nvidia/cublas/lib:/app/.venv/lib/python3.11/site-packages/nvidia/cudnn/lib:/app/.venv/lib/python3.11/site-packages/nvidia/cuda_nvrtc/lib"
++
+ # spaCy's English model, needed by Kokoro's phonemiser (misaki): without
+ # it the first voiceover synthesis would try to download the model at
+ # runtime. Build-time download, like deno above; the Kokoro weights
+diff --git a/backend/pyproject.toml b/backend/pyproject.toml
+index 3271bbc..65cad98 100644
+--- a/backend/pyproject.toml
++++ b/backend/pyproject.toml
+@@ -46,7 +46,16 @@ dependencies = [
+ 
+ [project.optional-dependencies]
+ cpu = ["torch==2.13.0"]
+-cuda = ["torch==2.13.0"]
++cuda = [
++    "torch==2.13.0",
++    # ctranslate2 4.8.5 (faster-whisper's backend) is linked against CUDA 12
++    # cuBLAS and cuDNN 9, while torch 2.13 ships CUDA 13. Both sets coexist
++    # in the venv; the Dockerfile points LD_LIBRARY_PATH at these so
++    # faster-whisper's CUDA path loads instead of failing with
++    # "libcublas.so.12 is not found".
++    "nvidia-cublas-cu12>=12.9,<13; sys_platform == 'linux'",
++    "nvidia-cudnn-cu12>=9.28,<10; sys_platform == 'linux'",
++]
+ 
+ [dependency-groups]
+ dev = [
+diff --git a/backend/uv.lock b/backend/uv.lock
+index 188c075..980817b 100644
+--- a/backend/uv.lock
++++ b/backend/uv.lock
+@@ -3485,6 +3485,18 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/45/9e/2f562daf80eb8f7a685fb7bea4fda71f6048e4f359d6fdd1b6e70206cb2f/nvidia_cublas-13.1.1.3-py3-none-win_amd64.whl", hash = "sha256:b6cdce694e47ff6aadf0a69df1cab6628d696f5ff56e8d16af50309d855fa20f", size = 404358158, upload-time = "2026-04-08T18:47:26.987Z" },
+ ]
+ 
++[[package]]
++name = "nvidia-cublas-cu12"
++version = "12.9.3.13"
++source = { registry = "https://pypi.org/simple" }
++dependencies = [
++    { name = "nvidia-cuda-nvrtc-cu12", marker = "python_full_version != '3.12.*' or sys_platform != 'emscripten'" },
++]
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/b9/19/1683e1b11352d03a8b1ab8a57fccec7064bfaaf862e7206331538e7fd6a1/nvidia_cublas_cu12-12.9.3.13-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:918a8781956115d34b1db49e0e7b7befba8d101661c4b560ed4d42e0e17bebc3", size = 574997333, upload-time = "2026-10-30T21:28:11.255Z" },
++    { url = "https://files.pythonhosted.org/packages/7b/ea/9b6c36aef90766eebb4763aded157039e797ae9789c9c216e960d1d3cd47/nvidia_cublas_cu12-12.9.3.13-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:d7d51055f161b317c7105ddaae90e71eda059026074ffef93cf7cde2886bfe72", size = 581217458, upload-time = "2026-10-30T21:29:02.439Z" },
++]
++
+ [[package]]
+ name = "nvidia-cuda-cupti"
+ version = "13.0.85"
+@@ -3505,6 +3517,16 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/4a/af/345fedb9f4c76c84ab4fa445b36bd4048a4d9db60e6bc76b4f913ff4b852/nvidia_cuda_nvrtc-13.0.88-py3-none-win_amd64.whl", hash = "sha256:6bcd4e7f8e205cbe644f5a98f2f799bef9556fefc89dd786e79a16312ce49872", size = 76807835, upload-time = "2025-09-04T08:39:15.274Z" },
+ ]
+ 
++[[package]]
++name = "nvidia-cuda-nvrtc-cu12"
++version = "12.9.86"
++source = { registry = "https://pypi.org/simple" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/b8/85/e4af82cc9202023862090bfca4ea827d533329e925c758f0cde964cb54b7/nvidia_cuda_nvrtc_cu12-12.9.86-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl", hash = "sha256:210cf05005a447e29214e9ce50851e83fc5f4358df8b453155d5e1918094dcb4", size = 89568129, upload-time = "2025-06-05T20:02:41.973Z" },
++    { url = "https://files.pythonhosted.org/packages/64/eb/c2295044b8f3b3b08860e2f6a912b702fc92568a167259df5dddb78f325e/nvidia_cuda_nvrtc_cu12-12.9.86-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:096d4de6bda726415dfaf3198d4f5c522b8e70139c97feef5cd2ca6d4cd9cead", size = 44528905, upload-time = "2025-06-05T20:02:29.754Z" },
++    { url = "https://files.pythonhosted.org/packages/52/de/823919be3b9d0ccbf1f784035423c5f18f4267fb0123558d58b813c6ec86/nvidia_cuda_nvrtc_cu12-12.9.86-py3-none-win_amd64.whl", hash = "sha256:72972ebdcf504d69462d3bcd67e7b81edd25d0fb85a2c46d3ea3517666636349", size = 76408187, upload-time = "2025-06-05T20:12:27.819Z" },
++]
++
+ [[package]]
+ name = "nvidia-cuda-runtime"
+ version = "13.0.96"
+@@ -3515,6 +3537,19 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/b7/94/6b867483bec07da24ffa32736c79fabb94ef3a7af4d787a9d4a974868576/nvidia_cuda_runtime-13.0.96-py3-none-win_amd64.whl", hash = "sha256:f79298c8a098cec150a597c8eba58ecdab96e3bdc4b9bc4f9983635031740492", size = 2927037, upload-time = "2025-10-09T09:04:23.782Z" },
+ ]
+ 
++[[package]]
++name = "nvidia-cudnn-cu12"
++version = "9.28.1.4"
++source = { registry = "https://pypi.org/simple" }
++dependencies = [
++    { name = "nvidia-cublas-cu12", marker = "python_full_version != '3.12.*' or sys_platform != 'emscripten'" },
++]
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/d6/a2/22732bccd338398ced3d02cdee97c351f0ff62f2717d677fce519479ee0c/nvidia_cudnn_cu12-9.28.1.4-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:ef24078b4d2f45e80b5ce425f9e4a190bc48806e8c9ea1467496f85ed9b0a1fe", size = 723285364, upload-time = "2026-11-09T07:59:55.695Z" },
++    { url = "https://files.pythonhosted.org/packages/2a/16/be895437624ae0400bda2b4bb69336cdb43346545e54edb15389d193a3b3/nvidia_cudnn_cu12-9.28.1.4-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:cbcf6f33c77fef3aa61d3fec36f2e89b07eb27d65b9f369c1adf3cfee08c2c21", size = 716579350, upload-time = "2026-11-06T21:51:22.24Z" },
++    { url = "https://files.pythonhosted.org/packages/c7/bd/1d6709d2223e99f04079f16005f8ae6e11a14ee16b5eab6833686cf72fe1/nvidia_cudnn_cu12-9.28.1.4-py3-none-win_amd64.whl", hash = "sha256:3467aafa9b260e6adf5fbbfc0e21d180133305b42032aa1160be2d3142bb8b09", size = 696300805, upload-time = "2026-11-06T21:54:48.887Z" },
++]
++
+ [[package]]
+ name = "nvidia-cudnn-cu13"
+ version = "9.20.0.48"
+@@ -5498,6 +5533,8 @@ cpu = [
+     { name = "torch", version = "2.13.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' and extra == 'extra-16-supoclip-backend-cpu') or (extra == 'extra-16-supoclip-backend-cpu' and extra == 'extra-16-supoclip-backend-cuda')" },
+ ]
+ cuda = [
++    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'linux'" },
++    { name = "nvidia-cudnn-cu12", marker = "sys_platform == 'linux'" },
+     { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" } },
+ ]
+ 
+@@ -5527,6 +5564,8 @@ requires-dist = [
+     { name = "indic-transliteration", specifier = ">=2.3.82" },
+     { name = "kokoro", specifier = ">=0.9.4" },
+     { name = "numpy", specifier = ">=1.24.0" },
++    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'linux' and extra == 'cuda'", specifier = ">=12.9,<13" },
++    { name = "nvidia-cudnn-cu12", marker = "sys_platform == 'linux' and extra == 'cuda'", specifier = ">=9.28,<10" },
+     { name = "openai-whisper", specifier = ">=20250625" },
+     { name = "opencv-python", specifier = ">=4.8.0" },
+     { name = "posthog", specifier = ">=7.73.2" },
+-- 
+2.56.0.windows.2
+

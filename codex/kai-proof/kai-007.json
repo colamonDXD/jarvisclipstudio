@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "duration": 50.01,
+  "words": 48,
+  "caption_coverage": {
+    "ok": false,
+    "uncovered": [
+      [
+        43.65,
+        45.75
+      ],
+      [
+        48.6,
+        50.0
+      ]
+    ],
+    "uncovered_seconds": 3.5,
+    "silent_cues": []
+  },
+  "beat_density": null,
+  "error": null
+}

@@ -1,0 +1,1037 @@
+From 090812c3c407fb39a1dd6deda1b4631b493f5a28 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Fri, 20 Nov 2026 13:07:04 +0530
+Subject: [PATCH 1/7] feat(live): add manual layouts and reaction-timed clip
+ finishing
+
+---
+ .env.example                                  |  6 ++
+ CHANGELOG.md                                  |  4 +
+ NOTICE                                        | 22 +++++
+ backend/src/api/routes/live.py                | 10 +-
+ backend/src/live/groq_transcribe.py           |  9 +-
+ backend/src/live/recorder.py                  | 12 ++-
+ backend/src/live/vod.py                       |  7 +-
+ backend/src/media/caption_polish.py           | 31 +++++--
+ backend/src/media/gaming_templates.py         | 22 ++++-
+ backend/src/media/hook_finish.py              | 91 +++++++++++++++----
+ backend/src/media/hook_v2.py                  | 10 ++
+ backend/src/media/neon_layouts.py             | 80 ++++++++++++++++
+ backend/src/media/view_sequencing.py          | 12 +--
+ backend/tests/conftest.py                     |  3 +-
+ backend/tests/unit/test_caption_polish.py     | 11 +++
+ backend/tests/unit/test_live_buffer.py        |  2 +
+ .../tests/unit/test_live_groq_transcribe.py   |  8 ++
+ backend/tests/unit/test_view_sequencing.py    |  2 +-
+ docker-compose.yml                            |  6 ++
+ frontend/src/app/live/box-draw.tsx            | 54 +++++++++--
+ frontend/src/app/live/boxes.test.ts           |  9 ++
+ frontend/src/app/live/boxes.ts                | 14 ++-
+ frontend/src/app/live/page.tsx                |  2 +-
+ frontend/src/components/app/clip-wall.tsx     | 27 +++++-
+ litellm_config.yaml                           | 24 +++++
+ tools/live/train_selection.py                 | 15 +--
+ 26 files changed, 419 insertions(+), 74 deletions(-)
+ create mode 100644 backend/src/media/neon_layouts.py
+
+diff --git a/.env.example b/.env.example
+index 9beafe1..4aba197 100644
+--- a/.env.example
++++ b/.env.example
+@@ -564,3 +564,9 @@ APIFY_STORAGE_WRITER_SECRET_ACCESS_KEY=
+ APIFY_STORAGE_READER_ACCESS_KEY_ID=
+ APIFY_STORAGE_READER_SECRET_ACCESS_KEY=
+ APIFY_STORAGE_KEY_TEMPLATE=
++# Gold, word-wrapped titles in the top safe area for streamer clips.
++STYLED_HOOK_TITLE=off
++REACTION_PUNCH=off
++# Use openai:clip-free with the bundled LiteLLM gateway for NVIDIA,
++# Groq, OpenRouter free and local Ollama fallback on live/VOD text jobs.
++LIVE_VOD_LLM=
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 159fca3..ae02c79 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,10 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-20
++- **New:** Clip cards accept selection feedback, and the Live page accepts Kick stream links. Enable `REACTION_PUNCH` to place one eased zoom and a quiet impact at the measured reaction. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
++- **New:** Hand-drawn live layouts now include four corner cameras, a circle camera, side-by-side, gameplay only, full-frame crop and blurred fill. The layout preview and saved channel settings support all eleven choices. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
++- **Improved:** Streamer exports can use a gold, word-wrapped top title with `STYLED_HOOK_TITLE=on`. The gateway route `clip-free` tries NVIDIA, Groq, OpenRouter free and local Ollama in order. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
++- **Fixed:** Caption polish preserves spoken words when a model drops them or returns malformed entries. View sequencing uses the audio peak when the editor has only a scheduled punch-in. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Fixed:** Swear words in captions, titles and clip questions are now hidden completely as *** — before, the first letter stayed visible (like F***), which was not the rule. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **New:** Streamer clips can now sequence their layout around the big moment instead of holding one layout for the whole clip: the split view gives way to full-screen gameplay for the three seconds before the peak (the cause), then full-screen facecam for four seconds from the peak (the reaction), then back to the split — the shape pro streamer edits use. The peak is the one the picker recorded for the clip, or the clip's own loudest second when none was recorded. Captions stay on the seam band and the credit line stays in place across every switch, and hand-drawn layout boxes always win over sequencing. Off by default — set `VIEW_SEQUENCING=on` to try it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **New:** Clips can now end the way viral clips end, two ways, both off by default. With `PAYOFF_TIGHT=on`, a clip stops right after its payoff lands instead of trailing off: the dead air after the moment is trimmed away, the payoff's last spoken sentence still finishes whole, and a clip is never tightened under the minimum length. With `LOOP_ENDINGS=on`, when two endings are otherwise equal the picker prefers the one whose last spoken words match the clip's opening words (and whose last frame looks like the first frame), so the clip loops cleanly when a viewer replays it. The loop preference can only break a near-tie — it never overrides a clearly better ending. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+diff --git a/NOTICE b/NOTICE
+index aa21479..1e275c7 100644
+--- a/NOTICE
++++ b/NOTICE
+@@ -67,3 +67,25 @@ toolkit used for inference is MIT-licensed.
+ The "shout" signal in the same pass is adapted from NeonClipping
+ (https://github.com/iamajmeena/neonclipping), MIT-licensed, copyright
+ its respective contributors.
++NeonClipping layout geometry and FFmpeg graphs (https://github.com/iamajmeena/neonclipping)
++MIT License
++
++Copyright (c) 2026 Ajay K Meena and NeonClipping contributors
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in all
++copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++SOFTWARE.
+diff --git a/backend/src/api/routes/live.py b/backend/src/api/routes/live.py
+index c38c45d..a224f3a 100644
+--- a/backend/src/api/routes/live.py
++++ b/backend/src/api/routes/live.py
+@@ -33,6 +33,7 @@ from ...config import get_config
+ from ...database import get_db
+ from ...live import live_clipping_enabled, yt_dlp_binary
+ from ...live.finisher import LAYOUTS
++from ...live.recorder import _is_page_url
+ from ...repositories.live_repository import LiveRepository
+ from ...utils.async_helpers import run_in_thread
+ 
+@@ -41,7 +42,6 @@ logger = logging.getLogger(__name__)
+ router = APIRouter(prefix="/live", tags=["live clipping"])
+ repository = LiveRepository()
+ 
+-LIVE_HOSTS = ("twitch.tv", "youtube.com", "youtu.be")
+ 
+ 
+ def _require_enabled() -> None:
+@@ -135,8 +135,8 @@ async def start_session(request: Request, db: AsyncSession = Depends(get_db)):
+     user_id = await resolve_authenticated_user_id(request, db, get_config())
+     data = await _json_body(request)
+     url = _text(data, "url", 500)
+-    if not url or not url.startswith(("https://", "http://")) or not any(h in url for h in LIVE_HOSTS):
+-        raise HTTPException(status_code=422, detail="Paste the link of a live stream on YouTube or Twitch")
++    if not url or not _is_page_url(url):
++        raise HTTPException(status_code=422, detail="Paste a YouTube, Twitch or Kick stream link")
+     settings = validate_settings(data)
+     if await repository.count_active(db, user_id):
+         raise HTTPException(status_code=409, detail="You already have a live session running. Stop it first.")
+@@ -244,8 +244,8 @@ def grab_frame_jpeg(url: str, at: float) -> bytes:
+ async def stream_frame(request: Request, url: str = "", at: float = 0.0, db: AsyncSession = Depends(get_db)):
+     _require_enabled()
+     await resolve_authenticated_user_id(request, db, get_config())
+-    if not url or not url.startswith(("https://", "http://")) or not any(h in url for h in LIVE_HOSTS):
+-        raise HTTPException(status_code=422, detail="Paste the link of a live stream on YouTube or Twitch")
++    if not url or not _is_page_url(url):
++        raise HTTPException(status_code=422, detail="Paste a YouTube, Twitch or Kick stream link")
+     if at < 0 or at > 36000:
+         raise HTTPException(status_code=422, detail="at must be between 0 and 36000 seconds")
+     jpeg = await run_in_thread(grab_frame_jpeg, url, at)
+diff --git a/backend/src/live/groq_transcribe.py b/backend/src/live/groq_transcribe.py
+index 24b6e40..6cf8887 100644
+--- a/backend/src/live/groq_transcribe.py
++++ b/backend/src/live/groq_transcribe.py
+@@ -50,12 +50,15 @@ def to_whisper_result(payload: Dict[str, Any]) -> Dict[str, Any]:
+         for w in payload.get("words") or [] if str(w.get("word", "")).strip()
+     ]
+     segments = []
++    cursor = 0
+     for seg in payload.get("segments") or []:
+         s, e = float(seg.get("start", 0.0)), float(seg.get("end", 0.0))
++        first = cursor
++        while cursor < len(words) and s - 0.05 <= words[cursor]["start"] < e:
++            cursor += 1
+         segments.append({"start": s, "end": e, "text": str(seg.get("text", "")).strip(),
+-                         "words": [w for w in words if s - 0.05 <= w["start"] < e]})
+-    assigned = sum(len(seg["words"]) for seg in segments)
+-    if not segments or assigned < len(words):
++                         "words": words[first:cursor]})
++    if not segments or cursor < len(words):
+         # No segments, or words outside them: one segment holding every word.
+         segments = [{"start": words[0]["start"] if words else 0.0, "end": words[-1]["end"] if words else 0.0,
+                      "text": str(payload.get("text", "")).strip(), "words": words}]
+diff --git a/backend/src/live/recorder.py b/backend/src/live/recorder.py
+index 02a77c9..833b34a 100644
+--- a/backend/src/live/recorder.py
++++ b/backend/src/live/recorder.py
+@@ -30,16 +30,24 @@ import threading
+ import time
+ from pathlib import Path
+ from typing import List, Optional
++from urllib.parse import urlsplit
+ 
+ from .buffer import SEGMENT_LIST, SegmentBuffer, write_run_meta
+ 
+ logger = logging.getLogger(__name__)
+ 
+-PAGE_HOSTS = ("twitch.tv", "youtube.com", "youtu.be")
++PAGE_HOSTS = ("twitch.tv", "youtube.com", "youtu.be", "kick.com")
+ 
+ 
+ def _is_page_url(source: str) -> bool:
+-    return source.startswith(("http://", "https://")) and any(h in source for h in PAGE_HOSTS)
++    try:
++        url = urlsplit(source)
++        host = (url.hostname or "").rstrip(".")
++        return url.scheme in ("http", "https") and not url.username and any(
++            host == domain or host.endswith("." + domain) for domain in PAGE_HOSTS
++        )
++    except ValueError:
++        return False
+ 
+ 
+ class LiveRecorder:
+diff --git a/backend/src/live/vod.py b/backend/src/live/vod.py
+index fb894af..c66624b 100644
+--- a/backend/src/live/vod.py
++++ b/backend/src/live/vod.py
+@@ -890,11 +890,16 @@ class VodSession:
+             # its offset inside the section, shifted by the teaser when
+             # the cold open prepends one. View sequencing anchors on it.
+             peak_offset = float(pick["onset"]) - float(pick["start"])
++            caption_source_url = s.url
+             if section is not None:
+                 cold = cold_open(section, peak_offset)
+                 if cold is not None:
+                     section = cold
+                     peak_offset += COLD_OPEN_TEASER_S
++                    # The teaser jumps ahead, then the body repeats from its
++                    # original start. Linear source subtitles are now wrong.
++                    # Transcribe the actual edit with Groq or local Whisper.
++                    caption_source_url = None
+             stamp = time.strftime("%H:%M:%S", time.gmtime(pick["start"]))
+             label = (pick.get("title") or "Reaction") + (f" - {pick['why']}" if pick.get("why") else "")
+             # Times are positions in the video, not wall-clock: they travel in
+@@ -923,7 +928,7 @@ class VodSession:
+                                           hook_title=None if quote else (s.hook_title if s.hook_title else None),
+                                           streamer_words_only=s.streamer_words_only,
+                                           voice_fx=getattr(s, "voice_fx", None), boxes=getattr(s, "boxes", None),
+-                                          source_url=s.url, source_start=pick["start"],
++                                          source_url=caption_source_url, source_start=pick["start"],
+                                           peak_offset=peak_offset)
+             except Exception as exc:
+                 result = {"ok": False, "error": str(exc)[:300]}
+diff --git a/backend/src/media/caption_polish.py b/backend/src/media/caption_polish.py
+index f980679..25dd56d 100644
+--- a/backend/src/media/caption_polish.py
++++ b/backend/src/media/caption_polish.py
+@@ -107,16 +107,23 @@ def _gateway_chat(prompt: str, timeout: float = 120.0) -> Optional[str]:
+ # ---------------------------------------------------------------------------
+ 
+ 
++_NUMBER_WORDS = frozenset(
++    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
++    "fifteen sixteen seventeen eighteen nineteen twenty thirty forty fifty sixty seventy "
++    "eighty ninety hundred thousand million billion first second third fourth fifth".split()
++)
++
++
+ def _same_word(old: str, new: str) -> bool:
+     """A caption fix may respell a word or turn it into digits. It may
+     not swap in different words. (PeakCut, verbatim logic.)"""
+-    a = re.sub(r"[^a-z0-9]", "", old.lower())
+-    b = re.sub(r"[^a-z0-9]", "", new.lower())
+-    return (
+-        (not b)
+-        or (any(ch.isdigit() for ch in b) and len(new) <= 12)
+-        or difflib.SequenceMatcher(None, a, b).ratio() >= 0.45
+-    )
++    a = "".join(ch for ch in old.casefold() if ch.isalnum())
++    b = "".join(ch for ch in new.casefold() if ch.isalnum())
++    if any(ch.isdigit() for ch in b):
++        if any(ch.isdigit() for ch in a):
++            return a == b
++        return a in _NUMBER_WORDS and len(new) <= 12
++    return a == b or difflib.SequenceMatcher(None, a, b).ratio() >= 0.45
+ 
+ 
+ def _word_text(word: Dict[str, Any]) -> str:
+@@ -136,9 +143,9 @@ def _parse_word_array(content: Optional[str]) -> Optional[List[str]]:
+         data = json.loads(match.group(0))
+     except ValueError:
+         return None
+-    if not isinstance(data, list):
++    if not isinstance(data, list) or not all(isinstance(item, str) for item in data):
+         return None
+-    return [str(item) if item is not None else "" for item in data]
++    return data
+ 
+ 
+ def fix_caption_words(
+@@ -182,9 +189,14 @@ def fix_caption_words(
+     if out is None or len(out) != len(words):
+         return words
+     fixed: List[Dict[str, Any]] = []
++    if not any(entry.strip() for entry in out):
++        return words
++    merging_number = False
+     for w, new in zip(words, out):
+         old = _word_text(w)
+         new = _CTRL.sub(" ", str(new or "")).strip()
++        if not new and merging_number and old.casefold() in _NUMBER_WORDS:
++            continue
+         if _DEVA.search(old):
+             # Script belongs to the transliteration pass, not this one:
+             # anything but the word itself is a translation/transliteration.
+@@ -194,6 +206,7 @@ def fix_caption_words(
+             new = old
+         elif len(new) > max(24, len(old) * 4) or not _same_word(old, new):
+             new = old  # a rewrite, not a fix: keep what was said
++        merging_number = old.casefold() in _NUMBER_WORDS and any(ch.isdigit() for ch in new)
+         if new:
+             if new == old:
+                 fixed.append(w)
+diff --git a/backend/src/media/gaming_templates.py b/backend/src/media/gaming_templates.py
+index 51147a5..836117d 100644
+--- a/backend/src/media/gaming_templates.py
++++ b/backend/src/media/gaming_templates.py
+@@ -325,7 +325,9 @@ import contextvars
+ MANUAL_BOXES: "contextvars.ContextVar[Optional[Dict[str, Any]]]" = contextvars.ContextVar(
+     "manual_layout_boxes", default=None
+ )
+-ARRANGEMENTS = ("top", "bottom")
++from . import neon_layouts
++
++ARRANGEMENTS = ("top", *(key for key, _, _ in neon_layouts.CATALOG if key != "stack"))
+ 
+ 
+ def validate_boxes(value: object) -> Optional[Dict[str, Any]]:
+@@ -372,6 +374,24 @@ def build_manual_stack_layout(
+     """The face/game stack from hand-drawn boxes (no detection)."""
+     spec = LAYOUT_TEMPLATES[template]
+     bottom = boxes.get("arrange") == "bottom"
++    arrangement = boxes.get("arrange", "top")
++    if arrangement not in ("top", "bottom"):
++        rects = []
++        for key in ("cam", "game"):
++            box = boxes[key]
++            aspect = width * box["w"] / (height * box["h"])
++            w, h, x, y = _cover_crop(box, width, height, aspect)
++            rects.append((x, y, w, h))
++        graph = neon_layouts.render_graph(arrangement, rects)
++        finish = (_credit_filter(credit) + ",") if credit else ""
++        return {
++            "kind": "reaction", "template": template, "manual": True,
++            "video_filter": graph + ";[base]" + finish + "format=yuv420p[vout]",
++            "caption_y": neon_layouts.text_positions(arrangement)["caption_y"] / OUT_H,
++            "inset": rects[0],
++            "face_crop": (*rects[0][2:], *rects[0][:2]),
++            "game_crop": (*rects[1][2:], *rects[1][:2]),
++        }
+     fw_, fh_, fx_, fy_ = _cover_crop(boxes["cam"], width, height, OUT_W / FACE_PANEL_H)
+     gw, gh, gx, gy = _cover_crop(boxes["game"], width, height, OUT_W / GAME_PANEL_H)
+     game_chain = f"[game_src]crop={gw}:{gh}:{gx}:{gy},scale={OUT_W}:{GAME_PANEL_H}:flags=lanczos,setsar=1"
+diff --git a/backend/src/media/hook_finish.py b/backend/src/media/hook_finish.py
+index 7398476..b914152 100644
+--- a/backend/src/media/hook_finish.py
++++ b/backend/src/media/hook_finish.py
+@@ -160,6 +160,15 @@ def punch_filter(width: int, height: int, at, seconds: float, zoom: float) -> st
+             f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2")
+ 
+ 
++def reaction_punch_filter(width: int, height: int, peak: float) -> str:
++    """Fast push into the reaction, then a slower release to the original crop."""
++    attack = f"clip((t-{peak - 0.16:.3f})/0.16,0,1)"
++    release = f"clip(({peak + 0.84:.3f}-t)/0.84,0,1)"
++    zoom = f"(1+0.10*{attack}*{release}*{release})"
++    return (f"scale=w='2*trunc({width}*{zoom}/2)':h='2*trunc({height}*{zoom}/2)':eval=frame,"
++            f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2,setsar=1")
++
++
+ QUOTE_Y_FRAC = 0.025         # the very top edge (owner: "always on the very top", never over a face)
+ EMOJI_PX = 54
+ 
+@@ -199,6 +208,26 @@ def quote_title_text(text: str, creator: Optional[str]) -> Optional[str]:
+     return mask_profanity(text)
+ 
+ 
++def styled_title_ass(text: str, width: int, height: int) -> str:
++    """Use libass word wrapping within the title-safe top band."""
++    from .captions import escape_ass_text
++
++    size = max(12, round(width * 0.047))
++    margin = round(width * 0.06)
++    top = round(height * QUOTE_Y_FRAC)
++    return (
++        f"[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\n"
++        "WrapStyle: 0\nScaledBorderAndShadow: yes\n[V4+ Styles]\n"
++        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
++        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
++        "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
++        f"Style: Hook,Anton,{size},&H0050DEFF,&H00FFFFFF,&H00141010,&H88000000,"
++        f"0,0,0,0,100,100,0,0,1,{max(1, size / 14):.1f},1,8,{margin},{margin},{top},1\n"
++        "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
++        f"Dialogue: 0,0:00:00.00,9:59:59.99,Hook,,0,0,0,,{escape_ass_text(text)}\n"
++    )
++
++
+ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str = "") -> bool:
+     """Apply the hook finish to ``clip_path`` in place. True when applied."""
+     if not hook_finish_enabled():
+@@ -211,6 +240,17 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+         return False
+     profile = load_profile()
+     times = punch_times(info["duration"], profile)
++    reaction_edit = os.getenv("REACTION_PUNCH", "off").lower() in ("on", "1", "true", "yes")
++    peak = None
++    if reaction_edit:
++        from .view_sequencing import loudest_reaction_second, peak_from_edl
++
++        peak = peak_from_edl(edl)
++        if peak is None and info["audio"]:
++            peak = loudest_reaction_second(clip_path)
++        if peak is not None and not 0.16 <= peak <= info["duration"] - 0.84:
++            peak = None
++        times = [peak] if peak is not None else []
+     at = times[0] if times else float(profile["first_cut_s"])
+     seconds = float(profile["punch_seconds"])
+     zoom = float(profile["punch_zoom"])
+@@ -229,11 +269,14 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+     lift = colour_filter(luma, mean_saturation(clip_path, info["duration"]), profile)
+     if lift:
+         filters.append(lift)
+-    filters.append(punch_filter(info["width"], info["height"], times or [at], seconds, zoom))
+-    # A visible cut: a quick white flash (~2 frames) on each punch-in.
+-    flash = "+".join(f"between(t,{t:.2f},{t + 0.07:.2f})" for t in (times or [at]))
+-    filters.append(f"drawbox=x=0:y=0:w=iw:h=ih:color=white@0.55:t=fill:enable='{flash}'")
+-    video_chain = ",".join(filters)
++    if reaction_edit:
++        if peak is not None:
++            filters.append(reaction_punch_filter(info["width"], info["height"], peak))
++    else:
++        filters.append(punch_filter(info["width"], info["height"], times or [at], seconds, zoom))
++        flash = "+".join(f"between(t,{t:.2f},{t + 0.07:.2f})" for t in (times or [at]))
++        filters.append(f"drawbox=x=0:y=0:w=iw:h=ih:color=white@0.55:t=fill:enable='{flash}'")
++    video_chain = ",".join(filters) or "null"
+ 
+     # Quote title with emoji ("Lacy swore he never crashes" 😭✌️🥀): the text
+     # via drawtext (Anton, white, black outline), the emoji as PNGs on a row
+@@ -251,24 +294,30 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+         from .ffmpeg import ffmpeg_escape_filter_path
+ 
+         font = Path(__file__).resolve().parents[2] / "fonts" / "Anton-Regular.ttf"
+-        handle = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8")
+-        handle.write(f"\u201c{quote_text}\u201d" if False else f'"{quote_text}"')
+-        handle.close()
+-        text_file = Path(handle.name)
+-        size = max(26, int(info["width"] * 0.042))  # small (owner: "make title smaller")
+-        y = int(info["height"] * QUOTE_Y_FRAC)
+-        video_chain += (f",drawtext=fontfile={ffmpeg_escape_filter_path(font)}:textfile={ffmpeg_escape_filter_path(text_file)}"
+-                        f":fontsize={size}:fontcolor=white:borderw={max(3, size // 12)}:bordercolor=black"
+-                        f":x=(w-text_w)/2:y={y}")
++        styled = os.getenv("STYLED_HOOK_TITLE", "off").lower() in ("on", "1", "true", "yes")
++        with tempfile.NamedTemporaryFile("w", suffix=".ass" if styled else ".txt",
++                                         delete=False, encoding="utf-8") as handle:
++            handle.write(styled_title_ass(quote_text, info["width"], info["height"]) if styled else f'"{quote_text}"')
++            text_file = Path(handle.name)
++        if styled:
++            video_chain += (f",ass=filename={ffmpeg_escape_filter_path(text_file)}"
++                            f":fontsdir={ffmpeg_escape_filter_path(font.parent)}")
++        else:
++            size = max(26, int(info["width"] * 0.042))
++            y = int(info["height"] * QUOTE_Y_FRAC)
++            video_chain += (f",drawtext=fontfile={ffmpeg_escape_filter_path(font)}:textfile={ffmpeg_escape_filter_path(text_file)}"
++                            f":fontsize={size}:fontcolor=white:borderw={max(3, size // 12)}:bordercolor=black"
++                            f":x=(w-text_w)/2:y={y}")
+ 
+     whoosh = None
+     try:
+         from .asset_library import pick_variant
+         from .edl_render import ASSETS_DIR
+ 
+-        whoosh = pick_variant(Path(ASSETS_DIR) / "sfx", "whoosh", f"{seed or clip_path.stem}|hook")
++        cue = "impact" if reaction_edit else "whoosh"
++        whoosh = pick_variant(Path(ASSETS_DIR) / "sfx", cue, f"{seed or clip_path.stem}|hook")
+         if whoosh is None:
+-            candidate = Path(ASSETS_DIR) / "sfx" / "whoosh.wav"
++            candidate = Path(ASSETS_DIR) / "sfx" / f"{cue}.wav"
+             whoosh = candidate if candidate.is_file() else None
+     except Exception as exc:
+         logger.debug("Hook whoosh unavailable: %s", exc)
+@@ -295,11 +344,13 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+                 graph += f";[{idx}:v]scale={EMOJI_PX}:{EMOJI_PX}[e{i}];[{last}][e{i}]overlay=x={x0 + i * (EMOJI_PX + 10)}:y={row_y}[v{i + 1}]"
+                 last = f"v{i + 1}"
+         audio_index = 1 + (len(emoji_paths) if (emoji_paths and quote_text) else 0)
+-        if whoosh is not None and info["audio"]:
+-            hits = (times or [at])[:4]  # a whoosh on each of the first cuts
++        if whoosh is not None and info["audio"] and (times or not reaction_edit):
++            hits = (times or [at])[:4]
++            lead = 0.0 if reaction_edit else 0.15
++            gain = 0.16 if reaction_edit else 0.95
+             split = f"[{audio_index}:a]asplit={len(hits)}" + "".join(f"[w{i}]" for i in range(len(hits)))
+-            delayed = ";".join(f"[w{i}]adelay={max(0, int((h - 0.15) * 1000))}|{max(0, int((h - 0.15) * 1000))},"
+-                               f"volume=0.95[d{i}]" for i, h in enumerate(hits))
++            delayed = ";".join(f"[w{i}]adelay={max(0, int((h - lead) * 1000))}|{max(0, int((h - lead) * 1000))},"
++                               f"volume={gain}[d{i}]" for i, h in enumerate(hits))
+             mix = "[0:a]" + "".join(f"[d{i}]" for i in range(len(hits)))
+             cmd += ["-i", str(whoosh), "-filter_complex",
+                     f"{graph};{split};{delayed};{mix}amix=inputs={len(hits) + 1}:duration=first:normalize=0[a]",
+diff --git a/backend/src/media/hook_v2.py b/backend/src/media/hook_v2.py
+index d2b66b0..9ac0254 100644
+--- a/backend/src/media/hook_v2.py
++++ b/backend/src/media/hook_v2.py
+@@ -138,6 +138,16 @@ def settle_anchor(edl: Optional[dict], width: int, height: int) -> Tuple[float,
+     except Exception:  # pragma: no cover - module exists in-tree
+         boxes = None
+     if isinstance(boxes, dict):
++        arrangement = boxes.get("arrange", "top")
++        if arrangement not in ("top", "bottom"):
++            from .neon_layouts import geometry
++
++            layers = geometry(arrangement)["layers"]
++            cam = next((layer for layer in layers if layer["source"] == "cam"), None)
++            if cam:
++                return ((cam["x"] + cam["w"] / 2) * width / 1080,
++                        (cam["y"] + cam["h"] / 2) * height / 1920)
++            return width / 2, height / 2
+         bottom = boxes.get("arrange") == "bottom"
+         return (width * 0.5, height * (1.0 - panel / 2.0) if bottom else height * (panel / 2.0))
+     reframe = (edl or {}).get("reframe") or {}
+diff --git a/backend/src/media/neon_layouts.py b/backend/src/media/neon_layouts.py
+new file mode 100644
+index 0000000..8405f2f
+--- /dev/null
++++ b/backend/src/media/neon_layouts.py
+@@ -0,0 +1,80 @@
++"""NeonClipping's native layout geometry, shared by browser preview and FFmpeg."""
++import math
++
++CATALOG = [
++    ('stack', 'Face + gameplay', 'Camera above the action'),
++    ('bottom', 'Gameplay + face', 'Camera below the action'),
++    ('blur', 'Blurred fill', 'Keep the complete source'),
++    ('fill', 'Fill screen', 'Full-frame centre crop'),
++    ('game', 'Gameplay only', 'Use your selected game area'),
++    ('pip_tl', 'Camera top-left', 'Floating selected facecam'),
++    ('pip_tr', 'Camera top-right', 'Floating selected facecam'),
++    ('pip_bl', 'Camera bottom-left', 'Floating selected facecam'),
++    ('pip_br', 'Camera bottom-right', 'Floating selected facecam'),
++    ('circle', 'Circle camera', 'Round facecam above gameplay'),
++    ('side', 'Side by side', 'Camera and gameplay columns'),
++]
++
++def text_positions(name, top=.32, caption_y=1450):
++    spec=geometry(name,top)
++    cam=next((layer for layer in spec['layers'] if layer['source']=='cam'),None)
++    hook_y=260
++    if cam and cam['y']<100:
++        hook_y=cam['y']+cam['h']+30
++    if name=='side':hook_y=260
++    if caption_y==1450 and cam and cam['y']>900:
++        caption_y=min(caption_y,cam['y']-120)
++    return {'hook_y':hook_y,'caption_y':caption_y}
++
++def geometry(name, top=.32):
++    if name not in {x[0] for x in CATALOG}:
++        raise ValueError('Choose a valid layout.')
++    top = float(top)
++    if not math.isfinite(top) or not .2 <= top <= .5:
++        raise ValueError('Face size must be between 20% and 50%.')
++    h = int(top * 1920) // 2 * 2
++    full = {'source': 'full', 'x': 0, 'y': 0, 'w': 1080, 'h': 1920}
++    game = {**full, 'source': 'game'}
++    if name == 'blur': return {'mode': 'blur', 'layers': []}
++    if name == 'fill': return {'mode': 'layers', 'layers': [full]}
++    if name == 'game': return {'mode': 'layers', 'layers': [game]}
++    if name in ('stack', 'bottom'):
++        cam = {'source':'cam', 'x':0, 'y':0 if name == 'stack' else 1920-h, 'w':1080, 'h':h}
++        return {'mode':'layers', 'layers':[
++            {**game, 'y':h if name == 'stack' else 0, 'h':1920-h}, cam]}
++    if name == 'side':
++        w = int(top * 1080) // 2 * 2
++        return {'mode':'layers', 'layers':[
++            {**game, 'x':w, 'w':1080-w}, {'source':'cam','x':0,'y':0,'w':w,'h':1920}]}
++    w = int(top * 1080) // 2 * 2
++    size = w if name == 'circle' else int(w * .9) // 2 * 2
++    right = name in ('pip_tr','pip_br')
++    bottom = name in ('pip_bl','pip_br')
++    return {'mode':'layers', 'layers':[game, {
++        'source':'cam', 'x':1080-w-36 if right else 36,
++        'y':1920-size-180 if bottom else 72, 'w':w, 'h':size,
++        'circle':name == 'circle'}]}
++
++def render_graph(name, rects, top=.32):
++    spec = geometry(name, top)
++    if spec['mode'] == 'blur':
++        return '[0:v]split=2[b][f];[b]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=8:2,scale=1080:1920[bg];[f]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[base]'
++    layers = spec['layers']; parts=[]
++    if len(layers)>1: parts.append('[0:v]split='+str(len(layers))+''.join(f'[s{i}]' for i in range(len(layers))))
++    for i, layer in enumerate(layers):
++        source = f'[s{i}]' if len(layers)>1 else '[0:v]'
++        crop = ''
++        if layer['source'] != 'full':
++            x,y,w,h = rects[0 if layer['source']=='cam' else 1]
++            crop = f'crop={w}:{h}:{x}:{y},'
++        w,h = layer['w'],layer['h']
++        mask = ''
++        if layer.get('circle'):
++            mask = ",format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(pow(X-W/2,2)+pow(Y-H/2,2),pow(min(W,H)/2,2)),255,0)'"
++        parts.append(source+crop+f'scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1'+mask+f'[p{i}]')
++    first = layers[0]
++    parts.append(f"[p0]pad=1080:1920:{first['x']}:{first['y']}:black[b0]")
++    for i, layer in enumerate(layers[1:],1):
++        parts.append(f"[b{i-1}][p{i}]overlay={layer['x']}:{layer['y']}:shortest=1[b{i}]")
++    parts.append(f'[b{len(layers)-1}]null[base]')
++    return ';'.join(parts)
+diff --git a/backend/src/media/view_sequencing.py b/backend/src/media/view_sequencing.py
+index 8806a54..954aabc 100644
+--- a/backend/src/media/view_sequencing.py
++++ b/backend/src/media/view_sequencing.py
+@@ -120,9 +120,8 @@ def plan_view_segments(duration: Optional[float], peak: Optional[float]) -> Opti
+ def peak_from_edl(edl: Optional[Mapping[str, Any]]) -> Optional[float]:
+     """The clip-relative peak already represented by an EDL, or None.
+ 
+-    Reads the same carriers as ``deliverable_bundle._peak_timestamp``:
+-    an explicit peak stamp, the energy-peak list, or the first punch-in
+-    zoom keyframe (which ``build_edl`` derives from the energy peaks).
++    Only measured peaks count. The editor also puts punch-ins on a
++    timer, so a zoom alone cannot identify the reaction.
+     """
+     if not edl:
+         return None
+@@ -135,13 +134,6 @@ def peak_from_edl(edl: Optional[Mapping[str, Any]]) -> Optional[float]:
+         for peak in peaks:
+             if isinstance(peak, (int, float)) and peak >= 0:
+                 return float(peak)
+-    for keyframe in edl.get("zoom_keyframes") or []:
+-        if (
+-            isinstance(keyframe, Mapping)
+-            and keyframe.get("type") == "punch_in"
+-            and isinstance(keyframe.get("time"), (int, float))
+-        ):
+-            return max(0.0, float(keyframe["time"]))
+     return None
+ 
+ 
+diff --git a/backend/tests/conftest.py b/backend/tests/conftest.py
+index 1def8c3..df0ea4c 100644
+--- a/backend/tests/conftest.py
++++ b/backend/tests/conftest.py
+@@ -41,7 +41,8 @@ for _proxy_var in ("no_proxy", "NO_PROXY"):
+             if entry.strip() and "[" not in entry and "]" not in entry
+         ]
+         os.environ[_proxy_var] = ",".join(_kept) or "localhost,127.0.0.1"
+-del _proxy_var, _raw, _kept
++        del _kept
++del _proxy_var, _raw
+ 
+ 
+ class _FakeRedisPool:
+diff --git a/backend/tests/unit/test_caption_polish.py b/backend/tests/unit/test_caption_polish.py
+index e35f40c..8f881bc 100644
+--- a/backend/tests/unit/test_caption_polish.py
++++ b/backend/tests/unit/test_caption_polish.py
+@@ -88,6 +88,17 @@ def test_model_failure_keeps_originals():
+     assert P.fix_caption_words(words, chat=lambda prompt: None) is words
+ 
+ 
++def test_model_cannot_delete_spoken_words_or_invent_a_score():
++    words = _words(["he", "won", "12", "rounds"])
++    output = P.fix_caption_words(words, chat=_chat_returning(["he", "", "13", "200"]))
++    assert output == words
++
++
++def test_non_string_entry_invalidates_response():
++    words = _words(["we", "were", "there"])
++    assert P.fix_caption_words(words, chat=_chat_returning(["We", None, "there"])) is words
++
++
+ def test_model_exception_keeps_originals():
+     def boom(prompt):
+         raise RuntimeError("gateway down")
+diff --git a/backend/tests/unit/test_live_buffer.py b/backend/tests/unit/test_live_buffer.py
+index 14225ab..72a9964 100644
+--- a/backend/tests/unit/test_live_buffer.py
++++ b/backend/tests/unit/test_live_buffer.py
+@@ -45,6 +45,8 @@ def test_prune_keeps_only_the_recent_window(tmp_path):
+ def test_page_urls_go_through_yt_dlp():
+     assert _is_page_url("https://www.twitch.tv/somechannel")
+     assert _is_page_url("https://www.youtube.com/watch?v=abc")
++    assert _is_page_url("https://kick.com/example/videos/123")
++    assert not _is_page_url("https://example.org/?url=kick.com")
+     assert not _is_page_url("https://cdn.example/stream.m3u8")
+     assert not _is_page_url("D:/test.mp4")
+ 
+diff --git a/backend/tests/unit/test_live_groq_transcribe.py b/backend/tests/unit/test_live_groq_transcribe.py
+index 4a7164d..248a328 100644
+--- a/backend/tests/unit/test_live_groq_transcribe.py
++++ b/backend/tests/unit/test_live_groq_transcribe.py
+@@ -30,6 +30,14 @@ def test_words_without_segments_are_kept_in_one_segment():
+     assert len(result["segments"]) == 1 and result["segments"][0]["words"][0]["word"] == "hey"
+ 
+ 
++def test_word_at_overlapping_segment_edges_is_assigned_once():
++    result = G.to_whisper_result({
++        "words": [{"word": "wait", "start": 1.98, "end": 2.1}],
++        "segments": [{"start": 0, "end": 2}, {"start": 2, "end": 3}],
++    })
++    assert [w["word"] for s in result["segments"] for w in s["words"]] == ["wait"]
++
++
+ @pytest.fixture()
+ def window(tmp_path):
+     video = tmp_path / "window_001.mp4"
+diff --git a/backend/tests/unit/test_view_sequencing.py b/backend/tests/unit/test_view_sequencing.py
+index 83fb4ab..5725f53 100644
+--- a/backend/tests/unit/test_view_sequencing.py
++++ b/backend/tests/unit/test_view_sequencing.py
+@@ -115,7 +115,7 @@ def test_peak_from_edl_carriers():
+     assert peak_from_edl({"peak_energy_timestamp": 7.5}) == 7.5
+     assert peak_from_edl({"peak_energy_time": 3}) == 3.0
+     assert peak_from_edl({"energy_peaks": [2.0, 9.0]}) == 2.0
+-    assert peak_from_edl({"zoom_keyframes": [{"type": "punch_in", "time": 4.25}]}) == 4.25
++    assert peak_from_edl({"zoom_keyframes": [{"type": "punch_in", "time": 4.25}]}) is None
+     assert peak_from_edl({"zoom_keyframes": [{"type": "slow_zoom", "time": 4.25}]}) is None
+     assert peak_from_edl({}) is None
+     assert peak_from_edl(None) is None
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 6f7c5af..7858b27 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -190,6 +190,9 @@ services:
+       - YOUTUBE_SOURCE_CACHE_TTL_SECONDS=${YOUTUBE_SOURCE_CACHE_TTL_SECONDS:-604800}
+       - APIFY_EXPENSIVE_FALLBACKS=${APIFY_EXPENSIVE_FALLBACKS:-false}
+       - LLM=${LLM:-}
++      - STYLED_HOOK_TITLE=${STYLED_HOOK_TITLE:-off}
++      - REACTION_PUNCH=${REACTION_PUNCH:-off}
++      - LIVE_VOD_LLM=${LIVE_VOD_LLM:-}
+       - OPENAI_API_KEY=${OPENAI_API_KEY}
+       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+       - OPENROUTER_FALLBACK_MODEL=${OPENROUTER_FALLBACK_MODEL:-nvidia/nemotron-3-ultra-550b-a55b:free}
+@@ -388,6 +391,9 @@ services:
+       - YOUTUBE_SOURCE_CACHE_TTL_SECONDS=${YOUTUBE_SOURCE_CACHE_TTL_SECONDS:-604800}
+       - APIFY_EXPENSIVE_FALLBACKS=${APIFY_EXPENSIVE_FALLBACKS:-false}
+       - LLM=${LLM:-}
++      - STYLED_HOOK_TITLE=${STYLED_HOOK_TITLE:-off}
++      - REACTION_PUNCH=${REACTION_PUNCH:-off}
++      - LIVE_VOD_LLM=${LIVE_VOD_LLM:-}
+       - OPENAI_API_KEY=${OPENAI_API_KEY}
+       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+       - OPENROUTER_FALLBACK_MODEL=${OPENROUTER_FALLBACK_MODEL:-nvidia/nemotron-3-ultra-550b-a55b:free}
+diff --git a/frontend/src/app/live/box-draw.tsx b/frontend/src/app/live/box-draw.tsx
+index 39785f7..68c9368 100644
+--- a/frontend/src/app/live/box-draw.tsx
++++ b/frontend/src/app/live/box-draw.tsx
+@@ -5,9 +5,9 @@ import { Camera, Eraser, ImageDown, Loader2, Save } from "lucide-react";
+ import { toast } from "sonner";
+ 
+ import { Button } from "@/components/ui/button";
+-import { cn } from "@/lib/utils";
+ import {
+   FACE_PANEL_SHARE,
++  arrangements,
+   boxesPayload,
+   coverCropPx,
+   dragBox,
+@@ -101,6 +101,43 @@ export function BoxDraw({
+     pctx.fillStyle = "#000";
+     pctx.fillRect(0, 0, PREVIEW_W, PREVIEW_H);
+     if (!isUsableBox(cam) || !isUsableBox(game)) return;
++    if (arrange !== "top" && arrange !== "bottom") {
++      const paintPanel = (box: FractionBox, x: number, y: number, w: number, h: number) => {
++        const crop = coverCropPx(box, img.naturalWidth, img.naturalHeight, w / h);
++        pctx.drawImage(img, crop.x, crop.y, crop.w, crop.h,
++          x * PREVIEW_W / 1080, y * PREVIEW_H / 1920, w * PREVIEW_W / 1080, h * PREVIEW_H / 1920);
++      };
++      const full = { x: 0, y: 0, w: 1, h: 1 };
++      if (arrange === "blur") {
++        pctx.save();
++        pctx.filter = "blur(4px)";
++        paintPanel(full, -24, -24, 1128, 1968);
++        pctx.restore();
++        const scale = Math.min(PREVIEW_W / img.naturalWidth, PREVIEW_H / img.naturalHeight);
++        const w = scale * img.naturalWidth, h = scale * img.naturalHeight;
++        pctx.drawImage(img, (PREVIEW_W - w) / 2, (PREVIEW_H - h) / 2, w, h);
++      } else if (arrange === "side") {
++        paintPanel(cam, 0, 0, 344, 1920);
++        paintPanel(game, 344, 0, 736, 1920);
++      } else {
++        paintPanel(arrange === "fill" ? full : game, 0, 0, 1080, 1920);
++        if (arrange !== "fill" && arrange !== "game") {
++          const w = 344, h = arrange === "circle" ? w : 308;
++          const x = arrange.endsWith("r") ? 1080 - w - 36 : 36;
++          const y = arrange.startsWith("pip_b") ? 1920 - h - 180 : 72;
++          pctx.save();
++          if (arrange === "circle") {
++            pctx.beginPath();
++            pctx.arc((x + w / 2) * PREVIEW_W / 1080, (y + h / 2) * PREVIEW_H / 1920,
++              w * PREVIEW_W / 2160, 0, Math.PI * 2);
++            pctx.clip();
++          }
++          paintPanel(cam, x, y, w, h);
++          pctx.restore();
++        }
++      }
++      return;
++    }
+     const faceH = Math.round(PREVIEW_H * FACE_PANEL_SHARE);
+     const gameH = PREVIEW_H - faceH;
+     const faceCrop = coverCropPx(cam, img.naturalWidth, img.naturalHeight, PREVIEW_W / faceH);
+@@ -247,15 +284,12 @@ export function BoxDraw({
+           <div className="shrink-0">
+             <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">9:16 result</p>
+             <canvas ref={previewRef} width={PREVIEW_W} height={PREVIEW_H} className="rounded-lg border bg-black" />
+-            <div className="mt-2 flex rounded-md border p-0.5" role="group" aria-label="Stack order">
+-              {(["top", "bottom"] as const).map((value) => (
+-                <button key={value} type="button" onClick={() => setArrange(value)}
+-                  className={cn("flex-1 rounded px-2 py-1 text-xs",
+-                    arrange === value ? "bg-primary text-primary-foreground" : "text-muted-foreground")}>
+-                  {value === "top" ? "Face on top" : "Face below"}
+-                </button>
+-              ))}
+-            </div>
++            <select aria-label="Layout arrangement" value={arrange}
++              onChange={(event) => setArrange(event.target.value as BoxArrangement)}
++              className="mt-2 block w-full rounded-md border bg-background px-2 py-1 text-xs">
++              {Object.entries(arrangements).map(([value, label]) =>
++                <option key={value} value={value}>{label}</option>)}
++            </select>
+           </div>
+         </div>
+       )}
+diff --git a/frontend/src/app/live/boxes.test.ts b/frontend/src/app/live/boxes.test.ts
+index 93de9fb..b5df6ff 100644
+--- a/frontend/src/app/live/boxes.test.ts
++++ b/frontend/src/app/live/boxes.test.ts
+@@ -52,6 +52,8 @@ describe("isUsableBox / boxesPayload", () => {
+ 
+ describe("channel keys + saved boxes", () => {
+   it("keys by channel for twitch and youtube", () => {
++    expect(channelKeyForUrl("https://kick.com/Channel/videos/abc")).toBe("kick:channel");
++    expect(channelKeyForUrl("https://www.twitch.tv/videos/123")).toBe("twitch:vod:123");
+     expect(channelKeyForUrl("https://www.twitch.tv/KaiCenat")).toBe("twitch:kaicenat");
+     expect(channelKeyForUrl("https://www.youtube.com/@KaiCenat/streams")).toBe("youtube:@kaicenat");
+     expect(channelKeyForUrl("https://www.youtube.com/watch?v=abc123")).toBe("youtube:abc123");
+@@ -76,6 +78,13 @@ describe("channel keys + saved boxes", () => {
+     expect(loadSavedBoxes(storage, "https://www.twitch.tv/someoneelse")).toBeNull();
+   });
+ 
++  it("restores a floating camera layout without switching it back to a stack", () => {
++    const storage = fakeStorage();
++    const boxes: ManualBoxes = { cam: CAM, game: GAME, arrange: "pip_br" };
++    saveBoxes(storage, "https://kick.com/channel", boxes);
++    expect(loadSavedBoxes(storage, "https://kick.com/channel")).toEqual(boxes);
++  });
++
+   it("ignores corrupt or undersized saved values", () => {
+     const storage = fakeStorage();
+     storage.setItem(storageKeyForUrl("https://www.twitch.tv/x"), "{not json");
+diff --git a/frontend/src/app/live/boxes.ts b/frontend/src/app/live/boxes.ts
+index ea817aa..8bdc0a2 100644
+--- a/frontend/src/app/live/boxes.ts
++++ b/frontend/src/app/live/boxes.ts
+@@ -11,7 +11,13 @@
+  */
+ 
+ export type FractionBox = { x: number; y: number; w: number; h: number };
+-export type BoxArrangement = "top" | "bottom";
++export const arrangements = {
++  top: "Face on top", bottom: "Face below", blur: "Blurred fill", fill: "Fill screen",
++  game: "Gameplay only", pip_tl: "Camera top left", pip_tr: "Camera top right",
++  pip_bl: "Camera bottom left", pip_br: "Camera bottom right", circle: "Circle camera",
++  side: "Side by side",
++} as const;
++export type BoxArrangement = keyof typeof arrangements;
+ export type ManualBoxes = { cam: FractionBox; game: FractionBox; arrange: BoxArrangement };
+ 
+ /** Face panel share of the output height (backend: 864 / 1920). */
+@@ -72,6 +78,8 @@ export function channelKeyForUrl(rawUrl: string): string {
+     const parsed = new URL(url);
+     const host = parsed.hostname.replace(/^www\./, "");
+     const parts = parsed.pathname.split("/").filter(Boolean);
++    if (host === "kick.com" && parts[0]) return `kick:${parts[0].toLowerCase()}`;
++    if (host === "twitch.tv" && parts[0] === "videos" && parts[1]) return `twitch:vod:${parts[1]}`;
+     if (host === "twitch.tv" && parts[0]) return `twitch:${parts[0].toLowerCase()}`;
+     if ((host === "youtube.com" || host === "m.youtube.com") && parts[0]) {
+       if (parts[0].startsWith("@")) return `youtube:${parts[0].toLowerCase()}`;
+@@ -105,7 +113,9 @@ function asManualBoxes(value: unknown): ManualBoxes | null {
+   const cam = box(v.cam);
+   const game = box(v.game);
+   if (!cam || !game) return null;
+-  return { cam, game, arrange: v.arrange === "bottom" ? "bottom" : "top" };
++  const arrange = typeof v.arrange === "string" && Object.hasOwn(arrangements, v.arrange)
++    ? v.arrange as BoxArrangement : "top";
++  return { cam, game, arrange };
+ }
+ 
+ export function loadSavedBoxes(storage: StorageLike, rawUrl: string): ManualBoxes | null {
+diff --git a/frontend/src/app/live/page.tsx b/frontend/src/app/live/page.tsx
+index b2401cb..5d4bd51 100644
+--- a/frontend/src/app/live/page.tsx
++++ b/frontend/src/app/live/page.tsx
+@@ -302,7 +302,7 @@ export default function LivePage() {
+ 
+       <form onSubmit={start} className="mt-6 grid gap-4 rounded-xl border bg-background p-4 sm:grid-cols-2">
+         <div className="sm:col-span-2">
+-          <Label htmlFor="live-url">Stream link: live now or finished (YouTube or Twitch)</Label>
++          <Label htmlFor="live-url">Stream link from YouTube, Twitch or Kick (live or finished)</Label>
+           <Input id="live-url" value={url} onChange={(e) => setUrl(e.target.value)}
+             placeholder="https://www.youtube.com/watch?v=…  or  https://www.twitch.tv/…" className="mt-1.5" />
+         </div>
+diff --git a/frontend/src/components/app/clip-wall.tsx b/frontend/src/components/app/clip-wall.tsx
+index 33c67c6..c69fbb3 100644
+--- a/frontend/src/components/app/clip-wall.tsx
++++ b/frontend/src/components/app/clip-wall.tsx
+@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
+ import { useTranslations } from "next-intl";
+ import {
+   Check, ChevronLeft, ChevronRight, Download, Flame, Loader2, MessageSquare,
+-  Play, Scissors, Share2, Star, Trash2, TrendingUp,
++  Play, Scissors, Share2, Star, ThumbsDown, ThumbsUp, Trash2, TrendingUp,
+ } from "lucide-react";
+ import { ClipCover, ScoreRing } from "@/components/app/clip-cover";
+ import { BriefBadge } from "@/components/app/brief-compliance";
+@@ -14,7 +14,7 @@ import DynamicVideoPlayer from "@/components/dynamic-video-player";
+ import { TranscriptPreview } from "@/components/transcript-preview";
+ import { Button } from "@/components/ui/button";
+ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+-import { getClipUrl } from "@/lib/clip-actions";
++import { getClipUrl, sendClipFeedback, type ClipFeedbackVerdict } from "@/lib/clip-actions";
+ import { formatClipDuration } from "@/lib/generations";
+ import { DELAY_MESSAGE_KEYS, isDownloadRecovery } from "@/lib/download-recovery";
+ import { cn } from "@/lib/utils";
+@@ -109,6 +109,19 @@ export function ClipTile({ clip, taskId, busy, best, editable, profile, onOpen,
+ }) {
+   const t = useTranslations("task");
+   const title = clipTitle(clip, t("clipNumber", { order: clip.clip_order }));
++  const [feedback, setFeedback] = useState<ClipFeedbackVerdict | "saving" | null>(null);
++  const [feedbackMessage, setFeedbackMessage] = useState("");
++  async function rate(verdict: ClipFeedbackVerdict) {
++    setFeedback("saving");
++    try {
++      const result = await sendClipFeedback(taskId, clip.id, verdict);
++      setFeedback(result.recorded ? verdict : null);
++      setFeedbackMessage(result.recorded ? "Feedback saved" : "Clip learning is unavailable");
++    } catch {
++      setFeedback(null);
++      setFeedbackMessage("Feedback could not be saved. Try again.");
++    }
++  }
+   return (
+     <article className="group @container animate-rise">
+       <button
+@@ -166,12 +179,22 @@ export function ClipTile({ clip, taskId, busy, best, editable, profile, onOpen,
+               <Link href={`/tasks/${taskId}/edit?clip=${clip.id}`}><Scissors className="size-3.5" />{t("edit")}</Link>
+             </Button>
+           )}
++          {editable && (["accept", "reject"] as const).map((verdict) => (
++            <Button key={verdict} type="button" size="icon-sm"
++              variant={feedback === verdict ? "secondary" : "ghost"}
++              disabled={busy || feedback === "saving" || feedback === "accept" || feedback === "reject"}
++              aria-label={verdict === "accept" ? "Good clip selection" : "Poor clip selection"}
++              aria-pressed={feedback === verdict} onClick={() => void rate(verdict)}>
++              {verdict === "accept" ? <ThumbsUp className="size-3.5" /> : <ThumbsDown className="size-3.5" />}
++            </Button>
++          ))}
+           {onDelete && (
+             <Button size="icon-sm" variant="ghost" className="size-7 text-muted-foreground hover:bg-destructive/10 hover:text-destructive" onClick={onDelete} aria-label={t("deleteClip")}>
+               <Trash2 className="size-3.5" />
+             </Button>
+           )}
+         </div>
++        <span role="status" className="text-xs text-muted-foreground">{feedbackMessage}</span>
+       </div>
+     </article>
+   );
+diff --git a/litellm_config.yaml b/litellm_config.yaml
+index b59dc75..efd4fc9 100644
+--- a/litellm_config.yaml
++++ b/litellm_config.yaml
+@@ -1,4 +1,27 @@
+ model_list:
++  # Explicit free route for clip selection, caption polish and titles.
++  # Dedicated fallback aliases keep legacy chains out of this route.
++  - model_name: clip-free
++    litellm_params:
++      model: openai/nvidia/nemotron-3-ultra-550b-a55b
++      api_base: https://integrate.api.nvidia.com/v1
++      api_key: os.environ/NVIDIA_API_KEY
++      timeout: 35
++  - model_name: clip-free-groq
++    litellm_params:
++      model: groq/openai/gpt-oss-120b
++      api_key: os.environ/GROQ_API_KEY
++      timeout: 20
++  - model_name: clip-free-router
++    litellm_params:
++      model: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
++      api_key: os.environ/OPENROUTER_API_KEY
++      timeout: 35
++  - model_name: clip-free-local
++    litellm_params:
++      model: openai/qwen3:8b
++      api_base: http://host.docker.internal:11434/v1
++      api_key: ollama
+   - model_name: clip-fast
+     litellm_params:
+       model: openai/nvidia/nemotron-3-ultra-550b-a55b
+@@ -143,6 +166,7 @@ router_settings:
+   # authentication if reached and are cooled down by the router;
+   # the gateway boots and the primary routes are unaffected.
+   fallbacks:
++    - clip-free: ["clip-free-groq", "clip-free-router", "clip-free-local"]
+     - clip-fast: ["deepseek-chat", "clip-assured", "nim-deepseek", "openrouter-free", "cloudflare-free", "groq-20b", "local-qwen"]
+     - clip-assured: ["deepseek-chat", "clip-fast", "nim-deepseek", "openrouter-free", "cloudflare-free", "groq-20b", "local-qwen"]
+     - groq-20b: ["deepseek-chat", "clip-assured", "clip-fast", "nim-deepseek", "openrouter-free", "cloudflare-free", "local-qwen"]
+diff --git a/tools/live/train_selection.py b/tools/live/train_selection.py
+index c7bf867..994d50a 100644
+--- a/tools/live/train_selection.py
++++ b/tools/live/train_selection.py
+@@ -203,7 +203,7 @@ def propose(best, rng, step):
+ 
+ 
+ def train(data: Path, minutes: float, seed: int) -> None:
+-    from src.live.selection import DEFAULT_PARAMS, PARAMS_FILE, zscores
++    from src.live.selection import DEFAULT_PARAMS, PARAMS_FILE, load_params, zscores
+ 
+     videos = load(data)
+     if len(videos) < 6:
+@@ -213,15 +213,17 @@ def train(data: Path, minutes: float, seed: int) -> None:
+     print(f"train {len(tr)} videos / held-out {len(va)} videos", flush=True)
+     t0 = time.time()
+     zcache = {}
++    incumbent = load_params()
+     for v in videos:
+-        for b in SPACE["baseline_sec"]:
++        for b in set(SPACE["baseline_sec"]) | {incumbent["baseline_sec"]}:
+             zcache[(v["id"], int(b))] = zscores(v["series"], dict(DEFAULT_PARAMS, baseline_sec=b))
+     print(f"z-scores precomputed in {time.time() - t0:.0f}s", flush=True)
+     base_tr, base_va = evaluate(tr, DEFAULT_PARAMS, zcache), evaluate(va, DEFAULT_PARAMS, zcache)
+     print(f"shipped defaults: train {base_tr:.4f}  held-out {base_va:.4f}  (random = ~0.50)", flush=True)
+     rng = random.Random(seed)
+-    best, best_tr = dict(DEFAULT_PARAMS), base_tr
+-    log = [{"step": 0, "train": base_tr, "heldout": base_va, "params": best}]
++    best = dict(incumbent)
++    best_tr, incumbent_va = evaluate(tr, best, zcache), evaluate(va, best, zcache)
++    log = [{"step": 0, "train": best_tr, "heldout": incumbent_va, "params": best}]
+     deadline, step, i, kept = time.time() + minutes * 60, 0.25, 0, 0
+     while time.time() < deadline:
+         i += 1
+@@ -238,16 +240,17 @@ def train(data: Path, minutes: float, seed: int) -> None:
+     best_va = evaluate(va, best, zcache)
+     report = {"videos": len(videos), "train_videos": [v["id"] for v in tr], "heldout_videos": [v["id"] for v in va],
+               "experiments": i, "kept": kept, "defaults": {"train": base_tr, "heldout": base_va},
++              "incumbent_heldout": incumbent_va,
+               "trained": {"train": best_tr, "heldout": best_va}, "params": best, "log": log}
+     (data / "training_report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
+     gain = (best_va - base_va) / max(base_va, 1e-6)
+     print(f"done: {i} experiments, {kept} kept. held-out {base_va:.4f} -> {best_va:.4f} ({gain * 100:+.1f}%)", flush=True)
+-    if gain >= 0.02:
++    if gain >= 0.02 and best_va > incumbent_va:
+         PARAMS_FILE.write_text(json.dumps({"trained_on": len(tr), "heldout": len(va), "heldout_score": best_va,
+                                            "defaults_heldout_score": base_va, "params": best}, indent=1), encoding="utf-8")
+         print(f"wrote {PARAMS_FILE}", flush=True)
+     else:
+-        print("held-out did not improve by 2%: params NOT written (defaults stay)", flush=True)
++        print("Candidate did not clear both the baseline margin and the installed picker score. Keeping current weights.", flush=True)
+ 
+ 
+ def main() -> int:

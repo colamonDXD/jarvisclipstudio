@@ -1,0 +1,30 @@
+From 1cbb6305e99ad8c92fb2a75d3b60e01d72c47088 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 08:14:56 +0530
+Subject: [PATCH 17/22] docs(changelog): one layout per clip, music beds, sound
+ effects
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CHANGELOG.md | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 9f95390..f398a70 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,6 +4,11 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ 
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
++## 2026-11-18
++- **Improved:** A clip now keeps one look from start to finish. Before, the picture could jump between a zoomed-in face crop and the whole frame with blurred bars every second or two. The app now picks whichever look covers most of the clip and uses it throughout. Two-person podcast splits and streamer facecam layouts are unchanged. Set `REFRAME_CONSISTENT=0` for the old shot-by-shot behaviour.
++- **New:** Clips now get background music. Seven free tracks cover the moods the styles ask for: comedy, energetic, upbeat, corporate, calm, funk, and a drum-and-bass stand-in for phonk. All are public domain (CC0, from the FreePD catalogue), so there are no copyright claims. Meme & comedy clips now play a playful comedy bed under the voices.
++- **New:** Sound effects now actually play. The whoosh, pop, riser, ding, impact ("boom") and sting cues the editor places were silent before, because no sounds were bundled. The six bundled sounds are our own originals. You can still upload your own effects to your SFX library.
++
+ ## 2026-11-17
+ - **Fixed:** Streamer clip picking no longer puts the loudest game moment first when the streamer didn't react to it. Several changes work together:
+   - **Mic on its own channel:** when the recording has the mic on one side and the game on the other, the app listens to the mic alone.
+-- 
+2.56.0.windows.2
+

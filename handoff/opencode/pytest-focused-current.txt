@@ -1,0 +1,38 @@
+﻿....................F................F..............                     [100%]
+================================== FAILURES ===================================
+_____________ test_the_three_presets_encode_differently_at_30_fps _____________
+
+    def test_the_three_presets_encode_differently_at_30_fps():
+        rates = {preset_rates(name, 30) for name in EXPORT_PRESETS}
+>       assert len(rates) == len(EXPORT_PRESETS) == 3
+E       AssertionError: assert 3 == 5
+E        +  where 3 = len({('10M', '192k'), ('12M', '192k'), ('8M', '384k')})
+E        +  and   5 = len({'reels': ExportPreset(name='reels', width=1080, height=1920, video_bitrate='12M', audio_bitrate='192k', high_fps_vide...idth=1080, height=1920, video_bitrate='10M', audio_bitrate='192k', high_fps_video_bitrate=None, background='pad'), ...})
+
+tests\unit\test_export_presets.py:36: AssertionError
+__________________ test_prestage_cpu_leg_renders_real_source __________________
+
+tmp_path = WindowsPath('C:/Users/Prateek T H/AppData/Local/Temp/pytest-of-Prateek T H/pytest-217/test_prestage_cpu_leg_renders_0')
+
+    def test_prestage_cpu_leg_renders_real_source(tmp_path):
+        """Sandbox leg: no GPU here, so the probe fails and the CPU path runs.
+    
+        A two-range crossfade stitch of a real source must still produce a
+        correct-duration intermediate -- the fallback leg end to end.
+        """
+        source = tmp_path / "source.mp4"
+        _make_real_source(source)
+        output = tmp_path / "prestage.mp4"
+    
+        # The probe is unhealthy in this sandbox (no libcuda); the stitch
+        # must therefore take the CPU fallback, not fail.
+>       assert ffmpeg_module.check_nvenc_available() is False
+E       assert True is False
+E        +  where True = <functools._lru_cache_wrapper object at 0x0000015730673270>()
+E        +    where <functools._lru_cache_wrapper object at 0x0000015730673270> = ffmpeg_module.check_nvenc_available
+
+tests\unit\test_prestage_nvenc.py:332: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/unit/test_export_presets.py::test_the_three_presets_encode_differently_at_30_fps
+FAILED tests/unit/test_prestage_nvenc.py::test_prestage_cpu_leg_renders_real_source
+2 failed, 50 passed in 204.84s (0:03:24)

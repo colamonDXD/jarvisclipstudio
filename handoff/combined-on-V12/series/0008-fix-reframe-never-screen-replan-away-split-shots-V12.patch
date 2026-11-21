@@ -1,0 +1,66 @@
+From 6953d2aba7dc9d002f23124af1a9caad43326079 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 18:20:20 +0530
+Subject: [PATCH 08/18] fix(reframe): never screen-replan away split shots (V12
+ already guards unify)
+
+Rebased e833f37 onto the V12 base. V12 (Sanji's e4872fc3) already keeps the
+planner's plan when any split shot exists in unify_layout_plan, so only the
+missing half is applied here: the same guard on the SCREEN_SUBJECT re-plan,
+plus the regression test "split shots are never unified away".
+Tests: test_reframe_consistent 6/6 on the V12-based tree.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/media/reframe_plan.py             |  9 ++++++++-
+ backend/tests/unit/test_reframe_consistent.py | 17 +++++++++++++++++
+ 2 files changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/backend/src/media/reframe_plan.py b/backend/src/media/reframe_plan.py
+index fb19c9c..3bed6f1 100644
+--- a/backend/src/media/reframe_plan.py
++++ b/backend/src/media/reframe_plan.py
+@@ -3739,7 +3739,14 @@ def _attach_reframe_plan(
+         plan = unify_layout_plan(raw_plan, analysis, ranges, duration)
+         from .screen_subject import apply_screen_windows, screen_subject_enabled
+ 
+-        if screen_subject_enabled() and raw_plan is not None and not raw_plan.get("delegate"):
++        if (
++            screen_subject_enabled()
++            and raw_plan is not None
++            and not raw_plan.get("delegate")
++            # Same guard as unify_layout_plan: two corroborated people in
++            # a split shot are never re-planned away.
++            and not any(sh.get("mode") == "split" for sh in raw_plan.get("shots") or [])
++        ):
+             # A lit screen carrying the story (clip1 Step 3). When the clip
+             # shows one, the whole clip uses ONE stable full-frame layout and
+             # switches to the screen-on-top / person-below stack only while
+diff --git a/backend/tests/unit/test_reframe_consistent.py b/backend/tests/unit/test_reframe_consistent.py
+index a141681..fda5b4b 100644
+--- a/backend/tests/unit/test_reframe_consistent.py
++++ b/backend/tests/unit/test_reframe_consistent.py
+@@ -57,3 +57,20 @@ def test_off_switch(monkeypatch):
+     monkeypatch.setenv("REFRAME_CONSISTENT", "0")
+     plan = _plan((0, 10, "fit"), (10, 60, "single"))
+     assert _unify(plan) is plan
++
++
++def test_split_shots_are_never_unified_away(monkeypatch):
++    """Sanji's 2026-11-18 report: crop outvoted split and deleted two-person shots."""
++    from src.media import reframe_plan as rp
++
++    monkeypatch.delenv("REFRAME_CONSISTENT", raising=False)
++    plan = {"delegate": None, "shots": [
++        {"start": 0.0, "end": 21.0, "mode": "fit"},
++        {"start": 21.0, "end": 25.5, "mode": "split"},
++        {"start": 25.5, "end": 50.0, "mode": "single"},
++    ]}
++    called = []
++    monkeypatch.setattr(rp, "build_plain_reframe_plan", lambda *a, **k: called.append("crop") or {"shots": []})
++    monkeypatch.setattr(rp, "build_fit_reframe_plan", lambda *a, **k: called.append("fit") or {"shots": []})
++    assert rp.unify_layout_plan(plan, {}, [(0.0, 50.0)], 50.0) is plan
++    assert called == []
+-- 
+2.56.0.windows.2
+

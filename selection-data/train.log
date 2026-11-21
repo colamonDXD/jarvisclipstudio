@@ -1,0 +1,92 @@
+train 10 videos / held-out 5 videos
+z-scores precomputed in 43s
+shipped defaults: train 0.3631  held-out 0.3351  (random = ~0.50)
+#1: kept (train 0.4721, held-out 0.5022)
+#5: kept (train 0.4779, held-out 0.5503)
+#7: kept (train 0.4795, held-out 0.5561)
+#12: kept (train 0.4849, held-out 0.5544)
+#18: kept (train 0.5001, held-out 0.5569)
+#22: kept (train 0.5101, held-out 0.5896)
+#26: kept (train 0.5109, held-out 0.6068)
+#27: kept (train 0.5205, held-out 0.5994)
+#28: kept (train 0.5215, held-out 0.6076)
+#37: kept (train 0.5342, held-out 0.5995)
+#39: kept (train 0.5344, held-out 0.5891)
+#41: kept (train 0.5373, held-out 0.5793)
+#42: kept (train 0.5393, held-out 0.5679)
+#44: kept (train 0.5402, held-out 0.5581)
+#47: kept (train 0.5404, held-out 0.5810)
+#48: kept (train 0.5413, held-out 0.5807)
+#50: kept (train 0.5773, held-out 0.5489)
+#68: kept (train 0.5784, held-out 0.5468)
+#70: kept (train 0.5836, held-out 0.5526)
+#104: kept (train 0.5878, held-out 0.5460)
+#200: 20 kept, best train 0.5878, 43 min left
+#400: 20 kept, best train 0.5878, 42 min left
+#558: kept (train 0.5915, held-out 0.5460)
+#600: 21 kept, best train 0.5915, 41 min left
+#800: 21 kept, best train 0.5915, 39 min left
+#1000: 21 kept, best train 0.5915, 38 min left
+#1200: 21 kept, best train 0.5915, 37 min left
+#1400: 21 kept, best train 0.5915, 35 min left
+#1600: 21 kept, best train 0.5915, 34 min left
+#1711: kept (train 0.5920, held-out 0.5579)
+#1713: kept (train 0.5928, held-out 0.5579)
+#1719: kept (train 0.5970, held-out 0.5504)
+#1734: kept (train 0.5988, held-out 0.5532)
+#1785: kept (train 0.6017, held-out 0.5586)
+#1800: 26 kept, best train 0.6017, 33 min left
+#1836: kept (train 0.6037, held-out 0.5592)
+#1851: kept (train 0.6039, held-out 0.5592)
+#1867: kept (train 0.6092, held-out 0.5640)
+#2000: 29 kept, best train 0.6092, 32 min left
+#2200: 29 kept, best train 0.6092, 31 min left
+#2400: 29 kept, best train 0.6092, 30 min left
+#2600: 29 kept, best train 0.6092, 29 min left
+#2800: 29 kept, best train 0.6092, 28 min left
+#3000: 29 kept, best train 0.6092, 27 min left
+#3200: 29 kept, best train 0.6092, 27 min left
+#3202: kept (train 0.6099, held-out 0.5632)
+#3400: 30 kept, best train 0.6099, 26 min left
+#3452: kept (train 0.6134, held-out 0.5632)
+#3600: 31 kept, best train 0.6134, 25 min left
+#3800: 31 kept, best train 0.6134, 25 min left
+#4000: 31 kept, best train 0.6134, 24 min left
+#4200: 31 kept, best train 0.6134, 23 min left
+#4400: 31 kept, best train 0.6134, 23 min left
+#4600: 31 kept, best train 0.6134, 22 min left
+#4800: 31 kept, best train 0.6134, 21 min left
+#5000: 31 kept, best train 0.6134, 20 min left
+#5200: 31 kept, best train 0.6134, 20 min left
+#5400: 31 kept, best train 0.6134, 19 min left
+#5600: 31 kept, best train 0.6134, 18 min left
+#5800: 31 kept, best train 0.6134, 18 min left
+#6000: 31 kept, best train 0.6134, 17 min left
+#6200: 31 kept, best train 0.6134, 16 min left
+#6400: 31 kept, best train 0.6134, 16 min left
+#6600: 31 kept, best train 0.6134, 15 min left
+#6800: 31 kept, best train 0.6134, 14 min left
+#7000: 31 kept, best train 0.6134, 14 min left
+#7200: 31 kept, best train 0.6134, 13 min left
+#7400: 31 kept, best train 0.6134, 13 min left
+#7600: 31 kept, best train 0.6134, 12 min left
+#7800: 31 kept, best train 0.6134, 11 min left
+#8000: 31 kept, best train 0.6134, 11 min left
+#8200: 31 kept, best train 0.6134, 10 min left
+#8400: 31 kept, best train 0.6134, 9 min left
+#8600: 31 kept, best train 0.6134, 9 min left
+#8800: 31 kept, best train 0.6134, 8 min left
+#9000: 31 kept, best train 0.6134, 7 min left
+#9200: 31 kept, best train 0.6134, 7 min left
+#9400: 31 kept, best train 0.6134, 6 min left
+#9600: 31 kept, best train 0.6134, 6 min left
+#9800: 31 kept, best train 0.6134, 5 min left
+#10000: 31 kept, best train 0.6134, 4 min left
+#10200: 31 kept, best train 0.6134, 3 min left
+#10400: 31 kept, best train 0.6134, 3 min left
+#10600: 31 kept, best train 0.6134, 2 min left
+#10800: 31 kept, best train 0.6134, 1 min left
+#11000: 31 kept, best train 0.6134, 0 min left
+done: 11080 experiments, 31 kept. held-out 0.3351 -> 0.5632 (+68.0%)
+wrote D:\SnipNova-Dev\v12-base\backend\src\live\selection_params.json
+TRAIN EXIT 0

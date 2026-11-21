@@ -1,0 +1,350 @@
+From e4e336f7765868fb54405c453bc427b779f4190e Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 14:10:25 +0530
+Subject: [PATCH 10/13] feat(selection): transcript reaction words and facecam
+ mouth check for streamer reactions
+
+Adds a "lexical" voice-family signal from transcript words (exclamations,
+'!' marks, quick repeats; en/es/romanised Hindi). build_reaction_hints loads
+the cached transcript words itself, so video_service.py is unchanged. Words
+alone never create a moment (the two-signal rule still applies).
+
+Adds a mouth-movement check (YuNet landmarks in the facecam): a voice-led
+reaction whose facecam mouth stays still and face is calm is demoted as
+likely game dialogue. Fails open when the face is not visible.
+
+Real-sample proxy (Twitch, weak transcript labels, see EVIDENCE.md):
+3 extra picks; the mouth check demoted nothing in these samples.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                                  |   1 +
+ backend/src/auto_director/reaction_moments.py | 174 +++++++++++++++++-
+ backend/tests/unit/test_reaction_moments.py   |  43 +++++
+ 3 files changed, 209 insertions(+), 9 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 3a0e09d..a5ee94d 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,7 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-17
++- **Improved:** Streamer reaction picking now also reads what the streamer says — exclamations like "no, no, no", "what!" or "bro" in English, Spanish and romanised Hindi — and checks the facecam mouth so in-game character dialogue is less likely to be mistaken for the streamer. Words alone never make a clip: they must line up with a facecam or voice reaction.
+ - **Fixed:** The second NVIDIA fallback for AI clip selection pointed at DeepSeek V4.1 Flash, which NVIDIA has retired (a live check on 17 November got "gone"), so that fallback step always failed. It now uses Nemotron 3.5 Super, which the same check confirmed working on the free NVIDIA tier. The fallback order is unchanged and no paid model was added.
+ - **New:** Streamer reaction clips now come with a hook title that describes what actually happened (for example a streamer laughing at a sudden on-screen blast, never an invented event), clip windows that start on a pause and end after the reaction has died down, caption timing and placement notes that follow the reaction and keep clear of the facecam, and editing suggestions (facecam panel, a gentle punch-in on the reaction, trimming dead time). The suggestions are advisory data for the renderer.
+ - **New:** Streamer videos now get their best moments from the streamer's reaction, not just the loudest or most explosive stretch. The picker listens for a raised, shouting or laughing voice (ignoring explosions and engine noise), watches the facecam, and matches each reaction to the on-screen event that caused it. A reaction to something that just happened ranks highest, a funny moment with no visible trigger comes next, and a game event the streamer ignored is no longer picked. Each clip keeps the trigger and the full reaction, and explains why. Set `REACTION_SIGNALS=0` to switch the reaction hints off.
+diff --git a/backend/src/auto_director/reaction_moments.py b/backend/src/auto_director/reaction_moments.py
+index 922a1b6..c827052 100644
+--- a/backend/src/auto_director/reaction_moments.py
++++ b/backend/src/auto_director/reaction_moments.py
+@@ -28,6 +28,7 @@ streamer's own recent baseline and requires voicing.
+ from __future__ import annotations
+ 
+ import logging
++import re
+ import subprocess
+ from pathlib import Path
+ from typing import Any, Optional
+@@ -50,14 +51,14 @@ SR = 16000
+ _WIN, _HOP = 640, 160            # 40 ms window, 10 ms hop
+ _F0_LO, _F0_HI = 80, 600          # Hz
+ _VOICE_BINS = (19, 217)           # ~300–3400 Hz at 1024-point FFT
+-VOICE = ("vocal", "pitch", "laugh")
+-_SCALE_FLOOR = {"vocal": 2.0, "pitch": 18.0, "laugh": 0.12, "face": 0.8}
++VOICE = ("vocal", "pitch", "laugh", "lexical")
++_SCALE_FLOOR = {"vocal": 2.0, "pitch": 18.0, "laugh": 0.12, "face": 0.8, "lexical": 1.0}
+ _ACTIVE_Z = 3.0
+ _REACT_GAP_SEC = 2
+ _MIN_REACT_SEC = 1
+ _EVENT_LEAD_SEC = 7.0   # a reaction this soon after a game event is "to" it
+ _EVENT_SLACK_SEC = 1.5  # ...or this much before (anticipation / lag)
+-_WEIGHT = {"vocal": 1.0, "pitch": 1.0, "laugh": 1.6, "face": 0.8}
++_WEIGHT = {"vocal": 1.0, "pitch": 1.0, "laugh": 1.6, "face": 0.8, "lexical": 1.0}
+ 
+ 
+ # --------------------------------------------------------------------------
+@@ -284,7 +285,58 @@ def extract_facecam_activity(video_path: Path | str, roi: tuple[float, float, fl
+ # Fusion + correlation
+ # --------------------------------------------------------------------------
+ 
+-def reaction_series(voice: dict[str, np.ndarray], face: Optional[np.ndarray]) -> tuple[np.ndarray, dict[str, np.ndarray], bool]:
++# Exclamations and reaction words (English, Spanish, romanised Hindi). Only
++# words that are rarely neutral filler; "que"/"kya" count only with ? or !.
++_EXCLAIM = re.compile(
++    r"^(wait|what+|whoa+|wo+w|oh+|ah+|no+|nah+|yo+|bro+|dude|damn|hell|shit+|fuck\w*|holy|jesus|"
++    r"omg|stop|run|haha\w*|hah|lol|lmao|jaja\w*|joder|hostia|ostia|madre|dios|tio|tío|"
++    r"arre|bhai|bhag|abe|oye)$", re.I)
++_EXCLAIM_IF_MARKED = re.compile(r"^(que|qué|kya|why|how|huh)$", re.I)
++
++
++def lexical_series(words: list[dict[str, Any]], seconds: int) -> np.ndarray:
++    """Per-second reaction-word score from transcript words (seconds).
++
++    Counts exclamation words, '!' marks and quick repeats ("no no no").
++    The words themselves are never changed.
++    """
++    out = np.zeros(max(0, seconds))
++    prev: Optional[tuple[str, float]] = None
++    for w in words:
++        t = float(w.get("start", 0.0))
++        i = int(t)
++        if i < 0 or i >= seconds:
++            continue
++        raw = str(w.get("text", ""))
++        core = re.sub(r"[^\w']", "", raw).lower()
++        marked = "!" in raw or "?" in raw
++        score = 0.0
++        if core and _EXCLAIM.match(core):
++            score += 1.0
++        elif core and marked and _EXCLAIM_IF_MARKED.match(core):
++            score += 1.0
++        if "!" in raw:
++            score += 0.75
++        if prev and core and core == prev[0] and t - prev[1] <= 1.5:
++            score += 0.5
++        out[i] += score
++        prev = (core, t)
++    return out
++
++
++def _words_in_seconds(words: Optional[list[dict[str, Any]]], duration: float) -> Optional[list[dict[str, Any]]]:
++    """Accept transcript words in seconds or in milliseconds (the app's
++    cached AssemblyAI/whisper format) and return them in seconds."""
++    if not words:
++        return None
++    ends = [float(w.get("end", w.get("start", 0)) or 0) for w in words]
++    scale = 1000.0 if max(ends) > max(duration, 1.0) * 5 else 1.0
++    return [{"text": w.get("text", ""), "start": float(w.get("start", 0)) / scale,
++             "end": float(w.get("end", w.get("start", 0))) / scale} for w in words]
++
++
++def reaction_series(voice: dict[str, np.ndarray], face: Optional[np.ndarray],
++                    lexical: Optional[np.ndarray] = None) -> tuple[np.ndarray, dict[str, np.ndarray], bool]:
+     """(per-second reaction strength, per-signal z, voice_present)."""
+     n = len(voice["vocal"]) if voice else (len(face) if face is not None else 0)
+     zs: dict[str, np.ndarray] = {}
+@@ -295,6 +347,8 @@ def reaction_series(voice: dict[str, np.ndarray], face: Optional[np.ndarray]) ->
+         # Pitch only counts while the streamer is actually voicing loudly.
+         zs["pitch"] = np.where(voice["voiced_frac"] > 0.25, zs["pitch"], 0.0)
+         zs["laugh"] = _robust_z(voice["laugh"], _SCALE_FLOOR["laugh"])
++    if lexical is not None and len(lexical) and float(np.max(lexical)) > 0:
++        zs["lexical"] = _robust_z(lexical, _SCALE_FLOOR["lexical"], rel=0.0)
+     if face is not None and len(face):
+         m = min(n, len(face)) if n else len(face)
+         zs["face"] = _robust_z(face[:m], _SCALE_FLOOR["face"])
+@@ -342,6 +396,96 @@ def _episodes(strength: np.ndarray, zs: dict[str, np.ndarray]) -> list[dict[str,
+     return out
+ 
+ 
++# --------------------------------------------------------------------------
++# Whose voice is it? (streamer vs game dialogue)
++# --------------------------------------------------------------------------
++
++_MOUTH_FPS = 8
++_MOUTH_RATIO_MIN = 1.25     # reaction-span mouth movement vs the window's quiet level
++_MOUTH_MIN_COVERAGE = 0.5   # face+landmarks found in at least half the frames
++
++
++def mouth_motion(video_path: Path | str, roi: tuple[float, float, float, float],
++                 t0: float, t1: float) -> Optional[np.ndarray]:
++    """Per-second variability of the facecam mouth opening (YuNet landmarks)
++    between t0 and t1. None when the face is not visible often enough to say."""
++    try:
++        from ..media.active_speaker import mouth_aperture
++        from ..media.face_detection import YuNetFaceDetector
++        det = YuNetFaceDetector()
++    except Exception:
++        return None
++    x, y, w, h = roi
++    size = 256
++    dur = max(1.0, t1 - t0)
++    cmd = ["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t0):.2f}", "-t", f"{dur:.2f}", "-i", str(video_path),
++           "-an", "-vf", f"fps={_MOUTH_FPS},crop=iw*{w:.4f}:ih*{h:.4f}:iw*{x:.4f}:ih*{y:.4f},"
++           f"scale={size}:{size},format=bgr24", "-f", "rawvideo", "-"]
++    proc = subprocess.run(cmd, capture_output=True, timeout=120)
++    raw = proc.stdout
++    n = len(raw) // (size * size * 3)
++    if n < _MOUTH_FPS * 2:
++        return None
++    ap: list[Optional[float]] = []
++    for i in range(n):
++        frame = np.frombuffer(raw[i * size * size * 3:(i + 1) * size * size * 3], dtype=np.uint8).reshape(size, size, 3)
++        faces = det.detect_with_landmarks(frame)
++        if not faces:
++            ap.append(None)
++            continue
++        box, lm = max(faces, key=lambda f: f[0][2] * f[0][3])
++        ap.append(mouth_aperture(box[:4], lm))
++    found = sum(a is not None for a in ap)
++    if found < _MOUTH_MIN_COVERAGE * n:
++        return None
++    per_sec = []
++    for s in range(n // _MOUTH_FPS):
++        vals = [a for a in ap[s * _MOUTH_FPS:(s + 1) * _MOUTH_FPS] if a is not None]
++        per_sec.append(float(np.std(vals)) if len(vals) >= 3 else np.nan)
++    return np.array(per_sec)
++
++
++def voice_is_streamers(mouth: Optional[np.ndarray], span: tuple[int, int]) -> Optional[bool]:
++    """True when the mouth moves clearly more during the reaction span than in
++    the quieter rest of the window; False when it does not; None when unknown."""
++    if mouth is None or not np.isfinite(mouth).any():
++        return None
++    a, b = span
++    inside = mouth[a:b]
++    inside = inside[np.isfinite(inside)]
++    rest = np.concatenate([mouth[:a], mouth[b:]])
++    rest = rest[np.isfinite(rest)]
++    if len(inside) == 0 or len(rest) < 2:
++        return None
++    base = max(float(np.percentile(rest, 25)), 1e-3)
++    return float(np.median(inside)) / base >= _MOUTH_RATIO_MIN
++
++
++def check_voice_source(items: list[dict[str, Any]], video_path: Path | str,
++                       roi: Optional[tuple[float, float, float, float]]) -> None:
++    """Demote voice-led reactions whose voice is probably GAME audio: the
++    facecam mouth does not move with it and the face itself is calm."""
++    if roi is None or not Path(str(video_path)).is_file():
++        return
++    for it in items:
++        if it["type"] not in ("reaction_to_event", "commentary_reaction"):
++            continue
++        feats = it.get("features") or {}
++        if feats.get("face", 0) >= 3.0:
++            it["voice_source"] = "streamer (facecam reacts)"
++            continue
++        t0 = max(0.0, it["start"] - 6.0)
++        mouth = mouth_motion(video_path, roi, t0, it["end"] + 2.0)
++        verdict = voice_is_streamers(mouth, (int(it["start"] - t0), int(it["end"] - t0) + 1))
++        if verdict is False:
++            it["voice_source"] = "likely game audio (facecam mouth still)"
++            it["features"] = {k: (0.0 if k in VOICE else v) for k, v in feats.items()}
++            it["mult"] *= 0.5
++        else:
++            it["voice_source"] = "streamer" if verdict else "unverified"
++
++
++
+ def correlate(reactions: list[dict[str, Any]], game_eps: list[Episode], streamer_present: bool) -> list[dict[str, Any]]:
+     """Attach the triggering game event to each reaction; keep unreacted game
+     events as low-ranked ``silent_action`` candidates."""
+@@ -461,7 +605,9 @@ def select_streamer_moments(
+         if face is None:
+             roi = roi or find_facecam(video_path, duration)
+             face = extract_facecam_activity(video_path, roi) if roi else None
+-        strength, zs, voice_present = reaction_series(voice, face)
++        words_s = _words_in_seconds(words, duration)
++        lexical = lexical_series(words_s, int(duration) + 1) if words_s else None
++        strength, zs, voice_present = reaction_series(voice, face, lexical)
+         streamer_present = voice_present or (face is not None and len(face) > 0)
+         if not streamer_present or len(strength) < 5:
+             return []
+@@ -470,6 +616,7 @@ def select_streamer_moments(
+         g_event, g_zs = fuse_game_evidence(game_evidence)
+         game_eps = find_game_episodes(g_event, g_zs, None)
+         items = correlate(_episodes(strength, zs), game_eps, streamer_present)
++        check_voice_source(items, video_path, roi)
+     except Exception:
+         logger.warning("Streamer-reaction detection failed for %s", video_path, exc_info=True)
+         return []
+@@ -511,6 +658,7 @@ def select_streamer_moments(
+             "evidence": {
+                 "detector": "streamer_reaction_v1",
+                 "moment_type": it["type"], "reaction_kind": it["kind"],
++                "voice_source": it.get("voice_source", "unverified"),
+                 "modalities": sorted(modalities(it)),
+                 "signals": {k: round(v, 1) for k, v in it.get("features", {}).items()},
+                 "reaction_start_sec": round(it["start"], 1), "reaction_end_sec": round(it["end"], 1),
+@@ -526,9 +674,9 @@ def select_streamer_moments(
+         from .edit_recommendations import attach_recommendations
+         from .reaction_hooks import apply_ga2
+ 
+-        apply_ga2(moments, duration, words=words, strength=strength,
++        apply_ga2(moments, duration, words=words_s, strength=strength,
+                   facecam_roi=roi, profanity=profanity)
+-        attach_recommendations(moments, facecam_roi=roi, strength=strength, words=words)
++        attach_recommendations(moments, facecam_roi=roi, strength=strength, words=words_s)
+     except Exception:
+         logger.warning("Reaction hook/recommendation pass failed", exc_info=True)
+     moments.sort(key=lambda m: m["start_time"])
+@@ -536,13 +684,21 @@ def select_streamer_moments(
+ 
+ 
+ def build_reaction_hints(
+-    video_path: Path | str, duration: float, limit: int = 10
++    video_path: Path | str, duration: float, limit: int = 10,
++    words: Optional[list[dict[str, Any]]] = None,
+ ) -> str:
+     """Text hints for the transcript ranker: where the streamer reacted, and
+     to what. Same shape as ``build_clip_signal_summary`` lines. Empty string
+     when there is no streamer evidence or anything fails."""
++    if words is None:
++        try:
++            from ..media.transcription import load_cached_transcript_data
++
++            words = (load_cached_transcript_data(Path(video_path)) or {}).get("words")
++        except Exception:
++            words = None
+     moments = select_streamer_moments(
+-        video_path, duration, target_count=limit, clip_seconds=30)
++        video_path, duration, target_count=limit, clip_seconds=30, words=words)
+     moments = [m for m in moments if m["hook_type"] != "silent_action"]
+     if not moments:
+         return ""
+diff --git a/backend/tests/unit/test_reaction_moments.py b/backend/tests/unit/test_reaction_moments.py
+index ddd46b6..abc935a 100644
+--- a/backend/tests/unit/test_reaction_moments.py
++++ b/backend/tests/unit/test_reaction_moments.py
+@@ -104,3 +104,46 @@ def test_single_modality_is_capped_below_corroborated_moments():
+     backed = _pick(v, f, _game(events=[(88, 91)]))
+     assert backed[0]["virality_score"] > solo[0]["virality_score"]
+     assert set(backed[0]["evidence"]["modalities"]) == {"voice", "face", "context"}
++
++
++def test_voice_source_mouth_rule():
++    still = np.full(14, 0.01)
++    assert rm.voice_is_streamers(still, (6, 10)) is False          # voice rose, mouth did not move
++    moving = still.copy(); moving[6:10] = 0.05
++    assert rm.voice_is_streamers(moving, (6, 10)) is True
++    assert rm.voice_is_streamers(None, (6, 10)) is None             # no face: unknown, fail open
++    assert rm.voice_is_streamers(np.full(14, np.nan), (6, 10)) is None
++
++
++def test_game_audio_voice_is_demoted(monkeypatch, tmp_path):
++    video = tmp_path / "v.mp4"; video.write_bytes(b"x")
++    item = {"type": "commentary_reaction", "start": 40.0, "end": 44.0, "mult": 1.0,
++            "features": {"vocal": 8.0, "pitch": 5.0, "laugh": 0.0, "face": 0.5}}
++    monkeypatch.setattr(rm, "mouth_motion", lambda *a, **k: np.full(14, 0.01))
++    rm.check_voice_source([item], video, (0.1, 0.1, 0.2, 0.3))
++    assert item["voice_source"].startswith("likely game audio") and item["mult"] == 0.5
++    assert item["features"]["vocal"] == 0.0 and "voice" not in rm.modalities(item)
++
++
++def test_lexical_series_counts_reaction_words_and_repeats():
++    words = [{"text": "No,", "start": 10.1}, {"text": "no,", "start": 10.4}, {"text": "no!", "start": 10.7},
++             {"text": "the", "start": 20.0}, {"text": "que", "start": 30.0}, {"text": "¿Qué?", "start": 31.0}]
++    lex = rm.lexical_series(words, 40)
++    assert lex[10] >= 3.5 and lex[20] == 0 and lex[30] == 0 and lex[31] >= 1
++
++
++def test_words_in_milliseconds_are_converted():
++    w = rm._words_in_seconds([{"text": "yo", "start": 12000, "end": 12300}], 60.0)
++    assert w[0]["start"] == 12.0
++
++
++def test_reaction_words_alone_never_make_a_moment_but_corroborate_one():
++    words = [{"text": t, "start": 90.0 + i * 0.3, "end": 90.2 + i * 0.3} for i, t in enumerate(["no", "no", "no", "what!"])]
++    assert _pick(_voice(), _face(), _game()) == []
++    alone = rm.select_streamer_moments("x.mp4", 120.0, target_count=3, clip_seconds=30, voice=_voice(),
++                                       face=_face(), game_evidence=_game(), words=words)
++    assert [m for m in alone if m["hook_type"] != "silent_action"] == []
++    f = _face(); f[90:93] += 12
++    backed = rm.select_streamer_moments("x.mp4", 120.0, target_count=3, clip_seconds=30, voice=_voice(),
++                                        face=f, game_evidence=_game(), words=words)
++    assert backed and backed[0]["evidence"]["signals"].get("lexical", 0) >= 3
+-- 
+2.56.0.windows.2
+

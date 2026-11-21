@@ -1,0 +1,82 @@
+From d12f670eba2fcf57415e6a95b73976bf111d2b86 Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Fri, 20 Nov 2026 14:48:39 +0530
+Subject: [PATCH 6/7] Ground gaming headlines in the on-screen scene when
+ speakers overlap
+
+---
+ backend/src/live/finisher.py        | 37 +++++++++++++++++++++++++++++
+ backend/tests/unit/test_live_vod.py |  8 +++++++
+ 2 files changed, 45 insertions(+)
+
+diff --git a/backend/src/live/finisher.py b/backend/src/live/finisher.py
+index f34a4ad..735f0ff 100644
+--- a/backend/src/live/finisher.py
++++ b/backend/src/live/finisher.py
+@@ -36,6 +36,38 @@ def _raw_transcript(window):
+     return None
+ 
+ 
++def gaming_scene_title(words, credit):
++    """The game and streamer share a soundtrack; attribute dialogue only to the scene."""
++    import re
++    from .vod import _chat, _FIRST_PERSON
++    dialogue = " ".join(w["text"] for w in words)[:2600]
++    reply = _chat("This transcript mixes game characters and a streamer. Give only a 2–5 word noun phrase "
++                  "for the scene that they react to, suitable after 'reacts to'. Use a specific word from "
++                  "the dialogue. No streamer name, no personal pronouns, no made-up event, no punctuation. "
++                  "Example response: the paternity reveal. If there is no clear subject return NONE. "
++                  f"Dialogue: {dialogue}", timeout=35)
++    if not isinstance(reply, str):
++        return None
++    topic = reply.strip().strip('"').strip(" .!?")
++    tokens = re.findall(r"[\w]+(?:['’][\w]+)?", topic.casefold())
++    if not 2 <= len(tokens) <= 5 or not re.fullmatch(r"[\w\s’'\-]+", topic):
++        return None
++    personal = _FIRST_PERSON | {"his", "her", "him", "their", "your", "he", "she", "they", "you", "none"}
++    normalized = [t.replace("’", "'").split("'")[0] for t in tokens]
++    if any(t in personal for t in normalized):
++        return None
++    evidence = set(re.findall(r"\w+", dialogue.casefold()))
++    if not (set(tokens) - {"a", "an", "the", "to", "of", "on", "in", "at", "and", "with", "from"}) & evidence:
++        return None
++    name = (credit or "The streamer").strip().lstrip("@")
++    if name.replace(" ", "").casefold() == "kaicenat":
++        name = "Kai Cenat"
++    names = {name.casefold().replace(" ", ""), *name.casefold().split()}
++    if names.intersection(normalized):
++        return None
++    return f"{name} reacts to {topic}"
++
++
+ def _write_cache(path, data):
+     with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False, encoding="utf-8") as handle:
+         staged = Path(handle.name)
+@@ -221,6 +253,11 @@ def render_live_clip(window: Path, out_path: Path, *, niche: str = "gaming", lay
+     if hook_title and os.getenv("STYLED_HOOK_TITLE", "off").lower() in {"1", "on", "true"}:
+         quote_title = {"text": hook_title, "creator": credit}
+         hook_title = None
++    elif auto_headline and not hook_title and niche == "gaming" and layout_template:
++        # The upstream picker also sees mixed dialogue and cannot establish
++        # that the streamer personally said or did what an NPC described.
++        headline = gaming_scene_title(words, credit) if len(words) >= 5 else None
++        quote_title = {"text": headline, "creator": credit} if headline else None
+     elif auto_headline and not quote_title and not hook_title and len(words) >= 5:
+         from .vod import _chat, clean_pick_title
+         dialogue = " ".join(w["text"] for w in words)[:2600]
+diff --git a/backend/tests/unit/test_live_vod.py b/backend/tests/unit/test_live_vod.py
+index 46b644e..1104554 100644
+--- a/backend/tests/unit/test_live_vod.py
++++ b/backend/tests/unit/test_live_vod.py
+@@ -266,3 +266,11 @@ def test_transcribe_windows_mixes_captions_and_speech_model(monkeypatch, tmp_pat
+     assert [w["text"] for w in out[0]][:3] == ["run", "run", "get"]  # captions
+     assert [w["text"] for w in out[1]] == ["spoken"]                  # speech model
+     assert seen["windows"] == [(20.0, 25.0)]                          # only the missed window
++def test_mixed_gaming_dialogue_does_not_attribute_an_npc_claim_to_the_streamer(monkeypatch):
++    from src.live.finisher import gaming_scene_title
++    words = [{"text": w} for w in "Who is the father of this baby".split()]
++    for response in ("his paternity problem", "Kai's father", "the car chase"):
++        monkeypatch.setattr(V, "_chat", lambda *a, **kw: response)
++        assert gaming_scene_title(words, "@KaiCenat") is None
++    monkeypatch.setattr(V, "_chat", lambda *a, **kw: "the father reveal")
++    assert gaming_scene_title(words, "@KaiCenat") == "Kai Cenat reacts to the father reveal"

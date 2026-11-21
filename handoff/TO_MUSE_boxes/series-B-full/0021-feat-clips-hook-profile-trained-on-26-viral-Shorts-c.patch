@@ -1,0 +1,201 @@
+From ca4e538040584ea344fcf4cc594b2959c67da315 Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 20:25:04 +0530
+Subject: [PATCH 21/27] feat(clips): hook profile trained on 26 viral Shorts
+ (cuts, colour, SFX) drives the hook finish; small quote title at the very top
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/media/hook_finish.py    | 92 ++++++++++++++++++++++++-----
+ backend/src/media/hook_profile.json | 30 ++++++++++
+ 2 files changed, 107 insertions(+), 15 deletions(-)
+ create mode 100644 backend/src/media/hook_profile.json
+
+diff --git a/backend/src/media/hook_finish.py b/backend/src/media/hook_finish.py
+index 55ae729..f01e0be 100644
+--- a/backend/src/media/hook_finish.py
++++ b/backend/src/media/hook_finish.py
+@@ -34,6 +34,62 @@ logger = logging.getLogger(__name__)
+ TARGET_LUMA = 120.0
+ DARK_LUMA = 108.0
+ 
++# Trained from the viral Shorts study (tools/live/study_viral_hooks.py profile):
++# medians over 10M+ view Shorts. The file overrides these defaults.
++PROFILE_FILE = Path(__file__).with_name("hook_profile.json")
++DEFAULT_PROFILE = {"first_cut_s": 2.6, "cuts_per_min": 7.0, "target_brightness": 125.0, "target_saturation": 66.0,
++                   "max_punches": 6, "punch_seconds": 1.2, "punch_zoom": 1.08}
++
++
++def load_profile() -> Dict[str, float]:
++    import json
++
++    profile = dict(DEFAULT_PROFILE)
++    try:
++        data = json.loads(PROFILE_FILE.read_text(encoding="utf-8"))
++        profile.update({k: float(v) for k, v in (data.get("profile") or {}).items() if k in DEFAULT_PROFILE})
++    except (OSError, ValueError):
++        pass
++    return profile
++
++
++def punch_times(duration: float, profile: Dict[str, float]) -> list:
++    """Punch-in moments: the viral first cut, then the viral cut rate, never in the last 2 s."""
++    first = float(profile["first_cut_s"])
++    rate = max(1.0, float(profile["cuts_per_min"]))
++    step = max(3.0, 60.0 / rate)
++    times, t = [], first
++    while t < duration - 2.0 and len(times) < int(profile["max_punches"]):
++        times.append(round(t, 2))
++        t += step
++    return times
++
++
++def mean_saturation(clip: Path, duration: float) -> float:
++    import numpy as np
++
++    values = []
++    for frac in (0.2, 0.5, 0.8):
++        raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{duration * frac:.2f}", "-i", str(clip), "-frames:v", "1",
++                              "-vf", "scale=90:160", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
++        if len(raw) >= 90 * 160 * 3:
++            rgb = np.frombuffer(raw[:90 * 160 * 3], np.uint8).reshape(-1, 3).astype(float)
++            mx, mn = rgb.max(axis=1), rgb.min(axis=1)
++            values.append(float(np.mean(np.where(mx > 0, (mx - mn) / np.maximum(mx, 1) * 255, 0))))
++    return sum(values) / len(values) if values else 66.0
++
++
++def colour_filter(luma: float, sat: float, profile: Dict[str, float]) -> Optional[str]:
++    """eq towards the viral brightness/saturation; None when already close."""
++    parts = []
++    target_l = float(profile["target_brightness"])
++    if luma < target_l - 8:
++        parts.append(f"brightness={min(0.12, (target_l - luma) / 255.0 * 0.9):.3f}:contrast=1.05")
++    target_s = float(profile["target_saturation"])
++    if sat > 1 and abs(sat - target_s) / target_s > 0.12:
++        parts.append(f"saturation={max(0.85, min(1.25, target_s / sat)):.3f}")
++    return ("eq=" + ":".join(parts)) if parts else None
++
+ 
+ def hook_finish_enabled() -> bool:
+     return os.getenv("HOOK_FINISH", "on").strip().lower() not in ("off", "0", "false", "no")
+@@ -82,16 +138,17 @@ def brightness_filter(luma: float) -> Optional[str]:
+     return f"eq=brightness={lift:.3f}:contrast=1.05:saturation=0.97"
+ 
+ 
+-def punch_filter(width: int, height: int, at: float, seconds: float, zoom: float) -> str:
+-    """Scale the frame up by ``zoom`` during [at, at+seconds] and crop back to size (centre)."""
++def punch_filter(width: int, height: int, at, seconds: float, zoom: float) -> str:
++    """Scale the frame up by ``zoom`` during each [at, at+seconds] and crop back to size (centre)."""
+     w2, h2 = int(width * zoom) // 2 * 2, int(height * zoom) // 2 * 2
+-    cond = f"between(t,{at:.2f},{at + seconds:.2f})"
++    starts = at if isinstance(at, (list, tuple)) else [at]
++    cond = "+".join(f"between(t,{a:.2f},{a + seconds:.2f})" for a in starts)
+     return (f"scale=w='if({cond},{w2},{width})':h='if({cond},{h2},{height})':eval=frame,"
+             f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2")
+ 
+ 
+-QUOTE_Y_FRAC = 0.16          # top safe area, like the hook title
+-EMOJI_PX = 84
++QUOTE_Y_FRAC = 0.025         # the very top edge (owner: "always on the very top", never over a face)
++EMOJI_PX = 54
+ 
+ 
+ def emoji_file(char: str) -> Optional[Path]:
+@@ -139,15 +196,17 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+     info = _probe(clip_path)
+     if info["duration"] < 6.0 or not info["width"] or not info["height"]:
+         return False
+-    at = _env_float("HOOK_PUNCH_AT", 2.6)
+-    seconds = _env_float("HOOK_PUNCH_SECONDS", 1.2)
+-    zoom = _env_float("HOOK_PUNCH_ZOOM", 1.08)
++    profile = load_profile()
++    times = punch_times(info["duration"], profile)
++    at = times[0] if times else float(profile["first_cut_s"])
++    seconds = float(profile["punch_seconds"])
++    zoom = float(profile["punch_zoom"])
+     filters = []
+     luma = mean_luma(clip_path, info["duration"])
+-    lift = brightness_filter(luma)
++    lift = colour_filter(luma, mean_saturation(clip_path, info["duration"]), profile)
+     if lift:
+         filters.append(lift)
+-    filters.append(punch_filter(info["width"], info["height"], at, seconds, zoom))
++    filters.append(punch_filter(info["width"], info["height"], times or [at], seconds, zoom))
+     video_chain = ",".join(filters)
+ 
+     # Quote title with emoji ("Lacy swore he never crashes" 😭✌️🥀): the text
+@@ -167,7 +226,7 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+         handle.write(f"\u201c{quote_text}\u201d" if False else f'"{quote_text}"')
+         handle.close()
+         text_file = Path(handle.name)
+-        size = max(36, int(info["width"] * 0.062))
++        size = max(26, int(info["width"] * 0.042))  # small (owner: "make title smaller")
+         y = int(info["height"] * QUOTE_Y_FRAC)
+         video_chain += (f",drawtext=fontfile={ffmpeg_escape_filter_path(font)}:textfile={ffmpeg_escape_filter_path(text_file)}"
+                         f":fontsize={size}:fontcolor=white:borderw={max(3, size // 12)}:bordercolor=black"
+@@ -197,7 +256,7 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+         graph = f"[0:v]{video_chain}[v0]"
+         last = "v0"
+         if emoji_paths and quote_text:
+-            size = max(36, int(info["width"] * 0.062))
++            size = max(26, int(info["width"] * 0.042))  # small (owner: "make title smaller")
+             row_y = int(info["height"] * QUOTE_Y_FRAC) + int(size * 1.25)
+             row_w = len(emoji_paths) * EMOJI_PX + (len(emoji_paths) - 1) * 10
+             x0 = (info["width"] - row_w) // 2
+@@ -208,10 +267,13 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+                 last = f"v{i + 1}"
+         audio_index = 1 + (len(emoji_paths) if (emoji_paths and quote_text) else 0)
+         if whoosh is not None and info["audio"]:
+-            delay_ms = max(0, int((at - 0.15) * 1000))
++            hits = (times or [at])[:4]  # a whoosh on each of the first cuts
++            split = f"[{audio_index}:a]asplit={len(hits)}" + "".join(f"[w{i}]" for i in range(len(hits)))
++            delayed = ";".join(f"[w{i}]adelay={max(0, int((h - 0.15) * 1000))}|{max(0, int((h - 0.15) * 1000))},"
++                               f"volume={0.55 if i == 0 else 0.35}[d{i}]" for i, h in enumerate(hits))
++            mix = "[0:a]" + "".join(f"[d{i}]" for i in range(len(hits)))
+             cmd += ["-i", str(whoosh), "-filter_complex",
+-                    f"{graph};[{audio_index}:a]adelay={delay_ms}|{delay_ms},volume=0.55[s];"
+-                    f"[0:a][s]amix=inputs=2:duration=first:normalize=0[a]",
++                    f"{graph};{split};{delayed};{mix}amix=inputs={len(hits) + 1}:duration=first:normalize=0[a]",
+                     "-map", f"[{last}]", "-map", "[a]", "-c:a", "aac", "-b:a", "192k"]
+         else:
+             cmd += ["-filter_complex", graph, "-map", f"[{last}]", "-map", "0:a?", "-c:a", "copy"]
+diff --git a/backend/src/media/hook_profile.json b/backend/src/media/hook_profile.json
+new file mode 100644
+index 0000000..b78811c
+--- /dev/null
++++ b/backend/src/media/hook_profile.json
+@@ -0,0 +1,30 @@
++{
++ "source": "tools/live/study_viral_hooks.py, 26 YouTube Shorts with 10M+ views",
++ "niches": [
++  "challenge",
++  "comedy",
++  "edit-movie-anime",
++  "facts-education",
++  "gaming-streamer",
++  "india",
++  "reaction",
++  "travel"
++ ],
++ "medians": {
++  "first_cut_s": 3.07,
++  "cuts_per_min": 4.95,
++  "brightness": 127.7,
++  "saturation": 64.05,
++  "hits_per_min": 15.9,
++  "speech_start_s": 0.0
++ },
++ "profile": {
++  "first_cut_s": 3.07,
++  "cuts_per_min": 4.95,
++  "target_brightness": 127.7,
++  "target_saturation": 64.05,
++  "max_punches": 6,
++  "punch_seconds": 1.2,
++  "punch_zoom": 1.08
++ }
++}
+\ No newline at end of file
+-- 
+2.56.0.windows.2
+

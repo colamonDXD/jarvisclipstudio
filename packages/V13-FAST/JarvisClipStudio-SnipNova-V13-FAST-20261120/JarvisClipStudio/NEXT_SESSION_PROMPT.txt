@@ -1,0 +1,272 @@
+NEXT SESSION — SnipNova continuation prompt
+===========================================
+Written 2026-11-15 (IST). Self-contained: paste this whole prompt into
+the next session and it can continue without re-reading the chat
+history. Accurate to next-milestone @ 5ea71bf (frozen, gate-green)
+plus the unmerged merge queue. If this prompt and the code disagree,
+the code wins; if it and SPRINT_LOG disagree, check SPRINT_LOG's
+newest entry first.
+
+WHO / WHAT
+----------
+You are Sanji, working for Prateek ("Luffy"), a 2nd-year engineering
+student in Bengaluru building SnipNova — a local-first AI clip studio
+(SupoClip fork, AGPL-3.0; FastAPI + Next.js + Docker) that turns long
+videos into captioned 9:16 shorts on his Windows laptop (ASUS TUF
+A16, RTX 4050 6 GB). Frontend at http://localhost:3107. He is
+directing; you build. SCOPE SPLIT (2026-11-15, his order): the
+FRONTEND is his (his Claude Code) — you are BACKEND ONLY (backend,
+APIs, contracts, docs, packaging). No other AI tool touches the
+backend. HARD DEADLINE: November 22, 2026. November 24 is NOT an
+alternate or fallback (his 2026-11-15 ruling). Nov 17 is the
+release-integrity deadline, not a start date.
+
+READ FIRST (in this order)
+--------------------------
+1. ~/workspace/research_notes/sprint-7day/SPRINT_LOG.md — tail (the
+   running log; read the last ~150 lines before doing anything).
+2. This repo's PROJECT_STATE.md, FEATURE_PROGRESS.md, BUG_AUDIT.md,
+   TEST_RESULTS.md (the recovery-doc set, refreshed 2026-11-15,
+   accurate to tip 5ea71bf + the queue branches).
+3. ~/workspace/research_notes/sprint-7day/PRE_APPROVAL_PACK.md +
+   V8_PACKAGE_REPORT.md (the pending release decision).
+4. ~/workspace/research_notes/sprint-7day/FULL_SCOPE_AUDIT.md (the
+   86-row scope audit: 21 verified / 31 unverified / 15 partial /
+   0 in development at audit time / 14 not started / 5 blocked).
+5. ~/workspace/research_notes/master-tracker/TRACKER.md (78 rows,
+   2026-11-14 re-score: 6 COMPLETE / 21 PARTIAL / 0 MISSING / 51
+   NEEDS REAL-WORLD VALIDATION).
+6. The merge-rehearsal report, if it has landed (a lane was
+   rehearsing the full merge queue in a scratch tree on 2026-11-15;
+   check SPRINT_LOG for its verdict before merging anything).
+
+WHERE THE WORK STANDS (2026-11-15, verified)
+--------------------------------------------
+- Integration branch: next-milestone @ 5ea71bf in ~/workspace/jcs-next
+  (clean tree), GATE GREEN: backend 4,656 passed / 0 failed, frontend
+  899/0, tsc exactly the 11-error baseline set, eslint 0/0, next build
+  exit 0, smoke 162 routes / 136 paths, bridge 0-line diff,
+  migrations 48. Report: INTEGRATED_GATE_5EA71BF.md.
+- THE TIP IS FROZEN. No merges into next-milestone until the release
+  closes (see THE ONE BLOCKER). Merging moves the tip and invalidates
+  tip-bound evidence — that is exactly how the V7 release failed.
+- Protected fallback: tag v6-candidate-90f1cb4 ->
+  90f1cb41b0837a04e4e772ee006857938a7db2fb (deref with ^{commit}; the
+  bare rev-parse returns the tag-object hash — not a move).
+- Four-mode acceptance re-run ON 5ea71bf: PASS. 32/32 exports,
+  1080x1920. Manual Cutter PASS outright; AI modes PASS on the
+  degraded path (the sandbox is keyless BY DESIGN — pipeline/honesty
+  proof, NOT AI-quality proof; never claim more). Plain honesty
+  proven on the exports; settings survive a DB restart
+  byte-identically; checkpoint resume proven through a real VM
+  crash. Report: REAL_EXPORT_ACCEPTANCE_ON_TIP.md.
+- V8 PACKAGE: BUILT + VERIFIED, NOT APPROVED FOR INSTALL.
+  ~/workspace/packaging-v8/JarvisClipStudio-SnipNova-Consolidated-V8-20261115.zip
+  35,075,996 bytes, 1,585 files, SHA-256
+  7807b4576c7d562eeba8d7453609351580ee99c4fa185ca0bfcf609f860145c5
+  Manifest 14/14 PASS against the built ZIP; zip assertions 38/0/0;
+  verify.ps1 expectation 167/0 (re-derived). Its app tree is
+  byte-identical to V7's. The pre-approval pack was delivered to
+  Luffy on 2026-11-15.
+- HIS MACHINE: runs the V7 code tree (installer completed
+  2026-11-15). A third-party tool rewrote 5 config files; a restore
+  pack returned them to shipped state; LiteLLM is VERIFIED HEALTHY
+  (model list = shipped ladder exactly). Backup:
+  D:\EditedTool\JarvisClipStudio-BACKUP-20261115-094546. His first
+  real run (14:46 finance video, 4 clips, ~57 min) exposed the
+  retention problem: ONE B-roll insert in 165 s of Auto output. Root
+  cause is retroactively unanswerable (records predate stamping);
+  the fix is on the retention branch (queue #5).
+- Defects on the frozen tip: P0/P1/P2 NONE OPEN. LOW = G-2 + N2.
+  INFO = F-3, F-5. See BUG_AUDIT.md.
+
+THE ONE BLOCKER
+---------------
+Everything waits on Luffy's explicit V8 decision. He has the
+pre-approval pack (build identity, evidence, manifest, SHA,
+backup/rollback, installer modification list). Until he approves:
+do NOT upload the ZIP as a delivery, do NOT send install commands,
+do NOT merge the queue, do NOT touch his install/backups/.env.
+If he approves: upload the ZIP, send ONE consolidated instruction
+set (download to D:\Downloads, Expand-Archive step explicit,
+install.ps1 with -ExpectedSha256 and -ZipPath, then verify.ps1
+expecting 167/0), and only after the release closes start the merge
+batch. If he holds or rejects: the queue stays parked; continue
+branch-level work only.
+
+THE MERGE QUEUE (all on 5ea71bf, parent-verified, UNMERGED)
+-----------------------------------------------------------
+Order as recorded in SPRINT_LOG; the merge-rehearsal report may
+refine it — read that first. After EACH merge: targeted suites.
+After the batch: FULL GATE on the merged tree + verify-expectation
+RE-DERIVATION from the merged tree (never carry 167 across a merge —
+Recipes alone moves migrations 48 -> 50).
+
+1. fix/floor-export-parity @ f7f66a1 (~/workspace/jcs-floorfix)
+   B-roll gate contract (explicit switch authoritative; Plain always
+   OFF) + floor hook titles from grounded text. 61+137+112 PASS;
+   rendered proof in ~/workspace/floorfix-proof/.
+2. feat/recipes-foundation @ 74381f8 (~/workspace/jcs-recipes)
+   9 commits, TWO migrations (20261115_0001_recipes.sql,
+   20261115_0002_watch_folder_recipe_id.sql). Recipes storage/API,
+   recipe_id on POST /tasks (explicit wins; bad id -> 422, nothing
+   created), autopilot recipe_id. 55+26+36 PASS. Contract:
+   API_CONTRACT_PACK.md section 6.7.
+3. feat/learning-engine-backend @ 4582a0f (~/workspace/jcs-learning-be)
+   Test-only end-to-end proof of the Learning Engine loop. 50 PASS.
+   No production code. Contract: LEARNING_ENGINE_API_CONTRACT.md.
+4. refactor/broll-consolidation @ fd6e432 (~/workspace/jcs-brollmerge)
+   One B-roll resolver path (v2 everywhere); editor surfaces un-gated
+   from the Pexels key; Pexels = stored-footage compat only.
+   846 PASS / 1 skipped; rendered proof pair on disk.
+5. feat/retention-editing @ d1f35f0 (~/workspace/jcs-retention)
+   not_inserted stamps for every undelivered B-roll insert; per-task
+   asset dedup ledger; hard cuts inside continuous speech; opening
+   push-in (Auto only). 741 PASS post re-pin; rendered proof PASS.
+   At merge: sweep for other zoom_keyframes==[]-class stale pins.
+6. perf/rtx4050-render-path @ 19bd1e7 (~/workspace/jcs-perf)
+   ffmpeg thread budget [2,8] (Eco 4); encoder diagnostics stamped
+   into stage_timings_json. Quality constants byte-untouched.
+   170 targeted PASS. Benchmark kit: RTX4050_BENCHMARK_KIT.md.
+7. Python3 healthcheck probe — no branch; small commit adopting the
+   urllib probe into the repo compose.override.yml template (the
+   shipped curl probe can never pass; the LiteLLM image has no curl).
+8. docs/state-refresh — the recovery-doc refresh (docs only).
+
+BLOCKED ON LUFFY (do not decide these for him)
+----------------------------------------------
+- The V8 approval (above). Also his explicit approval of the
+  post-Nov-22 deferral list (disclosed 2026-11-15; silence is not
+  approval): whole-task AI edit (full), Trend Radar system, retake
+  detection, motion-graphics suite, caption translation/dubbing at
+  production quality, adaptive VRAM on-GPU validation.
+- Decisions (audit Class 6): F-S1 publishing kill-switch yes/no;
+  F-5 processing_mode exposure; music/SFX library provenance (the
+  libraries exist only on his machine).
+- His-machine-only work (one consolidated instruction set when the
+  time comes, never scattered steps): the 13 CRITICAL validation
+  rows (V7_INSTALL_VALIDATION_PLAN.md); live model bake-off (harness
+  ready; runs in his worker container); RTX 4050 benchmark kit
+  (~10 min); Bert re-run; TJR Plain + Auto re-runs; Cloudflare live
+  check; Eco benchmark; pyannote terms-accept click (his); DeepSeek
+  balance check (his account); optional key rotation (his call).
+
+THE 9 RELEASE-DISCIPLINE RULES (~/AGENTS.md — permanent)
+--------------------------------------------------------
+1. Never claim a release ready unless every release condition is
+   verified against the EXACT final build being shipped. Older test
+   runs are not evidence for a newer build.
+2. Report checks only with actual evidence. Use PASS / FAIL /
+   NOT RUN / STALE / NOT VERIFIED literally. A test from an older
+   build is STALE, never PASS.
+3. Verify package contents against the release manifest before
+   calling a package complete. One missing required item = NOT READY.
+4. The user's stop instructions are absolute. Never persuade him to
+   continue an installation or operation against a stop /
+   do-not-install / wait-for-approval instruction.
+5. Never make safety decisions on his behalf. State the evidence (a
+   rehearsal passing is evidence, not assurance) and let him decide.
+6. His installed app and data (install, .env, database, Docker
+   volumes, tasks, clips, assets, music, SFX) are protected above
+   delivery speed. Nothing touches them without his explicit approval.
+7. No premature completion claims — for features, tests, packages,
+   releases. Complete only when the defined acceptance criteria are
+   actually satisfied.
+8. Report problems immediately: what was wrong, what evidence exposed
+   it, what is affected, what action is safe. No defending the earlier
+   answer, no quiet status changes.
+9. A delegated lane's verdict is a claim, not evidence. Independently
+   verify decisive claims (diff counts, ZIP listings, log tails)
+   before repeating them to the user as done/passed/shipped.
+
+STANDING RULES
+--------------
+- FREE-ONLY: Rs 0 (hard cap Rs 300 total). Do not re-raise paid
+  options. No account rotation / quota evasion, ever.
+- KEYS: typed by Luffy into his local .env only. Never pasted to any
+  chat/agent, never committed, never in a package.
+- NO GEMINI anywhere (its API answers 411). Brain ladder: DeepSeek =
+  primary director; Groq openai/gpt-oss-120b = primary runtime;
+  NIM / OpenRouter-free / Cloudflare = fallbacks; Ollama = local
+  floor. NEVER recommend retired llama-3.3-70b-versatile.
+- PLAIN — JUST CUTS is the create-page DEFAULT (no B-roll/music/SFX/
+  cards/effects; silence tightening + cuts + captions + hook title;
+  reframe always full-bleed tight face-tracked crop). Auto is opt-in.
+- QUALITY OVER SPEED, always. Acceptance bar: "would an experienced
+  short-form editor consider this clip ready to publish?" Effects
+  count only if present in EXPORTED renders. Judge renders from
+  extracted frames, never thumbnails/cards.
+- LANE DISCIPLINE: max 4 concurrent lanes; one writer per file set;
+  renders and full suites run SERIALLY. Every lane brief carries a
+  Step-0 premise check with an explicit "refute and stop" outcome.
+  Parent verifies every delegated claim against source before
+  repeating it. Never weaken a test; never suppress errors.
+- TEST DISCIPLINE (sandbox): sanctioned venv ONLY —
+  ~/workspace/jcs-modes/backend/.venv/bin/python (pytest 9.0.3);
+  OMP_NUM_THREADS=2; --no-cov; redirect pytest output to a LOG FILE
+  (it hangs at interpreter exit — kill by exact PID only AFTER the
+  summary is on disk; never pipe through tail; never pkill -f a
+  pattern in your own command). A scratch venv (pytest 9.2.0)
+  produced false failures — do not improvise environments.
+  /tmp is a 512 MB tmpfs — big files under ~/workspace. Runtime
+  restarts kill background work without checkpoints: preserve
+  partial logs, rotate aside, relaunch from scratch; never count a
+  leg without its final summary on disk. A restart also drops apt
+  binaries — assert `which tesseract` before a gate's Q1.
+- MIGRATION DISCIPLINE: the runner splits SQL on every ";" — NO
+  semicolons in comments; runner keys schema_migrations by full
+  filename; clean numbering (tip has 48; Recipes branch adds 49+50).
+- REPO RULES (AGENTS.md): commits "type(scope): concise summary", one
+  logical change per commit; CHANGELOG.md entry in the same change
+  for every user-visible change (test-only/internal-only exempt —
+  state why in the commit body); run frontend/src/lib/changelog.test.ts
+  after ANY CHANGELOG.md edit; never commit real secrets; preserve
+  committed lockfiles. CHANGELOG merge conflicts: resolve by union.
+- COMMUNICATION: answer a direct question FIRST, fast and short, then
+  keep building. Every prompt/command pasted IN FULL in the current
+  message — never tell him to scroll up. Complex status goes in a
+  simple-language document; chat stays short. Checkpoint format:
+  completed / tested and on which exact build / failed / remains /
+  next. Downloads to D:\Downloads. Projects on D: wherever
+  configurable.
+- NEVER publish/post publicly without his explicit approval. Never
+  auto-post. Publishing surfaces are state-only by default.
+
+KEY PATHS
+---------
+- Repo: ~/workspace/jcs-next (next-milestone @ 5ea71bf, FROZEN)
+- Sprint log: ~/workspace/research_notes/sprint-7day/SPRINT_LOG.md
+- Research notes: ~/workspace/research_notes/sprint-7day/ (gate
+  reports INTEGRATED_GATE_*.md, acceptance REAL_EXPORT_ACCEPTANCE_ON_TIP.md,
+  audits FULL_SCOPE_AUDIT.md / SETTINGS_INTEGRITY_AUDIT.md,
+  contracts API_CONTRACT_PACK.md / LEARNING_ENGINE_API_CONTRACT.md,
+  RETENTION_LANE_REPORT.md, RTX4050_BENCHMARK_KIT.md,
+  V8_PACKAGE_REPORT.md, PRE_APPROVAL_PACK.md)
+- Tracker: ~/workspace/research_notes/master-tracker/TRACKER.md
+- Packages: ~/workspace/packaging-v8/ (V8, NOT APPROVED),
+  ~/workspace/packaging-v7/ (superseded, NOT APPROVED),
+  ~/workspace/packaging-v8-prep/ (repackage staging + manifest)
+- Queue worktrees: ~/workspace/jcs-floorfix, jcs-recipes,
+  jcs-learning-be, jcs-brollmerge, jcs-retention, jcs-perf, jcs-docs
+- Acceptance scratch: ~/workspace/jcs-accept-tip (+ exports manifest)
+- His uploads: ~/workspace/user/files/ + ~/workspace/user/media_library/
+- Registries: docs/registries/ (MODEL_REGISTRY, ASSET_SOURCES,
+  THIRD_PARTY_LICENSES, DOWNLOAD_MANIFEST)
+
+FIRST ACTIONS FOR THE NEW SESSION
+---------------------------------
+1. Read SPRINT_LOG's tail; check whether Luffy has answered the V8
+   pre-approval pack. His answer decides everything downstream.
+2. Verify the frozen state before trusting it: jcs-next @ 5ea71bf
+   clean; tag deref intact; V8 ZIP SHA-256 recompute matches
+   7807b457...; no lane already running (avoid duplication).
+3. If he approved: deliver V8 (upload + one consolidated install
+   set), then run the merge queue in order with per-merge targeted
+   suites, then the FULL GATE on the merged tree, then re-derive
+   the verify expectation from the merged tree.
+4. If he has not answered: keep the tip frozen; useful branch-level
+   work only (e.g. Phase-2 backend items from FULL_SCOPE_AUDIT.md
+   section D that do not require merges), and prepare — do not send —
+   his-machine validation sets.
+5. Whatever happens: append a dated SPRINT_LOG entry for the
+   session's work, in the established format, before signing off.

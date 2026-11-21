@@ -1,0 +1,332 @@
+From a09d16453bb256d9c9b557188e0454a5c979abeb Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 12:01:52 +0530
+Subject: [PATCH 1/6] feat(reframe): no blurred-copy fill; analyse 4K sources
+ at a usable resolution
+
+Root cause #4 of clip1.mp4 (handoff/quality-clip1/ROOT_CAUSE.md):
+- the fit layout filled the top and bottom thirds with a blurred, enlarged
+  copy of the picture; on wide crowd shots two thirds of every frame was
+  smeared imagery;
+- shots came out "no_subject" because analysis decodes at 480 px: a 4K
+  frame shrinks 8x and a seated person's face is ~25 px for the detector.
+
+media/fit_pad.py, FIT_PAD (default "blur" = byte-identical filters until
+Luffy approves, Sanji Q15): "ambient" fills the bars with the frame's
+average colour, darkened and desaturated (no imagery). Used by the EDL
+compositor backdrop and reframing.build_full_frame_filter / crop+fit graph.
+
+REFRAME_HIRES_PROBE (default off): sources >= 2560 px wide are analysed at
+960 px instead of 480; 1080p sources unchanged. The reframe cache records
+the probe mode and is not reused across modes.
+
+Evidence (same 141-199 s window, Steps 1+2 on):
+handoff/quality-clip1/step2/ - the clip is now sharp 4K crops of the
+streamer, no blur; known limit: the crop hides the stage screen he reacts
+to (Step 3's job). Forced-fit proof of the ambient pad: step2/fit_pad_proof.
+Tests: test_fit_pad 7/7; reframe/render suites 203 passed, 5 failed - all 5
+fail identically on 996d074 (Windows drawtext paths, editor export file lock).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                       |  1 +
+ backend/src/media/edl_render.py    |  6 ++-
+ backend/src/media/fit_pad.py       | 49 ++++++++++++++++++
+ backend/src/media/reframe_plan.py  | 11 ++++
+ backend/src/media/reframing.py     | 40 ++++++++++----
+ backend/tests/unit/test_fit_pad.py | 83 ++++++++++++++++++++++++++++++
+ 6 files changed, 179 insertions(+), 11 deletions(-)
+ create mode 100644 backend/src/media/fit_pad.py
+ create mode 100644 backend/tests/unit/test_fit_pad.py
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 4e3a534..86409d9 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,7 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-18
++- **Improved:** Wide shots no longer fill the top and bottom of the frame with a blurred copy of the picture: the bars become a calm, dark tint of the shot's own colour, so captions and titles sit on a clean background. On 4K footage people are now found at a sharper resolution, so medium shots of the speaker are framed on them instead of shown tiny. Off until approved: set `FIT_PAD=ambient` and `REFRAME_HIRES_PROBE=on` to try it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Improved:** Auto edits can now cut only where the footage gives a reason: a real camera change or the end of a sentence. Before, clips were sliced into equal pieces, with zooms every few seconds and cuts snapped to the background music. Zooms now need speech behind them, and decorative transitions only land on real camera changes. Off until approved: set `EDL_CONTENT_CUTS=on` to try it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **New:** Auto clips no longer all sound the same once the extended library is installed (one command, checked file by file). Each music mood then has a library of free tracks, and each sound-effect cue has many variants. Every clip gets its own pick, and keeps it when it is re-rendered. New moods are available too: epic, suspense, emotional, cinematic and world. Everything shipped is public domain (CC0) or our own original, and the packaging check refuses any file without a recorded licence. Set `ASSET_VARIANTS=off` for the old one-file-per-mood behaviour. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **New:** Meme & comedy clips use a meme sound pack of our own: deep booms, boing, rimshot, sad trombone, slide whistle and more. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+diff --git a/backend/src/media/edl_render.py b/backend/src/media/edl_render.py
+index 2419361..747cf0e 100644
+--- a/backend/src/media/edl_render.py
++++ b/backend/src/media/edl_render.py
+@@ -334,7 +334,11 @@ def _segment_framing_fragments(
+     branch_count = 1 + (1 if crop_chain else 0) + len(fit_layers) + len(split_layers)
+     inputs = [_label(f"{name}in{i}") for i in range(branch_count)]
+     fragments = [trim + f"split={branch_count}" + "".join(inputs)]
+-    fragments.append(f"{inputs[0]}{_REFRAME_BG_CHAIN}{_label(f'{name}bg')}")
++    from .fit_pad import edl_backdrop_chain
++
++    fragments.append(
++        f"{inputs[0]}{edl_backdrop_chain(_REFRAME_BG_CHAIN)}{_label(f'{name}bg')}"
++    )
+     current = _label(f"{name}bg")
+     branch = 1
+     overlay_total = branch_count - 1
+diff --git a/backend/src/media/fit_pad.py b/backend/src/media/fit_pad.py
+new file mode 100644
+index 0000000..c4182d1
+--- /dev/null
++++ b/backend/src/media/fit_pad.py
+@@ -0,0 +1,49 @@
++"""What fills the bars when a wide frame is shown whole on the 9:16 canvas.
++
++Root cause #4 of clip1.mp4 (handoff/quality-clip1/ROOT_CAUSE.md): a "fit"
++shot puts the 16:9 picture in the middle and fills the top and bottom
++thirds with a BLURRED, ENLARGED COPY OF THE SAME PICTURE. On a wide crowd
++shot two thirds of every frame were smeared imagery; viewers read it as a
++rendering defect ("blurred transitions").
++
++``FIT_PAD``:
++- ``blur`` (default until the owner approves the corrected render, per
++  Sanji Q15): today's blurred copy, byte-identical filter strings.
++- ``ambient``: the frame averaged to ONE colour, darkened and desaturated.
++  The bars carry the shot's colour mood but no imagery, so the eye stays
++  on the real picture and captions/titles sit on a clean field. (A 3x5
++  grid stretched up was tried first: ffmpeg's upscale of so tiny an input
++  showed hard-edged blocks in the render, so one colour it is.)
++"""
++from __future__ import annotations
++
++import os
++
++FIT_PAD_MODES = ("blur", "ambient")
++
++_AMBIENT_TAIL = (
++    "scale=1:1:flags=area,scale=1080:1920:flags=neighbor,"
++    "eq=brightness=-0.20:saturation=0.55,setsar=1"
++)
++
++
++def fit_pad_mode() -> str:
++    value = os.getenv("FIT_PAD", "blur").strip().lower()
++    return value if value in FIT_PAD_MODES else "blur"
++
++
++def edl_backdrop_chain(blur_chain: str) -> str:
++    """The EDL compositor's backdrop chain (``blur_chain`` = today's)."""
++    if fit_pad_mode() == "ambient":
++        return _AMBIENT_TAIL + ",format=yuv420p"
++    return blur_chain
++
++
++def full_frame_background(blur_sigma: int) -> str:
++    """The ``[bgsrc]...[bg];`` fragment of reframing.build_full_frame_filter."""
++    if fit_pad_mode() == "ambient":
++        return f"[bgsrc]{_AMBIENT_TAIL}[bg];"
++    return (
++        "[bgsrc]scale=540:960:force_original_aspect_ratio=increase,crop=540:960,"
++        f"gblur=sigma={blur_sigma}:steps=2,scale=1080:1920:flags=bilinear,setsar=1[bg];"
++    )
+diff --git a/backend/src/media/reframe_plan.py b/backend/src/media/reframe_plan.py
+index 7fcae6d..cd04e74 100644
+--- a/backend/src/media/reframe_plan.py
++++ b/backend/src/media/reframe_plan.py
+@@ -156,6 +156,12 @@ Sample = Tuple[float, List[Box]]
+ _ANALYSIS_LOCK = threading.Lock()
+ 
+ 
++def _probe_mode() -> str:
++    from .reframing import hires_probe_enabled
++
++    return "hires" if hires_probe_enabled() else "std"
++
++
+ def reframe_cache_path(source_path: Path) -> Path:
+     return Path(source_path).with_suffix(".reframe_cache.json")
+ 
+@@ -177,6 +183,7 @@ def _empty_cache(source_path: Path, width: int, height: int, sample_fps: float)
+         "width": width,
+         "height": height,
+         "sample_fps": sample_fps,
++        "probe": _probe_mode(),
+         "covered_spans": [],
+         "samples": [],  # [{"t": float, "boxes": [[x, y, w, h], ...]}]
+         "cuts": [],
+@@ -200,6 +207,10 @@ def _load_cache(source_path: Path) -> Optional[Dict[str, Any]]:
+         return None
+     if payload.get("version") != REFRAME_CACHE_SCHEMA_VERSION:
+         return None
++    if payload.get("probe", "std") != _probe_mode():
++        # Analysed at the other resolution (REFRAME_HIRES_PROBE flipped):
++        # its face boxes would not describe what this mode detects.
++        return None
+     if payload.get("source_size") != stamp[0] or payload.get("source_mtime_ns") != stamp[1]:
+         logger.info(
+             "Reframe cache for %s is stale (source changed); re-analyzing",
+diff --git a/backend/src/media/reframing.py b/backend/src/media/reframing.py
+index 5c62842..ea97cee 100644
+--- a/backend/src/media/reframing.py
++++ b/backend/src/media/reframing.py
+@@ -10,6 +10,7 @@ import cv2
+ import numpy as np
+ import re
+ import shutil
++import os
+ import subprocess
+ import tempfile
+ from .common import (
+@@ -783,6 +784,28 @@ def _scene_cuts_from_diffs(diffs: List[Tuple[float, float]]) -> List[float]:
+     return cuts
+ 
+ 
++HIRES_PROBE_MIN_SOURCE_WIDTH = 2560
++HIRES_PROBE_WIDTH = 960
++
++
++def hires_probe_enabled() -> bool:
++    """REFRAME_HIRES_PROBE: analyse >=2560 px sources at 960 px, not 480.
++
++    At 480 px a 4K frame shrinks 8x, so a seated person's 200 px face is
++    ~25 px when the face detector sees it and the planner reports
++    "no_subject" (clip1 root cause #4). Default off until the owner
++    approves the corrected render (Sanji Q15).
++    """
++    return os.getenv("REFRAME_HIRES_PROBE", "off").strip().lower() in ("on", "1", "true", "yes")
++
++
++def analysis_proc_width(source_width: int, requested: int) -> int:
++    """The decode width for analysis of a source this wide."""
++    if hires_probe_enabled() and source_width >= HIRES_PROBE_MIN_SOURCE_WIDTH:
++        return max(int(requested), HIRES_PROBE_WIDTH)
++    return int(requested)
++
++
+ def analyze_vertical_clip(
+     input_path: Path,
+     *,
+@@ -820,7 +843,7 @@ def analyze_vertical_clip(
+     width, height = ffprobe_video_size(input_path)
+     if width <= 0 or height <= 0:
+         return [], [], [], []
+-    proc_w = round_to_even(min(proc_width, width))
++    proc_w = round_to_even(min(analysis_proc_width(width, proc_width), width))
+     proc_h = round_to_even(max(2, int(round(proc_w * height / width))))
+     frame_bytes = proc_w * proc_h * 3
+ 
+@@ -1369,10 +1392,9 @@ def build_full_frame_filter(
+     ``fit_windows`` (see ``plan_fit_windows``) enlarges content whose detail
+     leaves empty margins; without them the whole frame is letterboxed.
+     """
+-    background = (
+-        "[bgsrc]scale=540:960:force_original_aspect_ratio=increase,crop=540:960,"
+-        f"gblur=sigma={blur_sigma}:steps=2,scale=1080:1920:flags=bilinear,setsar=1[bg];"
+-    )
++    from .fit_pad import full_frame_background
++
++    background = full_frame_background(blur_sigma)
+     if not fit_windows:
+         return (
+             "[0:v]split=2[bgsrc][ftsrc];"
+@@ -1415,11 +1437,9 @@ def build_vertical_compositor_filter(
+     # Smooth Gaussian background: blur at half resolution (plenty of detail for a
+     # heavy blur) with multiple passes for a true Gaussian falloff, then upscale
+     # 2x with bilinear so there's no lanczos ringing/blockiness — a creamy blur.
+-    head = (
+-        "[bgsrc]scale=540:960:force_original_aspect_ratio=increase,crop=540:960,"
+-        f"gblur=sigma={blur_sigma}:steps=2,scale=1080:1920:flags=bilinear,setsar=1[bg];"
+-        f"[crsrc]{crop_chain}[face];"
+-    )
++    from .fit_pad import full_frame_background
++
++    head = full_frame_background(blur_sigma) + f"[crsrc]{crop_chain}[face];"
+     if not fit_windows:
+         fit_en = _enable_expr(fit_intervals)
+         return (
+diff --git a/backend/tests/unit/test_fit_pad.py b/backend/tests/unit/test_fit_pad.py
+new file mode 100644
+index 0000000..03f82bb
+--- /dev/null
++++ b/backend/tests/unit/test_fit_pad.py
+@@ -0,0 +1,83 @@
++"""Step 2 of the clip1 correction: no blurred-copy fill, 4K-aware subject probe."""
++from __future__ import annotations
++
++import subprocess
++from pathlib import Path
++
++import pytest
++
++from src.media import fit_pad
++from src.media import reframing
++
++
++@pytest.fixture(autouse=True)
++def _clear(monkeypatch):
++    monkeypatch.delenv("FIT_PAD", raising=False)
++    monkeypatch.delenv("REFRAME_HIRES_PROBE", raising=False)
++
++
++def test_default_is_todays_blur_byte_for_byte():
++    chain = "scale=540:960:force_original_aspect_ratio=increase,crop=540:960,gblur=sigma=14:steps=2,scale=1080:1920:flags=bilinear,setsar=1,format=yuv420p"
++    assert fit_pad.edl_backdrop_chain(chain) == chain
++    assert fit_pad.full_frame_background(14) == (
++        "[bgsrc]scale=540:960:force_original_aspect_ratio=increase,crop=540:960,"
++        "gblur=sigma=14:steps=2,scale=1080:1920:flags=bilinear,setsar=1[bg];"
++    )
++
++
++def test_ambient_has_no_blur_and_no_picture_scale_copy(monkeypatch):
++    monkeypatch.setenv("FIT_PAD", "ambient")
++    for chain in (fit_pad.edl_backdrop_chain("x"), fit_pad.full_frame_background(14)):
++        assert "gblur" not in chain and "boxblur" not in chain
++        assert "scale=1:1:flags=area" in chain  # averaged to one colour: no imagery
++    assert fit_pad.full_frame_background(14).startswith("[bgsrc]") and fit_pad.full_frame_background(14).endswith("[bg];")
++
++
++def test_unknown_mode_falls_back_to_blur(monkeypatch):
++    monkeypatch.setenv("FIT_PAD", "sparkles")
++    assert fit_pad.fit_pad_mode() == "blur"
++
++
++def test_full_frame_filter_uses_the_pad(monkeypatch):
++    monkeypatch.setenv("FIT_PAD", "ambient")
++    graph = reframing.build_full_frame_filter()
++    assert "gblur" not in graph and "scale=1:1:flags=area" in graph
++
++
++def test_ambient_backdrop_renders_flat_bars(monkeypatch, tmp_path):
++    """Render a busy test pattern through the ambient pad: the bar area must be
++    nearly uniform (a gradient), unlike the blurred copy of the picture."""
++    monkeypatch.setenv("FIT_PAD", "ambient")
++    out = tmp_path / "pad.png"
++    chain = fit_pad.edl_backdrop_chain("unused")
++    subprocess.run(
++        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=1",
++         "-frames:v", "1", "-vf", chain, str(out)],
++        check=True, capture_output=True,
++    )
++    import cv2
++
++    image = cv2.imread(str(out))
++    assert image.shape[:2] == (1920, 1080)
++    top_bar = image[:600]
++    # One averaged colour: the bar is flat (no imagery, no blocks).
++    assert float(top_bar.reshape(-1, 3).std(axis=0).max()) < 1.0
++
++
++def test_hires_probe_only_for_wide_sources(monkeypatch):
++    assert reframing.analysis_proc_width(3840, 480) == 480
++    monkeypatch.setenv("REFRAME_HIRES_PROBE", "on")
++    assert reframing.analysis_proc_width(3840, 480) == 960
++    assert reframing.analysis_proc_width(1920, 480) == 480
++    assert reframing.analysis_proc_width(3840, 1280) == 1280
++
++
++def test_cache_from_other_probe_mode_is_not_reused(monkeypatch, tmp_path):
++    from src.media import reframe_plan as rp
++
++    source = tmp_path / "s.mp4"
++    source.write_bytes(b"x")
++    rp._save_cache(source, rp._empty_cache(source, 3840, 2160, 3.0))
++    assert rp._load_cache(source) is not None
++    monkeypatch.setenv("REFRAME_HIRES_PROBE", "on")
++    assert rp._load_cache(source) is None
+-- 
+2.56.0.windows.2
+

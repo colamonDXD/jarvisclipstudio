@@ -1,0 +1,19 @@
+{
+  "metaTitle": "SnipNova Changelog",
+  "metaDescription": "New features, improvements, and fixes in SnipNova, from Twitch and Kick clipping to hosted pricing and the editor.",
+  "ogTitle": "SnipNova changelog",
+  "ogDescription": "What changed in SnipNova for people using the product. Newest updates first.",
+  "eyebrow": "Product updates",
+  "title": "Changelog",
+  "intro": "What changed for people using SnipNova. The newest updates are first.",
+  "hostedApp": "Hosted App",
+  "startClipping": "Start clipping",
+  "relatedChange": "Related change {label}",
+  "viewOnGitHub": "View the changelog on GitHub",
+  "categories": {
+    "new": "New",
+    "improved": "Improved",
+    "fixed": "Fixed",
+    "underTheHood": "Under the hood"
+  }
+}

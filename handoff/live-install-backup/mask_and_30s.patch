@@ -1,0 +1,40 @@
+diff --git a/backend/src/media/captions.py b/backend/src/media/captions.py
+index add39b9..0f04b27 100644
+--- a/backend/src/media/captions.py
++++ b/backend/src/media/captions.py
+@@ -377,8 +377,12 @@ def hex_to_ass_color(
+ 
+ 
+ def escape_ass_text(value: str) -> str:
++    # Every caption word and hook title is written through here: swear words
++    # are masked first ("FUCK YOU!" -> "F*** YOU!", media/profanity.py).
++    from .profanity import mask_profanity
++
+     return (
+-        str(value)
++        mask_profanity(str(value))
+         .replace("\\", "\\\\")
+         .replace("{", "\\{")
+         .replace("}", "\\}")
+diff --git a/backend/src/video_utils.py b/backend/src/video_utils.py
+index 27d032d..0d535b9 100644
+--- a/backend/src/video_utils.py
++++ b/backend/src/video_utils.py
+@@ -449,12 +449,13 @@ def _stamp_render_timings(
+ 
+ 
+ def min_clip_seconds() -> float:
+-    """CLIP_MIN_SECONDS (default 17): no rendered clip is shorter (owner,
+-    2026-11-18: "clip should be 17 seconds minimum"; a 3 s clip shipped)."""
++    """CLIP_MIN_SECONDS (default 30): no rendered clip is shorter (owner:
++    17 s on 2026-11-18 after a 3 s clip shipped, then "minimum clip should
++    be 30 sec strict rule" on 2026-11-19)."""
+     try:
+-        return max(0.0, float(os.getenv("CLIP_MIN_SECONDS", "17")))
++        return max(0.0, float(os.getenv("CLIP_MIN_SECONDS", "30")))
+     except ValueError:
+-        return 17.0
++        return 30.0
+ 
+ 
+ def enforce_min_clip_duration(

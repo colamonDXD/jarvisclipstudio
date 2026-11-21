@@ -1,0 +1,34 @@
+From 9555a37a3a2b8ab5168513dd4aa83823e2a00a2c Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 13:08:49 +0530
+Subject: [PATCH 07/13] docs(handoff): record live provider audit results
+ (tooling/docs only)
+
+---
+ tools/gameplay-eval/HANDOFF.md | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/tools/gameplay-eval/HANDOFF.md b/tools/gameplay-eval/HANDOFF.md
+index c801aba..5f55131 100644
+--- a/tools/gameplay-eval/HANDOFF.md
++++ b/tools/gameplay-eval/HANDOFF.md
+@@ -82,3 +82,16 @@ Dependencies: none outside the repo (numpy/opencv already installed; faster-whis
+ 2. Review the 25-line `video_service.py` change (hot file). Disable with `FRAME_EVIDENCE_SELECTION=0` / `REACTION_SIGNALS=0`.
+ 3. Run the five test files above, then the full suite on Linux; update request-shape goldens only if prompt hints change (the LLM prompt text itself is unchanged; only the `clip_signals` argument grows).
+ 4. Renderer consumers read `moment["edit_recommendations"]`/`["caption_plan"]` as optional advisory data.
++
++## Provider audit — LIVE result, run by the owner on 2026-11-17 (`audit_providers.py --live --infer --allow-metered`, keys never printed)
++| provider | key | 1-token inference | finding |
++|---|---|---|---|
++| Groq | OK | OK | working |
++| OpenRouter | OK | OK (free slug) | working |
++| Cloudflare Workers AI | OK (account token) | OK | working. An earlier AUTH_FAILED was an audit-tool bug (only user-token endpoint tried); fixed in 529a936 |
++| Hugging Face | OK | n/a | working |
++| Ollama (local) | n/a | n/a | up, qwen3:8b present |
++| NVIDIA NIM | OK | OK (first configured model) | 5 configured slugs are NOT in this key's model list: `deepseek-ai/deepseek-v4.1-flash` (route `nim-deepseek`, in the ladder), `moonshotai/kimi-k2.6`, `qwen/qwen3-235b-a22b`, `meta/llama-4-maverick-17b-128e-instruct`, `deepseek-ai/deepseek-v4-pro`. No deepseek/kimi/qwen3 ids listed at all. Those routes will fail over; verify names on build.nvidia.com before relying on them |
++| DeepSeek | OK | **OUT_OF_CREDIT (402)** | balance is zero, so the metered primary `deepseek-chat` cannot answer. Its model list shows `deepseek-flash` and `deepseek-v4-pro`; `deepseek-chat` is NOT listed (may be a retired alias). Not verifiable until credit exists |
++Effective ladder today (verified): deepseek-chat DOWN (no credit) -> Groq 120B UP -> NIM Nemotron Ultra UP -> nim-deepseek DOWN (slug) -> OpenRouter free UP -> Cloudflare free UP -> Groq 20B (same key as Groq, not separately tested) -> local qwen3:8b UP.
++Net: the app runs at zero cost; Groq 120B is the real primary. No new keys are required. Open items (owner/Sanji decisions, not mine): whether to buy DeepSeek credit and rename the route to `deepseek-flash`; replacing the unlisted NIM slugs. `HF_TOKEN` is still not passed through compose.
+-- 
+2.56.0.windows.2
+

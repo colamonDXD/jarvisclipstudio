@@ -1,0 +1,65 @@
+From 07f8d4df70947181c9e0d185cfc406e6b1925a48 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 14:12:39 +0530
+Subject: [PATCH 12/13] fix(hooks): reaction quotes need two or more words and
+ centre on the exclamation
+
+Real samples produced one-word fragments ('Come', 'Get') as quotes.
+Internal quality fix to optional evidence data; no new user-facing surface
+(covered by the existing reaction-hook CHANGELOG entry).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/auto_director/reaction_hooks.py    | 18 ++++++++++++++++--
+ .../tests/unit/test_reaction_hooks_and_recs.py |  8 ++++++++
+ 2 files changed, 24 insertions(+), 2 deletions(-)
+
+diff --git a/backend/src/auto_director/reaction_hooks.py b/backend/src/auto_director/reaction_hooks.py
+index 3483362..43e0b21 100644
+--- a/backend/src/auto_director/reaction_hooks.py
++++ b/backend/src/auto_director/reaction_hooks.py
+@@ -82,9 +82,23 @@ def reaction_quote(words: Sequence[dict[str, Any]], start: float, end: float,
+     """The streamer's own words at the reaction (verbatim, never rewritten).
+     Returns None when nobody spoke intelligibly there."""
+     spoken = [w for w in words if start - 0.2 <= float(w["start"]) <= end + 0.2]
+-    if not spoken:
++    if len(spoken) < 2:
++        return None  # a lone word ("Come", "Get") is a fragment, not a quote
++    # Centre the quote on the most exclamatory word (a '!' or a known
++    # reaction word); otherwise start at the reaction's first word.
++    from .reaction_moments import _EXCLAIM
++
++    def strength(w: dict[str, Any]) -> int:
++        raw = str(w["text"])
++        core = re.sub(r"[^\w']", "", raw).lower()
++        return 2 * ("!" in raw) + (1 if core and _EXCLAIM.match(core) else 0)
++
++    best = max(range(len(spoken)), key=lambda i: (strength(spoken[i]), -i))
++    lo = max(0, min(best - 2, len(spoken) - max_words))
++    chosen = spoken[lo:lo + max_words]
++    text = " ".join(str(w["text"]) for w in chosen).strip()
++    if len(text.replace(" ", "")) < 5:
+         return None
+-    text = " ".join(str(w["text"]) for w in spoken[:max_words]).strip()
+     return mask_profanity(text, profanity) or None
+ 
+ 
+diff --git a/backend/tests/unit/test_reaction_hooks_and_recs.py b/backend/tests/unit/test_reaction_hooks_and_recs.py
+index 632b865..17f08e8 100644
+--- a/backend/tests/unit/test_reaction_hooks_and_recs.py
++++ b/backend/tests/unit/test_reaction_hooks_and_recs.py
+@@ -89,3 +89,11 @@ def test_no_facecam_means_fit_game_only():
+ def test_no_trigger_opens_on_reaction():
+     rec = er.recommend_edits(_moment(mtype="commentary_reaction", game=None), 32.0, 50.0)
+     assert rec["pacing"]["open_on"] == "reaction" and rec["sfx_cues"] == []
++
++
++def test_quote_rejects_fragments_and_centres_on_the_exclamation():
++    assert rh.reaction_quote([{"text": "Come", "start": 40.0, "end": 40.2}], 40, 46) is None
++    words = [{"text": t, "start": 40.0 + i * 0.3, "end": 40.2 + i * 0.3} for i, t in
++             enumerate(["so", "I", "was", "going", "there", "and", "what", "the", "hell!", "bro"])]
++    q = rh.reaction_quote(words, 40, 46, "keep")
++    assert "hell!" in q and len(q.split()) <= 6
+-- 
+2.56.0.windows.2
+

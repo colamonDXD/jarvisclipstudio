@@ -1,0 +1,39 @@
+diff --git a/backend/src/caption_templates.py b/backend/src/caption_templates.py
+index d87b8b9..dcbfd73 100644
+--- a/backend/src/caption_templates.py
++++ b/backend/src/caption_templates.py
+@@ -286,7 +286,7 @@ CAPTION_TEMPLATES: Dict[str, Dict[str, Any]] = {
+         "font_family": "Anton-Regular",
+         "font_size": 68,
+         "font_color": "#FFFFFF",
+-        "highlight_color": "#FFFFFF",
++        "highlight_color": "#FFD400",
+         "emphasis_color": "#FFFFFF",
+         "stroke_color": "#000000",
+         "stroke_width": 2,
+@@ -294,7 +294,8 @@ CAPTION_TEMPLATES: Dict[str, Dict[str, Any]] = {
+         "background_color": None,
+         "word_box": False,
+         "word_box_color": None,
+-        "animation": "pop",
++        "animation": "karaoke",
++        "karaoke_fill": True,
+         "word_pop": True,
+         "emoji": False,
+         "uppercase": True,
+diff --git a/backend/src/media/captions.py b/backend/src/media/captions.py
+index 0f04b27..3c9721c 100644
+--- a/backend/src/media/captions.py
++++ b/backend/src/media/captions.py
+@@ -1799,7 +1799,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+                 for local_j, other in enumerate(chunk):
+                     gj = indices[local_j]
+                     disp = render_text(gj, other)
+-                    parts.append(active_span(disp) if local_j == local_i else idle_span(gj, disp))
++                    # karaoke_fill: words already spoken stay highlighted (owner:
++                    # "as he says the word it should be yellow and continue yellow").
++                    spoken = bool(template.get("karaoke_fill")) and local_j < local_i
++                    parts.append(active_span(disp) if (local_j == local_i or spoken) else idle_span(gj, disp))
+                 line = " ".join(parts)
+                 # Entrance only on the first word's event so it plays once, not
+                 # once per word.

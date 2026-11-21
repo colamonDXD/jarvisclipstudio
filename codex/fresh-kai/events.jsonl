@@ -1,0 +1,42 @@
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 0.0, "moments": 0, "progress": "Reading the video's details"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 0.0, "moments": 0, "progress": "Downloading the audio only (11.6 h)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 1/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 2/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 3/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 4/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 5/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 6/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 7/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 8/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 9/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 10/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 11/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 12/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 13/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 14/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 15/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 16/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 17/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 18/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 19/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 20/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 21/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 22/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 23/24 parts (1785 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Listening for reactions: 24/24 parts (352 s read)"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Reading what was said: 5/9 moments"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Reading what was said: 9/9 moments"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 0, "progress": "Picking the clips most likely to go viral"}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 1, "progress": "Making clip 1/3"}
+{"type": "moment", "n": 1, "signals": ["f0", "scream"], "strength": 19.34, "talk_share": 0.83, "reason": "[05:28:50] Reaction - Raw paternity test panic hooks instantly with universal stakes", "status": "queued", "preview_path": "/proof/window_001.mp4"}
+{"type": "clip", "n": 1, "status": "rendering"}
+{"type": "clip", "n": 1, "status": "ready", "clip_path": "/proof/clip_001.mp4", "duration": 44.01, "error": null, "render_s": 117.5}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 2, "progress": "Making clip 2/3"}
+{"type": "moment", "n": 2, "signals": ["f0", "laugh", "scream"], "strength": 34.7, "talk_share": 0.87, "reason": "[02:01:21] Just Lost Five Hundred Twenty Seven Dollars - Real money loss fuels chaotic bike confrontation strangers grasp", "status": "queued", "preview_path": "/proof/window_002_cold.mp4"}
+{"type": "clip", "n": 2, "status": "rendering"}
+{"type": "clip", "n": 2, "status": "ready", "clip_path": "/proof/clip_002.mp4", "duration": 29.51, "error": null, "render_s": 113.3}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 3, "progress": "Making clip 3/3"}
+{"type": "moment", "n": 3, "signals": ["f0", "laugh", "vocal"], "strength": 91.14, "talk_share": 0.3, "reason": "[06:16:57] Flare Gun Cocaine Scavenger Screaming - Absurd callouts and genuine terror make perfect chaos clip", "status": "queued", "preview_path": "/proof/window_003_cold.mp4"}
+{"type": "clip", "n": 3, "status": "rendering"}
+{"type": "clip", "n": 3, "status": "ready", "clip_path": "/proof/clip_003.mp4", "duration": 59.5, "error": null, "render_s": 195.8}
+{"type": "status", "recording": true, "restarts": 0, "last_error": null, "buffered_seconds": 41755.0, "moments": 3, "progress": "Done: 3 clips in 19 min"}

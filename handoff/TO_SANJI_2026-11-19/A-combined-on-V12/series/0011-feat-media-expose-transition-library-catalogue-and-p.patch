@@ -1,0 +1,434 @@
+From 12c8cbbed286d417254875605e6b86e72bc12cc4 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 11:00:05 +0530
+Subject: [PATCH 11/18] feat(media): expose transition library catalogue and
+ previews
+
+Add GET /transitions/library and
+GET /transitions/library/{name}/preview.mp4 beside the built-in
+transition list. The catalogue returns name, family, description,
+duration_default and preview_url, sorted by family then name, with an
+optional ?family= filter and no authentication, matching GET /transitions.
+
+A preview is a 1.2 s, 360x640 join between two generated gradient cards
+rendered on first request with the existing CPU-only ffmpeg path. The MP4
+is cached under {TEMP_DIR}/transition_previews/<name>.mp4 and served from
+there afterwards; the encode is written to a unique temporary file and
+renamed into place so a partial file is never served. Names must exist in
+the 248-entry registry, so path traversal and unknown names both 404.
+
+TRANSITION_LIBRARY_API=off hides both routes. Rendering code is not
+touched; the editor can adopt the catalogue separately.
+
+Attribution: OpenCode (DeepSeek V4.1 Flash Free), lane-b/round3.
+---
+ CHANGELOG.md                                  |   1 +
+ backend/src/api/routes/media.py               |  62 +++++++
+ backend/src/media/transition_preview.py       | 151 ++++++++++++++++++
+ .../tests/unit/test_transition_library_api.py | 144 +++++++++++++++++
+ 4 files changed, 358 insertions(+)
+ create mode 100644 backend/src/media/transition_preview.py
+ create mode 100644 backend/tests/unit/test_transition_library_api.py
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 76aec48..32d0b17 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -23,6 +23,7 @@ Add a line here when a pull request changes something a user can see. Use **New*
+ - **Improved:** The app's frame has been rebuilt once more — the left icon rail is gone, and everything lives in a top navigation bar now. The bar has two rows: the first carries the SnipNova name and the page you are on, the wide search box (⌘K) in the middle, and your plan, announcements, the New clip button and your account on the right; the second row is a strip of named tabs — Create, Clips, Accounts, Performance, Campaigns, Agents & API, Settings — with the page you are on underlined, so every section is one click away and labelled in words instead of icons you have to guess at. On a phone the tab strip simply scrolls sideways, and there is no bottom bar anymore, so pages get the full height of the screen. The type (Sora, with mono labels), the dark theme and the dim aurora behind everything are unchanged, and every page — create, clips, tasks, campaigns, settings, the editor — works exactly as before: same routes, same controls, same defaults, only the frame around them moved. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ 
+ ## 2026-11-17
++- **Under the hood:** The extended transition library now has a public catalogue with family filters and cached 1.2-second preview clips, controlled by `TRANSITION_LIBRARY_API`; rendering is unchanged until the editor adopts it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **New:** Clips can now be exported in a wide 16:9 YouTube frame (1920x1080) and a square 1:1 frame (1080x1080) as well as the three vertical formats. A vertical clip is fitted whole inside the wider frame -- never stretched or cropped -- with a softly blurred copy of the same picture filling the side or top bands, so burned-in captions stay inside the frame. The wide format follows YouTube's published 1080p upload settings (8 Mbps at 30 fps or below, 12 Mbps above, AAC 384 kbps); square uses the same 1080-class settings. The three existing vertical exports are unchanged. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Fixed:** Renders now use the graphics-card encoder again on newer FFmpeg builds. The startup check handed FFmpeg a filter-graph file option that FFmpeg 8-era builds have removed, so the check failed with "Unrecognized option 'filter_complex_script'" and every render quietly fell back to the processor. The check now passes its graph inline, exactly as production renders already do, and it validates the encoded file before deleting its temporary folder (it previously validated after the folder was gone, which failed on a real FFmpeg even when the encode had worked). ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Fixed:** Streamer clip picking no longer puts the loudest game moment first when the streamer didn't react to it. Several changes work together: **Mic on its own channel:** when the recording has the mic on one side and the game on the other, the app listens to the mic alone. **Screams count:** a scream counts as a reaction even when it isn't much louder than the streamer's normal talk. **Face measured itself:** the facecam's movement is measured on the face, not the room behind it. **Reaction and gameplay together:** a game event only ranks high when the streamer actually responds to it. On the reference test video the scream now ranks first and the loud explosion with no reaction is left out. Set `REACTION_FUSION=0`, `REACTION_MIC_CHANNEL=0` or `REACTION_FACE_ACTIVITY=roi` to switch the parts off. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+diff --git a/backend/src/api/routes/media.py b/backend/src/api/routes/media.py
+index b6e8532..f3e623c 100644
+--- a/backend/src/api/routes/media.py
++++ b/backend/src/api/routes/media.py
+@@ -50,6 +50,13 @@ from ...font_registry import (
+     get_user_fonts_dir,
+     sanitize_font_stem,
+ )
++from ...media.transition_library import TRANSITIONS
++from ...media.transition_preview import (
++    PREVIEW_TRANSITION_SECONDS,
++    preview_cache_path,
++    render_transition_preview,
++    transition_preview_enabled,
++)
+ from sqlalchemy.ext.asyncio import AsyncSession
+ from fastapi import Depends
+ 
+@@ -329,6 +336,61 @@ async def get_available_transitions():
+         )
+ 
+ 
++@router.get("/transitions/library")
++async def get_transition_library(family: str | None = None):
++    """List the extended transition catalogue, newest library beside built-ins.
++
++    Public on purpose, matching ``GET /transitions``: the picker needs the
++    list before a user has a task. ``TRANSITION_LIBRARY_API=off`` removes
++    both this route and the preview route.
++    """
++    if not transition_preview_enabled():
++        raise HTTPException(status_code=404, detail="Not found")
++
++    entries = sorted(TRANSITIONS.values(), key=lambda item: (item.family, item.name))
++    if family is not None:
++        entries = [entry for entry in entries if entry.family == family]
++
++    return [
++        {
++            "name": entry.name,
++            "family": entry.family,
++            "description": entry.description,
++            "duration_default": PREVIEW_TRANSITION_SECONDS,
++            "preview_url": f"/transitions/library/{entry.name}/preview.mp4",
++        }
++        for entry in entries
++    ]
++
++
++@router.get("/transitions/library/{name}/preview.mp4")
++async def get_transition_library_preview(name: str):
++    """Serve a cached 1.2 s preview, rendering it on the first request."""
++    if not transition_preview_enabled():
++        raise HTTPException(status_code=404, detail="Not found")
++
++    # Registry membership is the only accepted name. The explicit ``Path``
++    # check is belt-and-braces for callers that bypass FastAPI's routing.
++    if name not in TRANSITIONS or Path(name).name != name:
++        raise HTTPException(status_code=404, detail="Transition not found")
++
++    output = preview_cache_path(get_config().temp_dir, name)
++    if not output.is_file() or output.stat().st_size == 0:
++        try:
++            await run_in_thread(render_transition_preview, name, output)
++        except Exception as error:
++            logger.error("Error rendering transition preview %s: %s", name, error)
++            raise HTTPException(
++                status_code=500, detail=f"Error rendering transition preview: {error}"
++            )
++
++    return FileResponse(
++        path=str(output),
++        media_type="video/mp4",
++        headers={"Cache-Control": "public, max-age=86400"},
++    )
++
++
+ @router.get("/caption-templates")
+ async def get_caption_templates():
+     """Get available caption templates.
+diff --git a/backend/src/media/transition_preview.py b/backend/src/media/transition_preview.py
+new file mode 100644
+index 0000000..53c375b
+--- /dev/null
++++ b/backend/src/media/transition_preview.py
+@@ -0,0 +1,151 @@
++"""Cached, CPU-only preview renders for the extended transition library.
++
++The catalogue API exposes one short clip per registry entry so the editor
++can show what a transition looks like before a project uses it. A preview
++is a 1.2 s join between two generated gradient cards: no external assets,
++no source video, no GPU. Renders are cached by name under
++``{TEMP_DIR}/transition_previews`` and served from there afterwards.
++
++The registry itself only returns filter-graph fragments. This module owns
++the ffmpeg invocation, the card sources and the cache path, keeping
++``transition_library.py`` a standard-library-only data module.
++"""
++
++from __future__ import annotations
++
++import os
++import uuid
++from pathlib import Path
++
++from .ffmpeg import run_ffmpeg_command
++from .transition_library import TRANSITIONS
++
++PREVIEW_WIDTH = 360
++PREVIEW_HEIGHT = 640
++PREVIEW_FPS = 30
++PREVIEW_SECONDS = 1.2
++PREVIEW_TRANSITION_SECONDS = 0.5
++# A builder's two inputs are ``offset + duration`` long and its output is
++# ``2 * offset + duration``; 0.35 + 0.5 + 0.35 = the 1.2 s preview.
++PREVIEW_OFFSET_SECONDS = (PREVIEW_SECONDS - PREVIEW_TRANSITION_SECONDS) / 2.0
++PREVIEW_CARD_SECONDS = PREVIEW_OFFSET_SECONDS + PREVIEW_TRANSITION_SECONDS
++
++PREVIEW_API_ENV = "TRANSITION_LIBRARY_API"
++PREVIEW_CACHE_DIRNAME = "transition_previews"
++
++_CARD_A = (
++    "gradients=s={w}x{h}:r={fps}:c0=0x1E3A8A:c1=0x60A5FA"
++    ":x0=0:y0=0:x1={w}:y1={h}:d={card}"
++)
++_CARD_B = (
++    "gradients=s={w}x{h}:r={fps}:c0=0xD97706:c1=0xFBBF24"
++    ":x0={w}:y0=0:x1=0:y1={h}:d={card}"
++)
++
++
++def transition_preview_enabled() -> bool:
++    """Whether the catalogue and preview routes are exposed.
++
++    ``TRANSITION_LIBRARY_API=off`` (also ``0``, ``false`` or ``no``) is the
++    off switch required by the rollout rules. Anything else leaves the
++    routes on, including an unset variable.
++    """
++    value = os.getenv(PREVIEW_API_ENV, "").strip().lower()
++    return value not in {"off", "0", "false", "no"}
++
++
++def preview_cache_dir(temp_dir: str | Path) -> Path:
++    return Path(temp_dir) / PREVIEW_CACHE_DIRNAME
++
++
++def preview_cache_path(temp_dir: str | Path, name: str) -> Path:
++    """Resolve one cache file, refusing anything outside the cache directory."""
++    cache_dir = preview_cache_dir(temp_dir).resolve()
++    path = (cache_dir / f"{name}.mp4").resolve()
++    if path.parent != cache_dir:
++        raise ValueError(f"invalid transition preview name: {name!r}")
++    return path
++
++
++def _card_source(template: str) -> str:
++    return template.format(
++        w=PREVIEW_WIDTH,
++        h=PREVIEW_HEIGHT,
++        fps=PREVIEW_FPS,
++        card=f"{PREVIEW_CARD_SECONDS:.6g}",
++    )
++
++
++def _build_command(name: str, output: Path) -> list[str]:
++    spec = TRANSITIONS[name]
++    graph = (
++        "[0:v]format=yuv420p,setsar=1[a];"
++        "[1:v]format=yuv420p,setsar=1[b];"
++        + spec.builder(
++            PREVIEW_TRANSITION_SECONDS,
++            PREVIEW_OFFSET_SECONDS,
++            PREVIEW_WIDTH,
++            PREVIEW_HEIGHT,
++            PREVIEW_FPS,
++        )
++    )
++    return [
++        "ffmpeg",
++        "-y",
++        "-hide_banner",
++        "-loglevel",
++        "error",
++        "-f",
++        "lavfi",
++        "-i",
++        _card_source(_CARD_A),
++        "-f",
++        "lavfi",
++        "-i",
++        _card_source(_CARD_B),
++        "-filter_complex",
++        graph,
++        "-map",
++        "[out]",
++        "-t",
++        f"{PREVIEW_SECONDS:.6g}",
++        "-c:v",
++        "libx264",
++        "-preset",
++        "veryfast",
++        "-crf",
++        "23",
++        "-pix_fmt",
++        "yuv420p",
++        "-an",
++        "-movflags",
++        "+faststart",
++        str(output),
++    ]
++
++
++def render_transition_preview(name: str, output: Path) -> Path:
++    """Render one preview to ``output`` through ffmpeg.
++
++    The encode goes to a unique temporary file in the same directory and is
++    renamed into place only after ffmpeg succeeds, so a concurrent request
++    or a crashed encode can never serve a half-written MP4.
++    """
++    if name not in TRANSITIONS:
++        raise KeyError(name)
++
++    output = Path(output)
++    output.parent.mkdir(parents=True, exist_ok=True)
++    temporary = output.with_name(
++        f".{output.stem}-{uuid.uuid4().hex}.tmp{output.suffix}"
++    )
++    try:
++        result = run_ffmpeg_command(_build_command(name, temporary), timeout=120)
++        if result.returncode != 0:
++            raise RuntimeError(
++                f"ffmpeg failed to render transition preview {name!r}"
++            )
++        temporary.replace(output)
++    finally:
++        temporary.unlink(missing_ok=True)
++    return output
+diff --git a/backend/tests/unit/test_transition_library_api.py b/backend/tests/unit/test_transition_library_api.py
+new file mode 100644
+index 0000000..f6a663d
+--- /dev/null
++++ b/backend/tests/unit/test_transition_library_api.py
+@@ -0,0 +1,144 @@
++import json
++import subprocess
++from types import SimpleNamespace
++
++import pytest
++from fastapi import HTTPException
++
++from src.api.routes import media
++from src.media import transition_preview
++from src.media.transition_library import TRANSITIONS
++
++LIST_FIELDS = {
++    "name",
++    "family",
++    "description",
++    "duration_default",
++    "preview_url",
++}
++
++
++async def test_library_lists_every_entry_sorted_by_family_then_name(client):
++    response = await client.get("/transitions/library")
++
++    assert response.status_code == 200
++    entries = response.json()
++    assert isinstance(entries, list)
++    assert len(entries) == len(TRANSITIONS)
++    assert all(set(entry) == LIST_FIELDS for entry in entries)
++    assert [(entry["family"], entry["name"]) for entry in entries] == sorted(
++        (entry["family"], entry["name"]) for entry in entries
++    )
++    assert all(entry["description"] for entry in entries)
++    assert all(entry["duration_default"] == pytest.approx(0.5) for entry in entries)
++
++    sample = next(
++        entry for entry in entries if entry["name"] == "iris_soft_center"
++    )
++    assert sample["family"] == "iris"
++    assert sample["preview_url"] == (
++        "/transitions/library/iris_soft_center/preview.mp4"
++    )
++
++
++async def test_library_family_filter_and_unknown_family(client):
++    filtered = await client.get("/transitions/library?family=glitch")
++    assert filtered.status_code == 200
++    entries = filtered.json()
++    assert len(entries) == 10
++    assert {entry["family"] for entry in entries} == {"glitch"}
++
++    missing = await client.get("/transitions/library?family=not-a-family")
++    assert missing.status_code == 200
++    assert missing.json() == []
++
++
++async def test_library_preview_unknown_name_is_404(client):
++    response = await client.get(
++        "/transitions/library/not_a_transition/preview.mp4"
++    )
++    assert response.status_code == 404
++
++
++async def test_library_preview_rejects_path_traversal(client):
++    response = await client.get(
++        "/transitions/library/..%2F..%2Fetc%2Fpasswd/preview.mp4"
++    )
++    assert response.status_code == 404
++
++    # The route also validates names itself, for callers that do not pass
++    # through FastAPI's path matcher.
++    with pytest.raises(HTTPException) as exc_info:
++        await media.get_transition_library_preview("../Inter")
++    assert exc_info.value.status_code == 404
++
++
++async def test_library_off_switch_hides_list_and_preview(client, monkeypatch):
++    monkeypatch.setenv("TRANSITION_LIBRARY_API", "off")
++
++    listing = await client.get("/transitions/library")
++    preview = await client.get(
++        "/transitions/library/iris_soft_center/preview.mp4"
++    )
++    assert listing.status_code == 404
++    assert preview.status_code == 404
++
++
++async def test_library_preview_renders_once_then_serves_the_cache(
++    client, monkeypatch, tmp_path
++):
++    monkeypatch.setattr(
++        media,
++        "get_config",
++        lambda: SimpleNamespace(temp_dir=str(tmp_path)),
++    )
++    monkeypatch.setenv("TRANSITION_LIBRARY_API", "on")
++
++    calls = []
++    real_run = transition_preview.run_ffmpeg_command
++
++    def counting_run(command, timeout=900):
++        calls.append(list(command))
++        return real_run(command, timeout=timeout)
++
++    monkeypatch.setattr(transition_preview, "run_ffmpeg_command", counting_run)
++
++    first = await client.get(
++        "/transitions/library/iris_soft_center/preview.mp4"
++    )
++    second = await client.get(
++        "/transitions/library/iris_soft_center/preview.mp4"
++    )
++
++    assert first.status_code == 200
++    assert first.headers["content-type"] == "video/mp4"
++    assert len(first.content) > 1000
++    assert second.status_code == 200
++    assert second.content == first.content
++    assert len(calls) == 1
++
++    cached = tmp_path / "transition_previews" / "iris_soft_center.mp4"
++    assert cached.is_file()
++    assert cached.stat().st_size == len(first.content)
++
++    probe = subprocess.run(
++        [
++            "ffprobe",
++            "-v",
++            "error",
++            "-show_entries",
++            "stream=width,height",
++            "-show_entries",
++            "format=duration",
++            "-of",
++            "json",
++            str(cached),
++        ],
++        capture_output=True,
++        text=True,
++        check=True,
++    )
++    data = json.loads(probe.stdout)
++    stream = data["streams"][0]
++    assert (stream["width"], stream["height"]) == (360, 640)
++    assert float(data["format"]["duration"]) == pytest.approx(1.2, abs=0.05)
+-- 
+2.56.0.windows.2
+

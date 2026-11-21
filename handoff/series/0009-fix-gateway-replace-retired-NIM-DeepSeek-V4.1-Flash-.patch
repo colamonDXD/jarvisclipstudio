@@ -1,0 +1,128 @@
+From 3b6b313b3941ba6bee6742aae9d75bf78f8fb3a4 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 13:34:40 +0530
+Subject: [PATCH 09/13] fix(gateway): replace retired NIM DeepSeek V4.1 Flash
+ on the nim-deepseek rung
+
+The owner's live probe (audit_providers.py --probe-nvidia, 2026-11-17)
+returned HTTP 410 for deepseek-ai/deepseek-v4.1-flash, so ladder rung 4
+always failed over. The rung now uses nvidia/nemotron-3.5-super-vl-120b-a12b,
+which the same probe confirmed working on the free NIM tier. Route name and
+ladder order are unchanged; clip-fast stays Nemotron 3 Ultra. Unarmed
+bake-off aliases are annotated DEAD (410/404) or LIVE from the probe.
+
+Test pin updated in test_litellm_gateway_config.py (the pinned slug is the
+retired model, proven by the probe). MODEL_REGISTRY row updated.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                                   |  1 +
+ .../tests/unit/test_litellm_gateway_config.py  |  4 +++-
+ docs/registries/MODEL_REGISTRY.md              |  2 +-
+ litellm_config.yaml                            | 18 +++++++++++++-----
+ 4 files changed, 18 insertions(+), 7 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 0539729..3a0e09d 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,7 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-17
++- **Fixed:** The second NVIDIA fallback for AI clip selection pointed at DeepSeek V4.1 Flash, which NVIDIA has retired (a live check on 17 November got "gone"), so that fallback step always failed. It now uses Nemotron 3.5 Super, which the same check confirmed working on the free NVIDIA tier. The fallback order is unchanged and no paid model was added.
+ - **New:** Streamer reaction clips now come with a hook title that describes what actually happened (for example a streamer laughing at a sudden on-screen blast, never an invented event), clip windows that start on a pause and end after the reaction has died down, caption timing and placement notes that follow the reaction and keep clear of the facecam, and editing suggestions (facecam panel, a gentle punch-in on the reaction, trimming dead time). The suggestions are advisory data for the renderer.
+ - **New:** Streamer videos now get their best moments from the streamer's reaction, not just the loudest or most explosive stretch. The picker listens for a raised, shouting or laughing voice (ignoring explosions and engine noise), watches the facecam, and matches each reaction to the on-screen event that caused it. A reaction to something that just happened ranks highest, a funny moment with no visible trigger comes next, and a game event the streamer ignored is no longer picked. Each clip keeps the trigger and the full reaction, and explains why. Set `REACTION_SIGNALS=0` to switch the reaction hints off.
+ - **Improved:** Gameplay and other no-speech videos now get their best moments from what happens on screen, not just from the loudest sound. The picker watches for several visible changes at once — flashes, banners, on-screen events, sustained movement, screen shake — keeps the build-up before the action and ends after the payoff, and explains each pick. A loud sound with nothing visible happening (like a distant explosion) no longer outranks a real moment. Set `FRAME_EVIDENCE_SELECTION=0` to switch back to the older sound-and-scene-cut picker.
+diff --git a/backend/tests/unit/test_litellm_gateway_config.py b/backend/tests/unit/test_litellm_gateway_config.py
+index bc84de8..012ef76 100644
+--- a/backend/tests/unit/test_litellm_gateway_config.py
++++ b/backend/tests/unit/test_litellm_gateway_config.py
+@@ -95,7 +95,9 @@ EXISTING_MODELS = [
+     {
+         "model_name": "nim-deepseek",
+         "litellm_params": {
+-            "model": "openai/deepseek-ai/deepseek-v4.1-flash",
++            # 2026-11-17: DeepSeek V4.1 Flash returns HTTP 410 (retired) on
++            # the owner's live NIM probe; the rung moved to a verified model.
++            "model": "openai/nvidia/nemotron-3.5-super-vl-120b-a12b",
+             "api_base": "https://integrate.api.nvidia.com/v1",
+             "api_key": "os.environ/NVIDIA_API_KEY",
+         },
+diff --git a/docs/registries/MODEL_REGISTRY.md b/docs/registries/MODEL_REGISTRY.md
+index a04c11c..819be87 100644
+--- a/docs/registries/MODEL_REGISTRY.md
++++ b/docs/registries/MODEL_REGISTRY.md
+@@ -21,7 +21,7 @@ openrouter-free → cloudflare-free → groq-20b → local-qwen**
+ | `deepseek-chat` | DeepSeek direct, `api.deepseek.com` | `deepseek-chat` | Strongest brain; first hop of every chain | Paid metered API (user's key)¹ |
+ | `clip-assured` | Groq | `openai/gpt-oss-120b` | Premium selection pass (sends `reasoning_effort=high`) | Groq free tier² |
+ | `clip-fast` | NVIDIA NIM, `integrate.api.nvidia.com/v1` | `nvidia/nemotron-3-ultra-550b-a55b` | Bulk/fast passes; also the long-form analysis route (~1M context per `.env.example`) | Free NIM endpoint (user's NVIDIA key) |
+-| `nim-deepseek` | NVIDIA NIM | `deepseek-ai/deepseek-v4.1-flash` | Second NIM rung | Free NIM endpoint |
++| `nim-deepseek` | NVIDIA NIM | `nvidia/nemotron-3.5-super-vl-120b-a12b` | Second NIM rung. Route name kept; was `deepseek-ai/deepseek-v4.1-flash` until the 2026-11-17 live probe returned HTTP 410 (retired). Verified WORKS on the owner's key that day | Free NIM endpoint |
+ | `openrouter-free` | OpenRouter | `nvidia/nemotron-3-ultra-550b-a55b:free` | Same Nemotron Ultra via OpenRouter's shared free pool; the `:free` suffix is pinned by test — a non-free fallback slug here once created a live paid-spend risk and must never regress | Free (rate-limited shared pool) |
+ | `or-ultra-free` | OpenRouter | `nvidia/nemotron-3-ultra-550b-a55b:free` | Legacy alias of the same route, kept with its own chain | Free |
+ | `cloudflare-free` | Cloudflare Workers AI, OpenAI-compatible endpoint built from `CLOUDFLARE_ACCOUNT_ID` at call time | `@cf/openai/gpt-oss-120b` | Eligible fallback on independent infrastructure (2026-11-13, owner's Final Directive), at his specified slot: after `openrouter-free`, before `groq-20b`. Slug pinned by test to the free-allocation model — the frontier Workers AI rows (GLM-5.x, Kimi K2.6+, DeepSeek V4) are paid-plan only and are banned from this slug by a pin. Endpoint **UNVERIFIED-LIVE** until the check in `AI_MODEL_ROUTING.md` §5 runs on the user's machine | Free allocation (10,000 Neurons/day, Workers Free plan) |
+diff --git a/litellm_config.yaml b/litellm_config.yaml
+index 71a8ba5..701ed2e 100644
+--- a/litellm_config.yaml
++++ b/litellm_config.yaml
+@@ -10,7 +10,13 @@ model_list:
+       api_key: os.environ/OPENROUTER_API_KEY
+   - model_name: nim-deepseek
+     litellm_params:
+-      model: openai/deepseek-ai/deepseek-v4.1-flash
++      # 2026-11-17 live probe on the owner's NVIDIA key (audit_providers.py
++      # --probe-nvidia): deepseek-ai/deepseek-v4.1-flash answers HTTP 410
++      # (retired from the endpoint), so this rung was dead. Swapped to a
++      # model the probe confirmed WORKS. Route name and ladder position are
++      # unchanged; a different model from clip-fast's Ultra keeps this rung
++      # an independent fallback instead of a duplicate.
++      model: openai/nvidia/nemotron-3.5-super-vl-120b-a12b
+       api_base: https://integrate.api.nvidia.com/v1
+       api_key: os.environ/NVIDIA_API_KEY
+   - model_name: clip-assured
+@@ -77,35 +83,37 @@ model_list:
+   # GET /v1/models first and drops any slug that 404s.
+   - model_name: nim-glm-flash
+     litellm_params:
++      # UNVERIFIED: listed, but timed out (45 s) on the 2026-11-17 probe.
+       model: openai/z-ai/glm-5.3-flash
+       api_base: https://integrate.api.nvidia.com/v1
+       api_key: os.environ/NVIDIA_API_KEY
+   - model_name: nim-kimi-k2
+     litellm_params:
++      # DEAD: HTTP 410 on the 2026-11-17 live probe. Unarmed alias.
+       model: openai/moonshotai/kimi-k2.6
+       api_base: https://integrate.api.nvidia.com/v1
+       api_key: os.environ/NVIDIA_API_KEY
+   - model_name: nim-mistral-large4
+     litellm_params:
++      # LIVE: WORKS on the 2026-11-17 probe. Still unarmed.
+       model: openai/mistralai/mistral-large-4-1t-a52b
+       api_base: https://integrate.api.nvidia.com/v1
+       api_key: os.environ/NVIDIA_API_KEY
+   - model_name: nim-qwen3-235b
+     litellm_params:
+-      # UNVERIFIED slug (offline): probe before use.
++      # DEAD: HTTP 404 on the 2026-11-17 live probe. Unarmed alias.
+       model: openai/qwen/qwen3-235b-a22b
+       api_base: https://integrate.api.nvidia.com/v1
+       api_key: os.environ/NVIDIA_API_KEY
+   - model_name: nim-llama4-maverick
+     litellm_params:
+-      # UNVERIFIED slug (offline): probe before use.
++      # DEAD: HTTP 410 on the 2026-11-17 live probe. Unarmed alias.
+       model: openai/meta/llama-4-maverick-17b-128e-instruct
+       api_base: https://integrate.api.nvidia.com/v1
+       api_key: os.environ/NVIDIA_API_KEY
+   - model_name: nim-deepseek-pro
+     litellm_params:
+-      # PARTIALLY verified slug (offline): a build.nvidia.com page
+-      # exists, but the slug was absent from free-callable listings.
++      # DEAD: HTTP 410 on the 2026-11-17 live probe. Unarmed alias.
+       model: openai/deepseek-ai/deepseek-v4-pro
+       api_base: https://integrate.api.nvidia.com/v1
+       api_key: os.environ/NVIDIA_API_KEY
+-- 
+2.56.0.windows.2
+

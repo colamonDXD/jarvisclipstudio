@@ -1,0 +1,76 @@
+[
+  {
+    "model": "small",
+    "device": "cuda",
+    "compute_type": "float16",
+    "load_s": 55.6,
+    "vram_after_load_mb": 1667,
+    "warmup_s": 6.4,
+    "batch_size": 16,
+    "audio_s": 1200.0,
+    "wall_s": 16.92,
+    "rtf": 70.93,
+    "vram_peak_used_mb": 1815,
+    "segments": 19,
+    "text_first_200": "I'm not good with this bike I heard my leg man I don't know what it is with the brain just keeps wanting to I think you may have a problem with your muscles You got um Are you a tweaker? Are you a lit",
+    "first_segments": [
+      {
+        "start": 0.0,
+        "end": 38.22,
+        "text": " I'm not good with this bike I heard my leg man I don't know what it is with the brain just keeps wanting to I think you may have a problem with your muscles You got um Are you a tweaker? Are you a little tweaker or what? Yeah I've been mad tweaker for the last couple of weeks Yeah me too! Me too! I've been tweaking out like crazy Me too! Wait, you want to be my friend? Yeah we can be friends Just don't tweak without me then"
+      },
+      {
+        "start": 39.54,
+        "end": 92.85,
+        "text": " No, I haven't been able to tweak in the past couple of days. I'm not gonna lie. I am there. Let's fucking tweak it. Let's tweak it. Do you help me find a bike though? Yeah, let's see. Ah Christ, sign my shoelaces. All right. Ah, just careful with your name. Get caught up in the tie. Um, I lied. I don't know. I don't know where to find, um, bikes around here, but, um, keep looking right? There's gotta be another bike."
+      },
+      {
+        "start": 93.14,
+        "end": 155.57,
+        "text": " And it's gotta be right people were riding bikes Yeah, I mean we just saw one right at the motorcycle pal. Oh Starnet watch where you're going pal. Let's go one All we need is one more bike. We could rob somebody with it. Hey Rob somebody I'm you already robbed the bike didn't you them knowing also one sec. Let me go in my house real quick. Hi Hey, how's it going?"
+      }
+    ],
+    "last_segment": {
+      "start": 1185.58,
+      "end": 1200.0,
+      "text": " Oh, it's Bay City. Surely they have enough money in the bank."
+    }
+  },
+  {
+    "model": "large-v3-turbo",
+    "device": "cuda",
+    "compute_type": "float16",
+    "load_s": 181.0,
+    "vram_after_load_mb": 3692,
+    "warmup_s": 2.2,
+    "batch_size": 16,
+    "audio_s": 1200.0,
+    "wall_s": 18.51,
+    "rtf": 64.82,
+    "vram_peak_used_mb": 3316,
+    "segments": 19,
+    "text_first_200": "Oh, I'm not good with this bike. I hurt my leg man Brain just keeps wanting to I think you may have you got to follow your muscles you got um Are you a tweaker everyone those speakers or what? Yeah, I",
+    "first_segments": [
+      {
+        "start": 0.0,
+        "end": 38.22,
+        "text": " Oh, I'm not good with this bike. I hurt my leg man Brain just keeps wanting to I think you may have you got to follow your muscles you got um Are you a tweaker everyone those speakers or what? Yeah, I've been mad. You're a tweaker couple we got me to me to tweaking out like crazy to Wait, you want to be my friend? Yeah, we can be friends. Let's don't tweak without me then"
+      },
+      {
+        "start": 39.54,
+        "end": 92.85,
+        "text": " No, I haven't been able to tweak in the past couple of days. I'm not gonna lie. I'm there. Let's fucking tweak it Let's tweak it. Did you help me find a bike though? Yeah, let's see ah Christ side my shoelaces All right, ah just careful with you. I got me up and get caught up in the tie I Lied I don't know I don't want to find on bikes around here, but um keep looking right"
+      },
+      {
+        "start": 93.14,
+        "end": 155.57,
+        "text": " And it's gotta be right people were riding bikes Uh, yeah, I mean we just saw one right? That's the motorcycle pal gosh darn it watch where you're going bell. Let's go one All we need is one more bike. We could rob somebody with it. Hey Rob somebody You already robbed the bike didn't you with them knowing also one sec. Let me go in my house real quick. All right Hey, how's it going? Hey, how's it going?"
+      }
+    ],
+    "last_segment": {
+      "start": 1185.58,
+      "end": 1200.0,
+      "text": " Oh, it's Bay City. Surely we have enough money in the bank."
+    }
+  }
+]

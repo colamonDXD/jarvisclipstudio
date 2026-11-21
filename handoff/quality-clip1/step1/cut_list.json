@@ -1,0 +1,148 @@
+{
+ "scene_cuts_detected": [
+  12.951,
+  22.126,
+  25.93,
+  38.743
+ ],
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 2.74,
+   "reason": "clip_start",
+   "transition": "none"
+  },
+  {
+   "start": 2.74,
+   "end": 5.69,
+   "reason": "sentence_end",
+   "transition": "cut"
+  },
+  {
+   "start": 5.69,
+   "end": 8.86,
+   "reason": "sentence_end",
+   "transition": "cut"
+  },
+  {
+   "start": 8.86,
+   "end": 12.95,
+   "reason": "sentence_end",
+   "transition": "cut"
+  },
+  {
+   "start": 12.95,
+   "end": 17.41,
+   "reason": "scene_cut",
+   "transition": "cut"
+  },
+  {
+   "start": 17.41,
+   "end": 22.13,
+   "reason": "sentence_end",
+   "transition": "cut"
+  },
+  {
+   "start": 22.13,
+   "end": 25.93,
+   "reason": "scene_cut",
+   "transition": "cut"
+  },
+  {
+   "start": 25.93,
+   "end": 38.74,
+   "reason": "scene_cut",
+   "transition": "cut"
+  },
+  {
+   "start": 38.74,
+   "end": 58.0,
+   "reason": "scene_cut",
+   "transition": "cut"
+  }
+ ],
+ "zoom_keyframes": [],
+ "edit_restraint": {
+  "cuts": [
+   {
+    "at_sec": 2.74,
+    "reason": "sentence_end"
+   },
+   {
+    "at_sec": 5.69,
+    "reason": "sentence_end"
+   },
+   {
+    "at_sec": 8.86,
+    "reason": "sentence_end"
+   },
+   {
+    "at_sec": 12.951,
+    "reason": "scene_cut"
+   },
+   {
+    "at_sec": 17.41,
+    "reason": "sentence_end"
+   },
+   {
+    "at_sec": 22.126,
+    "reason": "scene_cut"
+   },
+   {
+    "at_sec": 25.93,
+    "reason": "scene_cut"
+   },
+   {
+    "at_sec": 38.743,
+    "reason": "scene_cut"
+   },
+   {
+    "dropped": [
+     {
+      "at_sec": 3.09,
+      "reason": "sentence_end",
+      "why": "shorter than min shot"
+     },
+     {
+      "at_sec": 10.61,
+      "reason": "sentence_end",
+      "why": "shorter than min shot"
+     },
+     {
+      "at_sec": 14.135,
+      "reason": "sentence_end",
+      "why": "shorter than min shot"
+     },
+     {
+      "at_sec": 18.31,
+      "reason": "sentence_end",
+      "why": "shorter than min shot"
+     },
+     {
+      "at_sec": 19.55,
+      "reason": "sentence_end",
+      "why": "shorter than min shot"
+     },
+     {
+      "at_sec": 19.88,
+      "reason": "sentence_end",
+      "why": "shorter than min shot"
+     },
+     {
+      "at_sec": 20.22,
+      "reason": "sentence_end",
+      "why": "shorter than min shot"
+     },
+     {
+      "at_sec": 26.37,
+      "reason": "sentence_end",
+      "why": "shorter than min shot"
+     }
+    ]
+   }
+  ],
+  "segments": 9,
+  "beat_grid": "skipped: grid follows the added music bed",
+  "signature": "suppressed: not on a source shot change"
+ }
+}

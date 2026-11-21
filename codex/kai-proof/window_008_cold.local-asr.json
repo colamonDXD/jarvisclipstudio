@@ -1,0 +1,876 @@
+{
+  "language": "en",
+  "text": "Don't shoot him a- Black ball me Arnold! He'll be a bald man! Fuckin' hell! Threats Arnold! Dinosaur! I'm gonna spoil of you! Got you! Shit stain out of topic! Arnold! Don't shoot him a- Wait a minute. Shut him up, shut him up. Do whatever it is you have to do to shut his mouth! Well I think there's a child lock on this door so, next time. Oh yeah. Come over to my place! Oh yeah. Don't go nowhere! Arnold! Stop! You're back here. Where you going, bro? I'm faster than you. Arnold, come on. Stay the fuck away. Come on, buddy.",
+  "segments": [
+    {
+      "start": 0.66,
+      "end": 1.76,
+      "text": " Don't shoot him a-",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Don't",
+          "start": 0.66,
+          "end": 1.32,
+          "probability": 0.6231689453125
+        },
+        {
+          "word": " shoot",
+          "start": 1.32,
+          "end": 1.48,
+          "probability": 0.31103515625
+        },
+        {
+          "word": " him",
+          "start": 1.48,
+          "end": 1.64,
+          "probability": 0.802734375
+        },
+        {
+          "word": " a",
+          "start": 1.64,
+          "end": 1.7,
+          "probability": 0.1494140625
+        },
+        {
+          "word": "-",
+          "start": 1.7,
+          "end": 1.76,
+          "probability": 0.2230224609375
+        }
+      ]
+    },
+    {
+      "start": 4.32,
+      "end": 5.32,
+      "text": " Black ball me Arnold!",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Black",
+          "start": 4.32,
+          "end": 4.52,
+          "probability": 0.6318359375
+        },
+        {
+          "word": " ball",
+          "start": 4.52,
+          "end": 4.74,
+          "probability": 0.31982421875
+        },
+        {
+          "word": " me",
+          "start": 4.74,
+          "end": 4.96,
+          "probability": 0.321533203125
+        },
+        {
+          "word": " Arnold!",
+          "start": 4.96,
+          "end": 5.32,
+          "probability": 0.71826171875
+        }
+      ]
+    },
+    {
+      "start": 5.7,
+      "end": 6.78,
+      "text": " He'll be a bald man!",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " He'll",
+          "start": 5.7,
+          "end": 5.96,
+          "probability": 0.56793212890625
+        },
+        {
+          "word": " be",
+          "start": 5.96,
+          "end": 6.06,
+          "probability": 0.994140625
+        },
+        {
+          "word": " a",
+          "start": 6.06,
+          "end": 6.26,
+          "probability": 0.9345703125
+        },
+        {
+          "word": " bald",
+          "start": 6.26,
+          "end": 6.5,
+          "probability": 0.25537109375
+        },
+        {
+          "word": " man!",
+          "start": 6.5,
+          "end": 6.78,
+          "probability": 0.74609375
+        }
+      ]
+    },
+    {
+      "start": 6.9,
+      "end": 7.38,
+      "text": " Fuckin' hell!",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Fuckin'",
+          "start": 6.9,
+          "end": 7.26,
+          "probability": 0.4754638671875
+        },
+        {
+          "word": " hell!",
+          "start": 7.26,
+          "end": 7.38,
+          "probability": 0.93115234375
+        }
+      ]
+    },
+    {
+      "start": 16.97,
+      "end": 17.49,
+      "text": " Threats Arnold!",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Threats",
+          "start": 16.97,
+          "end": 17.33,
+          "probability": 0.7796223958333334
+        },
+        {
+          "word": " Arnold!",
+          "start": 17.33,
+          "end": 17.49,
+          "probability": 0.87841796875
+        }
+      ]
+    },
+    {
+      "start": 18.37,
+      "end": 18.73,
+      "text": " Dinosaur!",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Dinosaur!",
+          "start": 18.37,
+          "end": 18.73,
+          "probability": 0.9641927083333334
+        }
+      ]
+    },
+    {
+      "start": 18.85,
+      "end": 20.25,
+      "text": " I'm gonna spoil of you!",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " I'm",
+          "start": 18.85,
+          "end": 19.03,
+          "probability": 0.957763671875
+        },
+        {
+          "word": " gonna",
+          "start": 19.03,
+          "end": 19.17,
+          "probability": 0.94775390625
+        },
+        {
+          "word": " spoil",
+          "start": 19.17,
+          "end": 19.79,
+          "probability": 0.357177734375
+        },
+        {
+          "word": " of",
+          "start": 19.79,
+          "end": 20.07,
+          "probability": 0.382568359375
+        },
+        {
+          "word": " you!",
+          "start": 20.07,
+          "end": 20.25,
+          "probability": 0.99658203125
+        }
+      ]
+    },
+    {
+      "start": 20.67,
+      "end": 21.35,
+      "text": " Got you!",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Got",
+          "start": 20.67,
+          "end": 21.03,
+          "probability": 0.497802734375
+        },
+        {
+          "word": " you!",
+          "start": 21.03,
+          "end": 21.35,
+          "probability": 0.62255859375
+        }
+      ]
+    },
+    {
+      "start": 22.01,
+      "end": 23.47,
+      "text": " Shit stain out of topic!",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Shit",
+          "start": 22.01,
+          "end": 22.37,
+          "probability": 0.74462890625
+        },
+        {
+          "word": " stain",
+          "start": 22.37,
+          "end": 22.73,
+          "probability": 0.34375
+        },
+        {
+          "word": " out",
+          "start": 22.73,
+          "end": 23.13,
+          "probability": 0.2431640625
+        },
+        {
+          "word": " of",
+          "start": 23.13,
+          "end": 23.13,
+          "probability": 0.86669921875
+        },
+        {
+          "word": " topic!",
+          "start": 23.13,
+          "end": 23.47,
+          "probability": 0.321533203125
+        }
+      ]
+    },
+    {
+      "start": 25.33,
+      "end": 25.69,
+      "text": " Arnold!",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Arnold!",
+          "start": 25.33,
+          "end": 25.69,
+          "probability": 0.005901336669921875
+        }
+      ]
+    },
+    {
+      "start": 25.69,
+      "end": 26.49,
+      "text": " Don't shoot him a-",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Don't",
+          "start": 25.69,
+          "end": 26.01,
+          "probability": 0.936767578125
+        },
+        {
+          "word": " shoot",
+          "start": 26.01,
+          "end": 26.17,
+          "probability": 0.85693359375
+        },
+        {
+          "word": " him",
+          "start": 26.17,
+          "end": 26.33,
+          "probability": 0.9677734375
+        },
+        {
+          "word": " a",
+          "start": 26.33,
+          "end": 26.41,
+          "probability": 0.94140625
+        },
+        {
+          "word": "-",
+          "start": 26.41,
+          "end": 26.49,
+          "probability": 0.92236328125
+        }
+      ]
+    },
+    {
+      "start": 27.86,
+      "end": 28.3,
+      "text": " Wait a minute.",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Wait",
+          "start": 27.86,
+          "end": 28.08,
+          "probability": 0.244140625
+        },
+        {
+          "word": " a",
+          "start": 28.08,
+          "end": 28.2,
+          "probability": 0.9609375
+        },
+        {
+          "word": " minute.",
+          "start": 28.2,
+          "end": 28.3,
+          "probability": 0.98583984375
+        }
+      ]
+    },
+    {
+      "start": 28.38,
+      "end": 29.32,
+      "text": " Shut him up, shut him up.",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Shut",
+          "start": 28.38,
+          "end": 28.66,
+          "probability": 0.3310546875
+        },
+        {
+          "word": " him",
+          "start": 28.66,
+          "end": 28.84,
+          "probability": 0.91796875
+        },
+        {
+          "word": " up,",
+          "start": 28.84,
+          "end": 29.0,
+          "probability": 0.99658203125
+        },
+        {
+          "word": " shut",
+          "start": 29.02,
+          "end": 29.1,
+          "probability": 0.9560546875
+        },
+        {
+          "word": " him",
+          "start": 29.1,
+          "end": 29.22,
+          "probability": 0.9931640625
+        },
+        {
+          "word": " up.",
+          "start": 29.22,
+          "end": 29.32,
+          "probability": 0.98095703125
+        }
+      ]
+    },
+    {
+      "start": 29.36,
+      "end": 32.38,
+      "text": " Do whatever it is you have to do to shut his mouth!",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Do",
+          "start": 29.36,
+          "end": 29.44,
+          "probability": 0.9248046875
+        },
+        {
+          "word": " whatever",
+          "start": 29.44,
+          "end": 30.14,
+          "probability": 0.88330078125
+        },
+        {
+          "word": " it",
+          "start": 30.14,
+          "end": 30.38,
+          "probability": 0.98681640625
+        },
+        {
+          "word": " is",
+          "start": 30.38,
+          "end": 30.52,
+          "probability": 0.9990234375
+        },
+        {
+          "word": " you",
+          "start": 30.52,
+          "end": 30.66,
+          "probability": 0.98486328125
+        },
+        {
+          "word": " have",
+          "start": 30.66,
+          "end": 30.82,
+          "probability": 0.99609375
+        },
+        {
+          "word": " to",
+          "start": 30.82,
+          "end": 30.98,
+          "probability": 0.9990234375
+        },
+        {
+          "word": " do",
+          "start": 30.98,
+          "end": 31.28,
+          "probability": 0.99365234375
+        },
+        {
+          "word": " to",
+          "start": 31.28,
+          "end": 31.44,
+          "probability": 0.94873046875
+        },
+        {
+          "word": " shut",
+          "start": 31.44,
+          "end": 31.8,
+          "probability": 0.96728515625
+        },
+        {
+          "word": " his",
+          "start": 31.8,
+          "end": 32.2,
+          "probability": 0.99609375
+        },
+        {
+          "word": " mouth!",
+          "start": 32.2,
+          "end": 32.38,
+          "probability": 0.998046875
+        }
+      ]
+    },
+    {
+      "start": 33.02,
+      "end": 35.96,
+      "text": " Well I think there's a child lock on this door so, next time.",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Well",
+          "start": 33.02,
+          "end": 33.16,
+          "probability": 0.54443359375
+        },
+        {
+          "word": " I",
+          "start": 33.16,
+          "end": 33.28,
+          "probability": 0.63427734375
+        },
+        {
+          "word": " think",
+          "start": 33.28,
+          "end": 33.44,
+          "probability": 0.99658203125
+        },
+        {
+          "word": " there's",
+          "start": 33.44,
+          "end": 33.62,
+          "probability": 0.965576171875
+        },
+        {
+          "word": " a",
+          "start": 33.62,
+          "end": 33.68,
+          "probability": 0.99560546875
+        },
+        {
+          "word": " child",
+          "start": 33.68,
+          "end": 33.98,
+          "probability": 0.97119140625
+        },
+        {
+          "word": " lock",
+          "start": 33.98,
+          "end": 34.24,
+          "probability": 0.92919921875
+        },
+        {
+          "word": " on",
+          "start": 34.24,
+          "end": 34.42,
+          "probability": 0.90087890625
+        },
+        {
+          "word": " this",
+          "start": 34.42,
+          "end": 34.6,
+          "probability": 0.986328125
+        },
+        {
+          "word": " door",
+          "start": 34.6,
+          "end": 34.86,
+          "probability": 0.99853515625
+        },
+        {
+          "word": " so,",
+          "start": 34.86,
+          "end": 35.08,
+          "probability": 0.5107421875
+        },
+        {
+          "word": " next",
+          "start": 35.26,
+          "end": 35.68,
+          "probability": 0.96826171875
+        },
+        {
+          "word": " time.",
+          "start": 35.68,
+          "end": 35.96,
+          "probability": 0.9990234375
+        }
+      ]
+    },
+    {
+      "start": 36.88,
+      "end": 37.16,
+      "text": " Oh yeah.",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Oh",
+          "start": 36.88,
+          "end": 37.02,
+          "probability": 0.85595703125
+        },
+        {
+          "word": " yeah.",
+          "start": 37.02,
+          "end": 37.16,
+          "probability": 0.90087890625
+        }
+      ]
+    },
+    {
+      "start": 37.38,
+      "end": 38.66,
+      "text": " Come over to my place!",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Come",
+          "start": 37.38,
+          "end": 37.72,
+          "probability": 0.9375
+        },
+        {
+          "word": " over",
+          "start": 37.72,
+          "end": 37.94,
+          "probability": 0.98583984375
+        },
+        {
+          "word": " to",
+          "start": 37.94,
+          "end": 38.12,
+          "probability": 0.990234375
+        },
+        {
+          "word": " my",
+          "start": 38.12,
+          "end": 38.24,
+          "probability": 0.99267578125
+        },
+        {
+          "word": " place!",
+          "start": 38.24,
+          "end": 38.66,
+          "probability": 0.9970703125
+        }
+      ]
+    },
+    {
+      "start": 38.72,
+      "end": 39.02,
+      "text": " Oh yeah.",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Oh",
+          "start": 38.72,
+          "end": 38.9,
+          "probability": 0.58349609375
+        },
+        {
+          "word": " yeah.",
+          "start": 38.9,
+          "end": 39.02,
+          "probability": 0.97998046875
+        }
+      ]
+    },
+    {
+      "start": 39.12,
+      "end": 39.64,
+      "text": " Don't go nowhere!",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Don't",
+          "start": 39.12,
+          "end": 39.48,
+          "probability": 0.802490234375
+        },
+        {
+          "word": " go",
+          "start": 39.48,
+          "end": 39.48,
+          "probability": 0.98388671875
+        },
+        {
+          "word": " nowhere!",
+          "start": 39.48,
+          "end": 39.64,
+          "probability": 0.943359375
+        }
+      ]
+    },
+    {
+      "start": 40.06,
+      "end": 40.42,
+      "text": " Arnold!",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Arnold!",
+          "start": 40.06,
+          "end": 40.42,
+          "probability": 0.97607421875
+        }
+      ]
+    },
+    {
+      "start": 40.68,
+      "end": 41.04,
+      "text": " Stop!",
+      "no_speech_prob": 0.51416015625,
+      "avg_logprob": -0.3015046307334193,
+      "words": [
+        {
+          "word": " Stop!",
+          "start": 40.68,
+          "end": 41.04,
+          "probability": 0.9892578125
+        }
+      ]
+    },
+    {
+      "start": 41.04,
+      "end": 45.6,
+      "text": " You're back here.",
+      "no_speech_prob": 0.34033203125,
+      "avg_logprob": -0.40479651024175245,
+      "words": [
+        {
+          "word": " You're",
+          "start": 41.04,
+          "end": 41.9,
+          "probability": 0.299774169921875
+        },
+        {
+          "word": " back",
+          "start": 45.14,
+          "end": 45.38,
+          "probability": 0.7392578125
+        },
+        {
+          "word": " here.",
+          "start": 45.38,
+          "end": 45.6,
+          "probability": 0.99267578125
+        }
+      ]
+    },
+    {
+      "start": 48.48,
+      "end": 50.16,
+      "text": " Where you going, bro? I'm faster than you.",
+      "no_speech_prob": 0.34033203125,
+      "avg_logprob": -0.40479651024175245,
+      "words": [
+        {
+          "word": " Where",
+          "start": 48.48,
+          "end": 48.92,
+          "probability": 0.368408203125
+        },
+        {
+          "word": " you",
+          "start": 48.92,
+          "end": 49.04,
+          "probability": 0.84716796875
+        },
+        {
+          "word": " going,",
+          "start": 49.04,
+          "end": 49.3,
+          "probability": 0.94140625
+        },
+        {
+          "word": " bro?",
+          "start": 49.3,
+          "end": 49.5,
+          "probability": 0.89306640625
+        },
+        {
+          "word": " I'm",
+          "start": 49.5,
+          "end": 49.64,
+          "probability": 0.99658203125
+        },
+        {
+          "word": " faster",
+          "start": 49.64,
+          "end": 49.86,
+          "probability": 0.84375
+        },
+        {
+          "word": " than",
+          "start": 49.86,
+          "end": 50.02,
+          "probability": 0.99951171875
+        },
+        {
+          "word": " you.",
+          "start": 50.02,
+          "end": 50.16,
+          "probability": 1.0
+        }
+      ]
+    },
+    {
+      "start": 50.8,
+      "end": 51.82,
+      "text": " Arnold, come on.",
+      "no_speech_prob": 0.34033203125,
+      "avg_logprob": -0.40479651024175245,
+      "words": [
+        {
+          "word": " Arnold,",
+          "start": 50.8,
+          "end": 51.24,
+          "probability": 0.96923828125
+        },
+        {
+          "word": " come",
+          "start": 51.34,
+          "end": 51.54,
+          "probability": 0.9912109375
+        },
+        {
+          "word": " on.",
+          "start": 51.54,
+          "end": 51.82,
+          "probability": 0.99951171875
+        }
+      ]
+    },
+    {
+      "start": 51.92,
+      "end": 53.14,
+      "text": " Stay the fuck away.",
+      "no_speech_prob": 0.34033203125,
+      "avg_logprob": -0.40479651024175245,
+      "words": [
+        {
+          "word": " Stay",
+          "start": 51.92,
+          "end": 52.36,
+          "probability": 0.97705078125
+        },
+        {
+          "word": " the",
+          "start": 52.36,
+          "end": 52.58,
+          "probability": 0.99951171875
+        },
+        {
+          "word": " fuck",
+          "start": 52.58,
+          "end": 52.84,
+          "probability": 0.9951171875
+        },
+        {
+          "word": " away.",
+          "start": 52.84,
+          "end": 53.14,
+          "probability": 0.99951171875
+        }
+      ]
+    },
+    {
+      "start": 53.84,
+      "end": 54.76,
+      "text": " Come on, buddy.",
+      "no_speech_prob": 0.34033203125,
+      "avg_logprob": -0.40479651024175245,
+      "words": [
+        {
+          "word": " Come",
+          "start": 53.84,
+          "end": 54.28,
+          "probability": 0.99462890625
+        },
+        {
+          "word": " on,",
+          "start": 54.28,
+          "end": 54.56,
+          "probability": 1.0
+        },
+        {
+          "word": " buddy.",
+          "start": 54.56,
+          "end": 54.76,
+          "probability": 0.9990234375
+        }
+      ]
+    }
+  ]
+}

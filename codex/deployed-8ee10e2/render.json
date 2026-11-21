@@ -1,0 +1,388 @@
+{
+  "ok": true,
+  "duration": 30.5,
+  "words": 29,
+  "caption_coverage": {
+    "ok": false,
+    "uncovered": [
+      [
+        0.0,
+        0.7
+      ],
+      [
+        1.1,
+        1.75
+      ],
+      [
+        2.0,
+        2.3
+      ],
+      [
+        3.85,
+        3.9
+      ],
+      [
+        4.45,
+        5.8
+      ],
+      [
+        6.4,
+        6.9
+      ],
+      [
+        7.15,
+        7.3
+      ],
+      [
+        7.55,
+        8.45
+      ],
+      [
+        10.1,
+        11.85
+      ],
+      [
+        13.7,
+        13.75
+      ],
+      [
+        21.0,
+        21.1
+      ],
+      [
+        22.55,
+        23.9
+      ],
+      [
+        24.45,
+        25.6
+      ],
+      [
+        26.0,
+        26.25
+      ],
+      [
+        28.05,
+        28.25
+      ]
+    ],
+    "uncovered_seconds": 9.45,
+    "silent_cues": []
+  },
+  "beat_density": null,
+  "error": null,
+  "transcript_provider": "groq",
+  "source_range": [
+    0.0,
+    40.46
+  ],
+  "source_ranges": [
+    [
+      0.0,
+      2.35
+    ],
+    [
+      12.25,
+      40.46
+    ]
+  ],
+  "source_offsets": [
+    0.0,
+    2.2
+  ],
+  "applied_game_shots": [
+    {
+      "start": 0.0,
+      "end": 2.65,
+      "reason": "establish game before first response"
+    },
+    {
+      "start": 21.2,
+      "end": 26.34,
+      "reason": "sustained source action",
+      "motion": 49.32
+    }
+  ],
+  "editorial_edl": {
+    "clip_id": "kai",
+    "duration": 30.410000000000004,
+    "segments": [
+      {
+        "index": 0,
+        "start": 0.0,
+        "end": 30.410000000000004,
+        "duration": 30.410000000000004,
+        "transition_in": "cut",
+        "transition_duration": 0.0
+      }
+    ],
+    "zoom_keyframes": [],
+    "captions": {
+      "preset_id": "tiktok_animated",
+      "words_per_line": 3,
+      "position": "bottom"
+    },
+    "overlays": [],
+    "broll": [],
+    "sfx": [],
+    "sfx_events": [],
+    "audio": {
+      "music_mood": "none",
+      "music_volume": 0.0,
+      "ducking_db": -12.0
+    },
+    "color": {
+      "lut": "none"
+    },
+    "hook": {
+      "title_style": "statement",
+      "title_seconds": 30.410000000000004,
+      "title_persistent": true
+    },
+    "transition_discipline": [
+      {
+        "segment_index": 1,
+        "from": "pixelize",
+        "reason": "continuous_speech"
+      }
+    ],
+    "live_story": true,
+    "game_shots": [
+      {
+        "start": 0.0,
+        "end": 2.65,
+        "reason": "establish game before first response"
+      },
+      {
+        "start": 21.2,
+        "end": 26.34,
+        "reason": "sustained source action",
+        "motion": 49.32
+      }
+    ],
+    "reframe": {
+      "version": 1,
+      "delegate": "plain",
+      "shots": []
+    }
+  },
+  "audio_headroom": {
+    "before": -1.3,
+    "after": -1.3,
+    "gain_db": 0.0
+  },
+  "source_menu_intervals": [],
+  "decoder_word_counts": {
+    "groq": 29,
+    "offline-gpu": 30,
+    "groq-chunks": 29
+  },
+  "burned_words": [
+    {
+      "text": "Lapiz,",
+      "start": 2.3500000000000005,
+      "end": 2.87,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "whoa,",
+      "start": 2.87,
+      "end": 3.7,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "he",
+      "start": 8.82,
+      "end": 9.649999999999999,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "unlocks",
+      "start": 13.829999999999998,
+      "end": 14.149999999999999,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "like",
+      "start": 14.149999999999999,
+      "end": 14.29,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "another",
+      "start": 14.29,
+      "end": 14.669999999999998,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "dimension",
+      "start": 14.669999999999998,
+      "end": 15.25,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Damn",
+      "start": 15.25,
+      "end": 15.5,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "Damn",
+      "start": 21.169999999999998,
+      "end": 22.429,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "That",
+      "start": 26.34,
+      "end": 26.8,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "was",
+      "start": 28.330000000000002,
+      "end": 28.51,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "a",
+      "start": 28.51,
+      "end": 28.669999999999998,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "W,",
+      "start": 28.669999999999998,
+      "end": 29.109999999999996,
+      "confidence": 1.0,
+      "speaker": null
+    },
+    {
+      "text": "chat",
+      "start": 29.109999999999996,
+      "end": 29.41,
+      "confidence": 1.0,
+      "speaker": null
+    }
+  ],
+  "source_caption_coverage": {
+    "ok": false,
+    "uncovered": [
+      [
+        0.0,
+        0.4
+      ],
+      [
+        1.1,
+        1.3
+      ],
+      [
+        1.55,
+        1.7
+      ],
+      [
+        2.1,
+        4.05
+      ],
+      [
+        4.35,
+        4.55
+      ],
+      [
+        6.25,
+        7.5
+      ],
+      [
+        9.15,
+        11.6
+      ],
+      [
+        15.0,
+        15.65
+      ],
+      [
+        17.6,
+        18.4
+      ],
+      [
+        20.75,
+        21.25
+      ],
+      [
+        21.55,
+        21.9
+      ],
+      [
+        23.75,
+        23.8
+      ],
+      [
+        31.05,
+        31.15
+      ],
+      [
+        32.6,
+        33.75
+      ],
+      [
+        34.5,
+        35.5
+      ],
+      [
+        36.05,
+        36.3
+      ],
+      [
+        38.1,
+        38.3
+      ],
+      [
+        39.6,
+        39.6
+      ],
+      [
+        42.45,
+        43.3
+      ],
+      [
+        43.55,
+        44.1
+      ],
+      [
+        44.35,
+        45.2
+      ],
+      [
+        45.55,
+        45.75
+      ],
+      [
+        46.1,
+        46.4
+      ],
+      [
+        53.65,
+        53.65
+      ],
+      [
+        54.1,
+        54.35
+      ]
+    ],
+    "uncovered_seconds": 14.65,
+    "silent_cues": []
+  },
+  "expected_words_in_edit": 14
+}

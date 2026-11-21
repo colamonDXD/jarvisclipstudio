@@ -1,0 +1,54 @@
+From 1cdd8c64df75b9bb33b1f37ac31e228809bc5a0d Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Wed, 18 Nov 2026 20:28:27 +0530
+Subject: [PATCH 1/2] fix(render): gaming layout template is no longer skipped
+ on Auto clips
+
+The direct EDL render bypasses the vertical layout plan, which is where
+the facecam stack (layout_template) is composed. An Auto task whose
+reframe plan chose crop therefore lost the face-on-top layout the user
+picked (found on the V12 website test-drive: task layout_template
+facecam_red, clip rendered as a crop). A layout template now forces the
+intermediate path. Verified by a render of the same xQc source.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CHANGELOG.md               | 1 +
+ backend/src/video_utils.py | 5 +++++
+ 2 files changed, 6 insertions(+)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 50106b7..c891d0e 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,7 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-18
++- **Fixed:** Choosing the gaming "face on top, game below" layout on an Auto task now always gives that layout; before, some clips came out as a plain crop with the facecam floating over the game. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Changed:** The "The Bold Font" caption face is no longer bundled because its licence could not be verified. The MrBeast, Neon, Large Centre Pop and Bold Uppercase caption styles now use Montserrat Black, and drafts or styles that named the old font render in Montserrat Black automatically. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Improved:** When a clip shows a screen that matters (a stage screen announcing nominees, a monitor, a meme on a window), the screen is now shown readable on top with the person reacting below, instead of being cropped away or shown tiny. The rest of the clip keeps one calm full-frame layout, so the layout only changes when the screen comes on and goes off. Off until approved: set `SCREEN_SUBJECT=on` to try it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **Improved:** Clip picking can now see moments that happen in the picture, not only in the words: an award walk-up, a speech with burned-in subtitles, a celebration. These moments are offered to the AI picker, and a clip that ends just as one starts now keeps going until it finishes (within the 60-second limit). Off until approved: set `SELECTION_EVENTS=on` and `CLIP_CAP_KEEP_VISUAL_TAIL=on` to try it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+diff --git a/backend/src/video_utils.py b/backend/src/video_utils.py
+index c419b38..a066543 100644
+--- a/backend/src/video_utils.py
++++ b/backend/src/video_utils.py
+@@ -628,10 +628,15 @@ def create_optimized_clip(
+             # reactor inset the EDL graph cannot compose): the direct path
+             # is skipped so the intermediate renders and the plain layout
+             # stack below frames the clip instead.
++            # A gaming layout template (face on top, game below) is composed
++            # by the vertical layout plan on the intermediate, which the
++            # direct path skips: without this, an Auto task whose reframe
++            # plan chose crop silently lost the layout the user picked.
+             direct_edl = (
+                 bool(edl and edl.get("segments"))
+                 and (edl.get("reframe") or {}).get("delegate") != "plain"
+                 and reframe_format == "vertical"
++                and not layout_template
+                 and ffprobe_has_audio(video_path)
+             )
+             render_edl = edl
+-- 
+2.56.0.windows.2
+

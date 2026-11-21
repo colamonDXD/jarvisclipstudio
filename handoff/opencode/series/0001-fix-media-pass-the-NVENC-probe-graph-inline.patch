@@ -1,0 +1,292 @@
+From 52a9ee18c42df2febaae98f542cf3a657efce360 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 18:06:08 +0530
+Subject: [PATCH 1/3] fix(media): pass the NVENC probe graph inline
+
+FFmpeg 8-era builds removed -filter_complex_script, so the realistic probe
+failed with "Unrecognized option" and every render silently fell back to
+libx264. Production renders already pass the graph inline; the probe now
+does the same. The probe also validated its output after the temporary
+directory had been deleted, which made a real ffprobe fail even when the
+NVENC encode succeeded; validation now runs before cleanup.
+
+The fake shim identifies the probe by its nvenc_probe.mp4 output name
+instead of the removed option. On Windows, where CreateProcess only
+resolves .exe, it installs distlib launchers when pip is available so the
+shim tests exercise the shim rather than the real ffmpeg.
+
+Attribution: OpenCode (DeepSeek V4.1 Flash Free), lane-b/render-basics.
+---
+ CHANGELOG.md                                  |  1 +
+ backend/src/media/ffmpeg.py                   | 22 +++---
+ backend/tests/unit/fake_ffmpeg_shim.py        | 68 +++++++++++++++++--
+ .../tests/unit/test_nvenc_probe_realistic.py  | 22 +++---
+ 4 files changed, 90 insertions(+), 23 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index eabd77e..33cd605 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,7 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-17
++- **Fixed:** Renders now use the graphics-card encoder again on newer FFmpeg builds. The startup check handed FFmpeg a filter-graph file option that FFmpeg 8-era builds have removed, so the check failed with "Unrecognized option 'filter_complex_script'" and every render quietly fell back to the processor. The check now passes its graph inline, exactly as production renders already do, and it validates the encoded file before deleting its temporary folder (it previously validated after the folder was gone, which failed on a real FFmpeg even when the encode had worked).
+ - **Improved:** Talking videos now get roughly twice the stock B-roll, placed where it helps. Finance, podcast, education, vlog, travel and true-crime clips plan cutaways at 3–4.5 per minute instead of about one per clip, and each cutaway is chosen from what the speaker is actually saying ("interest rates" shows a central bank, not a random building). Words used as names ("Tim Cook", "Steve Jobs") and passing mentions no longer trigger footage. While the speaker says "look at this" the original picture stays on screen, and during a live reaction (laughing, "wow!") the stock shot appears as a framed picture-in-picture so the face stays visible. A stock search that fails because of a rejected key is now recorded as a provider error instead of "nothing found". Set `BROLL_CADENCE=legacy` to keep the previous behaviour.
+ - **Improved:** Streamer reaction picking now also reads what the streamer says — exclamations like "no, no, no", "what!" or "bro" in English, Spanish and romanised Hindi — and checks the facecam mouth so in-game character dialogue is less likely to be mistaken for the streamer. Words alone never make a clip: they must line up with a facecam or voice reaction.
+ - **Fixed:** The second NVIDIA fallback for AI clip selection pointed at DeepSeek V4.1 Flash, which NVIDIA has retired (a live check on 17 November got "gone"), so that fallback step always failed. It now uses Nemotron 3.5 Super, which the same check confirmed working on the free NVIDIA tier. The fallback order is unchanged and no paid model was added.
+diff --git a/backend/src/media/ffmpeg.py b/backend/src/media/ffmpeg.py
+index f01c45a..ea3a4cc 100644
+--- a/backend/src/media/ffmpeg.py
++++ b/backend/src/media/ffmpeg.py
+@@ -657,31 +657,35 @@ def check_nvenc_realistic() -> bool:
+             tmp_dir = Path(tmp)
+             ass_path = tmp_dir / "probe.ass"
+             ass_path.write_text(_NVENC_PROBE_ASS, encoding="utf-8")
+-            graph_path = tmp_dir / "probe_graph.txt"
+-            graph_path.write_text(
+-                _nvenc_probe_graph(ass_path, fonts_dir), encoding="utf-8"
+-            )
+             output_path = tmp_dir / "nvenc_probe.mp4"
++            # FFmpeg 8-era builds removed -filter_complex_script, so a
++            # script-based probe failed with "Unrecognized option" and every
++            # render fell back to the CPU encoder. Production already passes
++            # the graph inline, and the probe graph is short: do the same.
+             command = [
+                 "ffmpeg", "-y", "-hide_banner", "-loglevel", "info",
+                 "-f", "lavfi", "-i",
+                 f"testsrc2=size=1920x1080:rate={OUTPUT_FPS}:duration=6",
+                 "-f", "lavfi", "-i",
+                 "sine=frequency=440:sample_rate=48000:duration=6",
+-                "-filter_complex_script", str(graph_path),
++                "-filter_complex", _nvenc_probe_graph(ass_path, fonts_dir),
+                 "-map", "[finalv]", "-map", "[aout]",
+                 *build_nvenc_edl_encode_args(),
+                 "-c:a", "aac", "-b:a", AUDIO_BITRATE, "-ar", "48000",
+                 "-shortest", "-movflags", "+faststart", str(output_path),
+             ]
+             result = run_ffmpeg_command(command, timeout=NVENC_PROBE_TIMEOUT_SEC)
++            if result.returncode != 0:
++                _record_nvenc_probe_error("realistic encode", _result_stderr(result))
++                return False
++            # Validate before the temporary directory is cleaned up. The
++            # validation used to run after the ``with`` block had already
++            # deleted the MP4, so the probe always failed here on a real
++            # ffprobe even when the encode itself succeeded.
++            return _validate_nvenc_probe_output(output_path)
+     except (OSError, subprocess.TimeoutExpired) as exc:
+         _record_nvenc_probe_error("realistic encode", f"ffmpeg could not run: {exc}")
+         return False
+-    if result.returncode != 0:
+-        _record_nvenc_probe_error("realistic encode", _result_stderr(result))
+-        return False
+-    return _validate_nvenc_probe_output(output_path)
+ 
+ 
+ @lru_cache(maxsize=1)
+diff --git a/backend/tests/unit/fake_ffmpeg_shim.py b/backend/tests/unit/fake_ffmpeg_shim.py
+index a61cbe5..df820a0 100644
+--- a/backend/tests/unit/fake_ffmpeg_shim.py
++++ b/backend/tests/unit/fake_ffmpeg_shim.py
+@@ -7,6 +7,14 @@ The shim appends every invocation (full argv, JSON) to ``calls.log`` in
+ the state dir and reads its orders from the ``scenario`` file there, so a
+ test can also change the scenario mid-flight.
+ 
++On Windows a bare name is resolved by CreateProcess, which only appends
++``.exe`` -- a shebang script named ``ffmpeg`` is never found, so those
++tests used the real ffmpeg by accident. When pip's vendored distlib is
++available the installer also writes ``ffmpeg.exe``/``ffprobe.exe``
++launchers around the same source, and the tests exercise the shim as
++written. Without pip the scripts are still installed and the suite keeps
++its pre-existing Windows behaviour.
++
+ Scenarios:
+ - ``ok``: everything succeeds; ffprobe reports a valid probe clip.
+ - ``no_listing``: the encoder list does not mention h264_nvenc.
+@@ -24,8 +32,12 @@ Scenarios:
+   filter-graph error that names no encoder.
+ """
+ 
++import io
+ import json
+ import os
++import platform
++import sys
++import zipfile
+ from pathlib import Path
+ 
+ SHIM_SOURCE = r"""#!/usr/bin/env python3
+@@ -39,6 +51,8 @@ with (state / "calls.log").open("a") as fh:
+     fh.write(json.dumps(sys.argv) + "\n")
+ scenario = (state / "scenario").read_text().strip()
+ tool = Path(sys.argv[0]).name
++if tool.lower().endswith(".exe"):
++    tool = tool[:-4]
+ args = sys.argv[1:]
+ 
+ if tool == "ffprobe":
+@@ -75,8 +89,10 @@ if any("color=size=256x256" in arg for arg in args):
+         sys.exit(1)
+     sys.exit(0)
+ 
+-if "-filter_complex_script" in args:
+-    # The realistic probe encode.
++if any(arg.endswith("nvenc_probe.mp4") for arg in args):
++    # The realistic probe encode. The probe now passes its graph inline
++    # (-filter_complex, as production does) instead of with
++    # -filter_complex_script, which FFmpeg 8-era builds removed.
+     if scenario == "realistic_fail":
+         print("Cannot load libnvidia-encode.so.1", file=sys.stderr)
+         sys.exit(1)
+@@ -101,6 +117,33 @@ sys.exit(0)
+ """
+ 
+ 
++def _windows_launcher(bin_dir: Path, name: str) -> None:
++    """Add a bare-name-resolvable ``<name>.exe`` for the same shim.
++
++    CreateProcess appends only ``.exe``, so a shebang file called
++    ``ffmpeg`` is invisible to ``subprocess.run(["ffmpeg", ...])`` on
++    Windows. pip's vendored distlib ships the console-script launcher and
++    the zipapp format: launcher + shebang + zip(__main__.py). If pip is
++    not installed this is a no-op and the suite behaves as it did before.
++    """
++    try:
++        from pip._vendor import distlib
++    except ImportError:
++        return
++    machine = platform.machine().lower()
++    launcher_name = "t64-arm.exe" if machine in ("arm64", "aarch64") else "t64.exe"
++    launcher = Path(distlib.__file__).parent / launcher_name
++    if not launcher.is_file():
++        return
++    payload = io.BytesIO()
++    with zipfile.ZipFile(payload, "w") as archive:
++        archive.writestr("__main__.py", SHIM_SOURCE)
++    shebang = ("#!" + sys.executable + "\n").encode()
++    (bin_dir / f"{name}.exe").write_bytes(
++        launcher.read_bytes() + shebang + payload.getvalue()
++    )
++
++
+ def install_fake_ffmpeg(tmp_path: Path, scenario: str, monkeypatch) -> Path:
+     """Write the shim, put it first on PATH, and return the state dir."""
+     bin_dir = tmp_path / "fakebin"
+@@ -112,11 +155,19 @@ def install_fake_ffmpeg(tmp_path: Path, scenario: str, monkeypatch) -> Path:
+         script = bin_dir / name
+         script.write_text(SHIM_SOURCE)
+         script.chmod(0o755)
++        if os.name == "nt":
++            _windows_launcher(bin_dir, name)
+     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+     monkeypatch.setenv("FAKE_FFMPEG_STATE_DIR", str(state_dir))
+     return state_dir
+ 
+ 
++def tool_name(call: list) -> str:
++    """The shim program a logged call ran (``ffmpeg``, not ``ffmpeg.exe``)."""
++    name = Path(call[0]).name
++    return name[:-4] if name.lower().endswith(".exe") else name
++
++
+ def set_scenario(state_dir: Path, scenario: str) -> None:
+     (Path(state_dir) / "scenario").write_text(scenario)
+ 
+@@ -130,7 +181,16 @@ def read_calls(state_dir: Path) -> list:
+ 
+ 
+ def ffmpeg_calls(state_dir: Path) -> list:
+-    return [c for c in read_calls(state_dir) if Path(c[0]).name == "ffmpeg"]
++    return [c for c in read_calls(state_dir) if tool_name(c) == "ffmpeg"]
++
++
++def is_probe_call(call: list) -> bool:
++    """The realistic NVENC probe, identified by its output name.
++
++    The probe passes its filter graph inline now, so an output-name match
++    is the only stable marker; production renders never use this name.
++    """
++    return bool(call) and Path(call[-1]).name == "nvenc_probe.mp4"
+ 
+ 
+ def render_calls(state_dir: Path) -> list:
+@@ -138,5 +198,5 @@ def render_calls(state_dir: Path) -> list:
+     return [
+         c
+         for c in ffmpeg_calls(state_dir)
+-        if "-filter_complex" in c and "-filter_complex_script" not in c
++        if "-filter_complex" in c and not is_probe_call(c)
+     ]
+diff --git a/backend/tests/unit/test_nvenc_probe_realistic.py b/backend/tests/unit/test_nvenc_probe_realistic.py
+index 10aa05f..580de87 100644
+--- a/backend/tests/unit/test_nvenc_probe_realistic.py
++++ b/backend/tests/unit/test_nvenc_probe_realistic.py
+@@ -20,6 +20,7 @@ from fake_ffmpeg_shim import (
+     ffmpeg_calls,
+     install_fake_ffmpeg,
+     read_calls,
++    tool_name,
+ )
+ 
+ 
+@@ -63,12 +64,17 @@ def test_probe_passes_and_uses_the_production_encoder_args(tmp_path, monkeypatch
+     assert ffmpeg_module.last_nvenc_probe_error() is None
+ 
+     calls = ffmpeg_calls(state)
+-    realistic = next(c for c in calls if "-filter_complex_script" in c)
++    realistic = next(c for c in calls if c[-1].endswith("nvenc_probe.mp4"))
+     # The probe validates the exact arguments the EDL path renders with.
+     _assert_subsequence(realistic, ffmpeg_module.build_nvenc_edl_encode_args())
+-    assert realistic[-1].endswith("nvenc_probe.mp4")
++    # The graph goes inline: FFmpeg 8-era builds no longer accept
++    # -filter_complex_script, which made the probe fail and forced CPU.
++    assert "-filter_complex_script" not in realistic
++    graph = realistic[realistic.index("-filter_complex") + 1]
++    assert "xfade=transition=fade" in graph
++    assert "subtitles=filename=" in graph
+     # And the output was validated with ffprobe, not taken on faith.
+-    assert any(Path(c[0]).name == "ffprobe" for c in read_calls(state))
++    assert any(tool_name(c) == "ffprobe" for c in read_calls(state))
+ 
+ 
+ def test_probe_stops_at_the_listing_and_records_why(tmp_path, monkeypatch):
+@@ -90,7 +96,7 @@ def test_probe_stops_at_the_one_frame_prefilter(tmp_path, monkeypatch):
+     error = ffmpeg_module.last_nvenc_probe_error()
+     assert error is not None and "one-frame" in error
+     calls = ffmpeg_calls(state)
+-    assert not any("-filter_complex_script" in c for c in calls)
++    assert not any(c[-1].endswith("nvenc_probe.mp4") for c in calls)
+ 
+ 
+ def test_probe_realistic_failure_records_the_driver_stderr(tmp_path, monkeypatch):
+@@ -133,7 +139,7 @@ def test_realistic_stage_itself_is_not_cached(tmp_path, monkeypatch):
+     assert ffmpeg_module.check_nvenc_realistic() is True
+     assert ffmpeg_module.check_nvenc_realistic() is True
+ 
+-    realistic = [c for c in ffmpeg_calls(state) if "-filter_complex_script" in c]
++    realistic = [c for c in ffmpeg_calls(state) if c[-1].endswith("nvenc_probe.mp4")]
+     assert len(realistic) == 2
+ 
+ 
+@@ -164,17 +170,13 @@ def test_probe_graph_cpu_twin_renders_for_real(tmp_path):
+     ass_path = tmp_path / "probe.ass"
+     ass_path.write_text(ffmpeg_module._NVENC_PROBE_ASS, encoding="utf-8")
+     fonts_dir = ffmpeg_module.FONTS_DIR if ffmpeg_module.FONTS_DIR.is_dir() else None
+-    graph_path = tmp_path / "probe_graph.txt"
+-    graph_path.write_text(
+-        ffmpeg_module._nvenc_probe_graph(ass_path, fonts_dir), encoding="utf-8"
+-    )
+     output_path = tmp_path / "twin.mp4"
+     command = [
+         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+         "-f", "lavfi", "-i",
+         f"testsrc2=size=1920x1080:rate={ffmpeg_module.OUTPUT_FPS}:duration=6",
+         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=6",
+-        "-filter_complex_script", str(graph_path),
++        "-filter_complex", ffmpeg_module._nvenc_probe_graph(ass_path, fonts_dir),
+         "-map", "[finalv]", "-map", "[aout]",
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+         "-pix_fmt", "yuv420p", "-profile:v", "high",
+-- 
+2.56.0.windows.2
+

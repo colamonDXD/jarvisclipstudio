@@ -1,0 +1,12 @@
+{
+ "id": "japan_selection",
+ "kind": "selection",
+ "source_id": "japan-restaurants-2026-11-09",
+ "gold_ids_covered": [
+  "g1",
+  "g3",
+  "g4"
+ ],
+ "transcript": "[14:50 - 14:57] That's pretty good avocado. Wow. That's pretty solid. That's perfect. Oh, you know, it's crazy about that avocado. So that was from an avocado tree\n[14:58 - 14:59] that was\n[15:00 - 15:01] 700 years old. No\n[15:04 - 15:05] What's our there? It's ass?\n[15:08 - 15:09] It's not a good chicken. You want to try the fish?\n[22:04 - 22:07] I'm talking like $400 per sandwich, like USD dollars?\n[22:07 - 22:08] Nine yen.\n[22:08 - 22:10] No, per sandwich.\n[22:10 - 22:11] So how big is the sandwich?\n[22:11 - 22:13] Am I talking one bite or am I talking like,\n[22:13 - 22:15] I gotta really shoot that bitch?\n[22:15 - 22:17] Like, come on, that's not what it is, in the cap.\n[22:17 - 22:19] It's like, it's like 400 for like three of them.\n[22:19 - 22:20] So 400 for like this right here?\n[22:21 - 22:21] Yeah, but there's like three.\n[22:21 - 22:23] So is that three for you or three for me or?\n[22:23 - 22:25] I'm eating like eight, I'm eating like eight of these.\n[22:25 - 22:27] Oh, I didn't mention there's gold.\n[22:28 - 22:28] Real gold.\n[40:39 - 40:39] Kobe sandwich.\n[40:40 - 40:41] Itte ga shikari!\n[40:42 - 40:44] Itte ga shikari, itte ga shikari!\n[40:46 - 40:47] There's a little gold in your water.\n[40:48 - 40:50] So this is the dry ace and this is the one...\n[40:50 - 40:51] Which one do you want to try first, this one?\n[40:51 - 40:52] Yeah, look at that.\n[40:52 - 40:52] Yeah.\n[40:53 - 40:55] I mean, take a look at that right there.\n[40:55 - 40:56] I mean, look, it's like...\n[40:56 - 40:57] It's talking to me.\n[40:57 - 40:58] It says eat, bro.\n[41:01 - 41:03] Bro, that's like real, like just like...\n[41:03 - 41:04] You just can enjoy it, man.\n[41:05 - 41:06] Like, oh, I need some gold.\n[41:07 - 41:08] Like, look at me.\n[41:08 - 41:08] I put some...",
+ "notes": "Agreement is scored ONLY on the covered golds (g1, g3, g4) and their traps: those are the ranges with real transcript evidence in-tree. g2/g5 have no cached transcript (gold_set.json marks them transcript_grounded=false) and are excluded rather than invented. Transcript lines formatted by the app's format_transcript_for_analysis from the range transcript cached at ~/workspace/qm-source/source.transcript_cache.json (faster-whisper utterances, times in ms)."
+}

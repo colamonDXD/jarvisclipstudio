@@ -1,0 +1,167 @@
+{
+  "footage": "D:\\SnipNova-Dev\\claude-code\\test-footage\\phase2_src",
+  "samples_per_source": 12,
+  "sources": [
+    {
+      "source": "TkHlhgTutFs.mp4",
+      "label": "bottom burned subtitles",
+      "expected_detected": true,
+      "detected": true,
+      "matches_expectation": true,
+      "band": {
+        "y": 217,
+        "h": 36,
+        "confidence": 0.908,
+        "frames_with_text": 10,
+        "frames_checked": 12
+      },
+      "seconds": 13.544,
+      "samples": 12,
+      "times": [
+        11.496,
+        34.487,
+        57.479,
+        80.471,
+        103.462,
+        126.454,
+        149.446,
+        172.438,
+        195.429,
+        218.421,
+        241.412,
+        264.404
+      ],
+      "video": {
+        "fps": 30.0,
+        "frames": 8277,
+        "duration": 275.9,
+        "width": 854,
+        "height": 480
+      },
+      "debug": {
+        "saved": true,
+        "when": 149.44583333333333,
+        "candidates": 3,
+        "path": "D:\\SnipNova-Dev\\opencode\\tools\\burned-captions-proof\\out\\TkHlhgTutFs.png"
+      }
+    },
+    {
+      "source": "dwZK6iQlyEw.mp4",
+      "label": "bottom burned subtitles",
+      "expected_detected": true,
+      "detected": true,
+      "matches_expectation": true,
+      "band": {
+        "y": 439,
+        "h": 23,
+        "confidence": 0.908,
+        "frames_with_text": 10,
+        "frames_checked": 12
+      },
+      "seconds": 10.271,
+      "samples": 12,
+      "times": [
+        25.53,
+        76.59,
+        127.65,
+        178.71,
+        229.77,
+        280.83,
+        331.89,
+        382.95,
+        434.01,
+        485.07,
+        536.13,
+        587.19
+      ],
+      "video": {
+        "fps": 25.0,
+        "frames": 15318,
+        "duration": 612.72,
+        "width": 854,
+        "height": 480
+      },
+      "debug": {
+        "saved": true,
+        "when": 331.89000000000004,
+        "candidates": 3,
+        "path": "D:\\SnipNova-Dev\\opencode\\tools\\burned-captions-proof\\out\\dwZK6iQlyEw.png"
+      }
+    },
+    {
+      "source": "1oXjtK5Nsjw.mp4",
+      "label": "static panels",
+      "expected_detected": false,
+      "detected": false,
+      "matches_expectation": true,
+      "band": null,
+      "seconds": 1.698,
+      "samples": 12,
+      "times": [
+        30.0,
+        90.0,
+        150.0,
+        210.0,
+        270.0,
+        330.0,
+        390.0,
+        450.0,
+        510.0,
+        570.0,
+        630.0,
+        690.0
+      ],
+      "video": {
+        "fps": 30.0,
+        "frames": 21600,
+        "duration": 720.0,
+        "width": 640,
+        "height": 360
+      },
+      "debug": {
+        "saved": true,
+        "when": 390.0,
+        "candidates": 0,
+        "path": "D:\\SnipNova-Dev\\opencode\\tools\\burned-captions-proof\\out\\1oXjtK5Nsjw.png"
+      }
+    },
+    {
+      "source": "D3cAyFmhi_M.mp4",
+      "label": "vlog",
+      "expected_detected": false,
+      "detected": false,
+      "matches_expectation": true,
+      "band": null,
+      "seconds": 10.34,
+      "samples": 12,
+      "times": [
+        41.89,
+        125.671,
+        209.451,
+        293.232,
+        377.012,
+        460.793,
+        544.574,
+        628.354,
+        712.135,
+        795.915,
+        879.696,
+        963.476
+      ],
+      "video": {
+        "fps": 30.0,
+        "frames": 30161,
+        "duration": 1005.3666666666667,
+        "width": 854,
+        "height": 480
+      },
+      "debug": {
+        "saved": true,
+        "when": 544.5736111111111,
+        "candidates": 0,
+        "path": "D:\\SnipNova-Dev\\opencode\\tools\\burned-captions-proof\\out\\D3cAyFmhi_M.png"
+      }
+    }
+  ],
+  "missing": []
+}

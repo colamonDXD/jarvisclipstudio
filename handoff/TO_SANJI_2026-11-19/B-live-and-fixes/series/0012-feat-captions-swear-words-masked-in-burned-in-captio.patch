@@ -1,0 +1,238 @@
+From 0a7448da893cc0604afc777caf417e65e2a15ab3 Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 17:09:01 +0530
+Subject: [PATCH 12/13] feat(captions): swear words masked in burned-in
+ captions and titles; 30 s minimum clip (owner rules)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/live/session.py                   |  4 +-
+ backend/src/live/vod.py                       |  4 +-
+ backend/src/media/captions.py                 |  6 +-
+ backend/src/media/profanity.py                | 57 +++++++++++++++++++
+ backend/src/video_utils.py                    |  9 +--
+ .../tests/unit/test_clip_min_and_layout.py    |  5 +-
+ backend/tests/unit/test_live_vod.py           |  2 +-
+ backend/tests/unit/test_profanity_mask.py     | 39 +++++++++++++
+ 8 files changed, 114 insertions(+), 12 deletions(-)
+ create mode 100644 backend/src/media/profanity.py
+ create mode 100644 backend/tests/unit/test_profanity_mask.py
+
+diff --git a/backend/src/live/session.py b/backend/src/live/session.py
+index 312b95e..afa7779 100644
+--- a/backend/src/live/session.py
++++ b/backend/src/live/session.py
+@@ -37,8 +37,8 @@ logger = logging.getLogger(__name__)
+ 
+ # Clip length (Luffy: "minimum 22 to 30 sec, not 15"). The analyst waits
+ # until MAX_LEN of footage after a flag is on disk before deciding its window.
+-MIN_LEN = float(os.getenv("LIVE_CLIP_MIN_SEC", "22"))
+-MAX_LEN = max(MIN_LEN, float(os.getenv("LIVE_CLIP_MAX_SEC", "30")))
++MIN_LEN = float(os.getenv("LIVE_CLIP_MIN_SEC", "30"))   # owner: 30 s strict minimum
++MAX_LEN = max(MIN_LEN, float(os.getenv("LIVE_CLIP_MAX_SEC", "45")))
+ LEAD_MAX = 6.0
+ 
+ 
+diff --git a/backend/src/live/vod.py b/backend/src/live/vod.py
+index 5372518..3bbc72d 100644
+--- a/backend/src/live/vod.py
++++ b/backend/src/live/vod.py
+@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
+ 
+ CHUNK_SEC = 1800          # audio scan chunk (30 min)
+ CANDIDATE_WINDOW = (-20.0, 40.0)  # transcript around a flag
+-MIN_LEN, MAX_LEN = 22.0, 45.0
++MIN_LEN, MAX_LEN = 30.0, 60.0   # owner: 30 s strict minimum
+ MIN_GAP = 90.0            # seconds between two picked moments
+ 
+ 
+@@ -337,7 +337,7 @@ def signal_pick(candidates: List[Dict[str, Any]], voiced: Sequence[float], count
+     out = []
+     for c in candidates[:count]:
+         start, stop, _ = speech_window(voiced, c["onset"], float(c.get("end", c["onset"])),
+-                                       lead_max=6.0, min_len=MIN_LEN, max_len=30.0)
++                                       lead_max=6.0, min_len=MIN_LEN, max_len=45.0)
+         out.append({**c, "start": start, "end": stop, "title": None, "why": "strongest voice reaction", "virality": None})
+     return out
+ 
+diff --git a/backend/src/media/captions.py b/backend/src/media/captions.py
+index add39b9..0f04b27 100644
+--- a/backend/src/media/captions.py
++++ b/backend/src/media/captions.py
+@@ -377,8 +377,12 @@ def hex_to_ass_color(
+ 
+ 
+ def escape_ass_text(value: str) -> str:
++    # Every caption word and hook title is written through here: swear words
++    # are masked first ("FUCK YOU!" -> "F*** YOU!", media/profanity.py).
++    from .profanity import mask_profanity
++
+     return (
+-        str(value)
++        mask_profanity(str(value))
+         .replace("\\", "\\\\")
+         .replace("{", "\\{")
+         .replace("}", "\\}")
+diff --git a/backend/src/media/profanity.py b/backend/src/media/profanity.py
+new file mode 100644
+index 0000000..381f3ae
+--- /dev/null
++++ b/backend/src/media/profanity.py
+@@ -0,0 +1,57 @@
++"""Swear words masked in everything burned into a clip (owner rule, 2026-11-19:
++"strictly put *** for cuss words like fuck you").
++
++``mask_profanity("FUCK YOU!")`` -> ``"F*** YOU!"``: the first letter stays so
++the line still reads naturally, the rest becomes asterisks. Matching is
++case-insensitive and catches the usual forms (fucking, motherfucker, shitty,
++bitches...). It runs in the ASS escape every caption and hook title goes
++through, and on AI-written titles.
++
++``CAPTION_PROFANITY_FILTER`` (default on) is the switch;
++``CAPTION_PROFANITY_EXTRA`` adds comma-separated words.
++"""
++from __future__ import annotations
++
++import os
++import re
++from functools import lru_cache
++
++# Stems: a word matches when it starts with a stem (plus letters after it),
++# or equals a whole-word entry. Kept short and unambiguous: "ass" only as a
++# whole word or in compounds, so "class" / "pass" / "assassin" stay.
++STEMS = (
++    "fuck", "fuk", "fck", "motherfuck", "shit", "bullshit", "bitch", "cunt", "nigg",
++    "whore", "slut", "pussy", "bastard", "asshole", "dumbass", "jackass", "dickhead",
++    "fag", "wank", "twat",
++)
++# Only on their own (as prefixes they hit cocktail, prickly, Dickens, retardant).
++WHOLE = ("ass", "asses", "arse", "damn", "goddamn", "dammit", "wtf", "stfu", "lmfao", "mf", "mfs", "bs",
++         "piss", "pissed", "dick", "dicks", "cock", "cocks", "prick", "pricks", "retard", "retarded", "retards")
++
++
++def profanity_filter_enabled() -> bool:
++    return os.getenv("CAPTION_PROFANITY_FILTER", "on").strip().lower() not in ("off", "0", "false", "no")
++
++
++@lru_cache(maxsize=4)
++def _pattern(extra: str) -> re.Pattern:
++    stems = list(STEMS) + [w.strip().lower() for w in extra.split(",") if w.strip()]
++    stem_part = "|".join(sorted((re.escape(s) for s in stems), key=len, reverse=True))
++    whole_part = "|".join(re.escape(w) for w in WHOLE)
++    # A word starting with a stem (fucking, bitches) or exactly a whole-word entry.
++    return re.compile(rf"\b(?:(?:{stem_part})[a-z']*|(?:{whole_part}))\b", re.IGNORECASE)
++
++
++def _mask(match: re.Match) -> str:
++    word = match.group(0)
++    letters = [i for i, ch in enumerate(word) if ch.isalpha()]
++    if len(letters) <= 1:
++        return word
++    keep = letters[0]
++    return "".join(ch if (i <= keep or not ch.isalpha()) else "*" for i, ch in enumerate(word))
++
++
++def mask_profanity(text: str) -> str:
++    if not text or not profanity_filter_enabled():
++        return text
++    return _pattern(os.getenv("CAPTION_PROFANITY_EXTRA", "")).sub(_mask, text)
+diff --git a/backend/src/video_utils.py b/backend/src/video_utils.py
+index 27d032d..0d535b9 100644
+--- a/backend/src/video_utils.py
++++ b/backend/src/video_utils.py
+@@ -449,12 +449,13 @@ def _stamp_render_timings(
+ 
+ 
+ def min_clip_seconds() -> float:
+-    """CLIP_MIN_SECONDS (default 17): no rendered clip is shorter (owner,
+-    2026-11-18: "clip should be 17 seconds minimum"; a 3 s clip shipped)."""
++    """CLIP_MIN_SECONDS (default 30): no rendered clip is shorter (owner:
++    17 s on 2026-11-18 after a 3 s clip shipped, then "minimum clip should
++    be 30 sec strict rule" on 2026-11-19)."""
+     try:
+-        return max(0.0, float(os.getenv("CLIP_MIN_SECONDS", "17")))
++        return max(0.0, float(os.getenv("CLIP_MIN_SECONDS", "30")))
+     except ValueError:
+-        return 17.0
++        return 30.0
+ 
+ 
+ def enforce_min_clip_duration(
+diff --git a/backend/tests/unit/test_clip_min_and_layout.py b/backend/tests/unit/test_clip_min_and_layout.py
+index 6fb7c8e..1acece8 100644
+--- a/backend/tests/unit/test_clip_min_and_layout.py
++++ b/backend/tests/unit/test_clip_min_and_layout.py
+@@ -32,9 +32,10 @@ def test_long_clips_and_a_zero_floor_are_untouched(monkeypatch):
+     assert video_utils.enforce_min_clip_duration(Path("x.mp4"), [(0.0, 3.0)]) == [(0.0, 3.0)]
+ 
+ 
+-def test_default_floor_is_17(monkeypatch):
++def test_default_floor_is_30(monkeypatch):
++    # Owner change 2026-11-19: "minimum clip should be 30 sec strict rule".
+     monkeypatch.delenv("CLIP_MIN_SECONDS", raising=False)
+-    assert video_utils.min_clip_seconds() == 17.0
++    assert video_utils.min_clip_seconds() == 30.0
+ 
+ 
+ def _edl():
+diff --git a/backend/tests/unit/test_live_vod.py b/backend/tests/unit/test_live_vod.py
+index 53c153b..5b190b6 100644
+--- a/backend/tests/unit/test_live_vod.py
++++ b/backend/tests/unit/test_live_vod.py
+@@ -62,7 +62,7 @@ def test_without_a_model_the_strongest_signals_are_used(monkeypatch):
+     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+     assert V.llm_pick([{"id": 1, "onset": 10.0}], 1) is None
+     picks = V.signal_pick([{"id": 1, "onset": 100.0, "end": 101.0}], [0.8] * 300, 1)
+-    assert 22.0 <= picks[0]["end"] - picks[0]["start"] <= 30.0 and picks[0]["start"] <= 100.0
++    assert V.MIN_LEN <= picks[0]["end"] - picks[0]["start"] <= 45.0 and picks[0]["start"] <= 100.0
+ 
+ 
+ def test_session_runs_audio_first_and_downloads_only_the_picks(monkeypatch, tmp_path):
+diff --git a/backend/tests/unit/test_profanity_mask.py b/backend/tests/unit/test_profanity_mask.py
+new file mode 100644
+index 0000000..aa76d6b
+--- /dev/null
++++ b/backend/tests/unit/test_profanity_mask.py
+@@ -0,0 +1,39 @@
++"""Swear words are masked in burned-in captions and titles (owner rule)."""
++from __future__ import annotations
++
++import pytest
++
++from src.media.captions import escape_ass_text
++from src.media.profanity import mask_profanity
++
++
++@pytest.mark.parametrize("raw,masked", [
++    ("FUCK YOU!", "F*** YOU!"),
++    ("what the fuck", "what the f***"),
++    ("Fucking hell bro", "F****** hell bro"),
++    ("motherfucker", "m***********"),
++    ("this is shit, bitches", "this is s***, b******"),
++    ("you dumbass", "you d******"),
++    ("kick his ass", "kick his a**"),
++    ("damn", "d***"),
++])
++def test_swear_words_keep_only_their_first_letter(raw, masked):
++    assert mask_profanity(raw) == masked
++
++
++@pytest.mark.parametrize("clean", ["class assignment", "pass the assassin", "hello world", "shiitake", "cocktail"])
++def test_ordinary_words_are_untouched(clean):
++    assert mask_profanity(clean) == clean
++
++
++def test_every_burned_in_caption_goes_through_the_mask():
++    assert escape_ass_text("FUCK YOU!") == "F*** YOU!"
++    assert escape_ass_text("{x}") == r"\{x\}"
++
++
++def test_switch_and_extra_words(monkeypatch):
++    monkeypatch.setenv("CAPTION_PROFANITY_FILTER", "off")
++    assert mask_profanity("FUCK") == "FUCK"
++    monkeypatch.setenv("CAPTION_PROFANITY_FILTER", "on")
++    monkeypatch.setenv("CAPTION_PROFANITY_EXTRA", "bruh")
++    assert mask_profanity("bruh moment") == "b*** moment"
+-- 
+2.56.0.windows.2
+

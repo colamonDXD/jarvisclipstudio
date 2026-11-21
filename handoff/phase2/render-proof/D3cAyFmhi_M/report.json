@@ -1,0 +1,226 @@
+{
+ "video": "D:\\SnipNova-Dev\\claude-code\\test-footage\\phase2_src\\D3cAyFmhi_M.mp4",
+ "niche": "vlog_lifestyle",
+ "llm": "ollama:qwen3:8b",
+ "stock_broll": false,
+ "timings": {
+  "transcribe_s": 142.2,
+  "select_s": 0.0
+ },
+ "clips": [
+  {
+   "clip": "clip1.mp4",
+   "render_ok": true,
+   "render_s": 53.2,
+   "source_start": 249.98,
+   "source_end": 307.98,
+   "duration": 58.0,
+   "selection": {
+    "virality": null,
+    "hook_type": "fixed-window",
+    "hook_title": null,
+    "reasoning": "Pipeline check only: sentence-aligned window, not an AI selection."
+   },
+   "decisions": {
+    "segments": 19,
+    "transitions": [
+     "smoothleft"
+    ],
+    "zooms": 1,
+    "broll_planned": 2,
+    "broll_inserted": 0,
+    "broll": [
+     {
+      "at": 23.68,
+      "said": "waking up",
+      "searched": "alarm clock morning",
+      "layout": "cutaway",
+      "inserted": false,
+      "why_not": "no_provider_configured"
+     },
+     {
+      "at": 2.0,
+      "said": "sleep",
+      "searched": "person sleeping in bed",
+      "layout": "pip",
+      "inserted": false,
+      "why_not": "no_provider_configured"
+     }
+    ],
+    "broll_dropped": [
+     "face_return"
+    ],
+    "music": "upbeat",
+    "captions": "tiktok_animated"
+   },
+   "qc": {
+    "ffprobe": [
+     {
+      "codec_type": "video",
+      "width": 1080,
+      "height": 1920
+     },
+     {
+      "codec_type": "audio",
+      "width": null,
+      "height": null
+     }
+    ],
+    "output_seconds": 57.7,
+    "loudness_lufs": -15.5,
+    "black_seconds": 0,
+    "boundary": {
+     "ok": false,
+     "starts_on_sentence": true,
+     "ends_on_sentence": false,
+     "cuts_a_word": true,
+     "first_words": "when I don't sleep, so I",
+     "last_words": "That's me. I think it looks"
+    },
+    "layout": {
+     "broll_applied": false
+    },
+    "reframe_plan": {
+     "attached": true,
+     "delegate": null,
+     "shots": [
+      [
+       "single",
+       "confident_subject"
+      ],
+      [
+       "fit",
+       "no_subject"
+      ],
+      [
+       "fit",
+       "no_subject"
+      ],
+      [
+       "single",
+       "confident_subject"
+      ],
+      [
+       "single",
+       "confident_subject"
+      ],
+      [
+       "single",
+       "face_blur_avoided"
+      ],
+      [
+       "single",
+       "face_blur_avoided"
+      ],
+      [
+       "single",
+       "confident_subject"
+      ]
+     ]
+    }
+   },
+   "frames": [
+    "clip1_8pct.png",
+    "clip1_50pct.png",
+    "clip1_90pct.png"
+   ]
+  },
+  {
+   "clip": "clip2.mp4",
+   "render_ok": true,
+   "render_s": 32.3,
+   "source_start": 617.75,
+   "source_end": 663.89,
+   "duration": 46.1,
+   "selection": {
+    "virality": null,
+    "hook_type": "fixed-window",
+    "hook_title": null,
+    "reasoning": "Pipeline check only: sentence-aligned window, not an AI selection."
+   },
+   "decisions": {
+    "segments": 15,
+    "transitions": [],
+    "zooms": 1,
+    "broll_planned": 1,
+    "broll_inserted": 0,
+    "broll": [
+     {
+      "at": 7.78,
+      "said": "designers",
+      "searched": "artist painting canvas",
+      "layout": "cutaway",
+      "inserted": false,
+      "why_not": "no_provider_configured"
+     }
+    ],
+    "broll_dropped": [],
+    "music": "upbeat",
+    "captions": "tiktok_animated"
+   },
+   "qc": {
+    "ffprobe": [
+     {
+      "codec_type": "video",
+      "width": 1080,
+      "height": 1920
+     },
+     {
+      "codec_type": "audio",
+      "width": null,
+      "height": null
+     }
+    ],
+    "output_seconds": 46.13,
+    "loudness_lufs": -14.6,
+    "black_seconds": 0,
+    "boundary": {
+     "ok": true,
+     "starts_on_sentence": true,
+     "ends_on_sentence": true,
+     "cuts_a_word": false,
+     "first_words": "After lunch, I actually came across",
+     "last_words": "how I found these two spots."
+    },
+    "layout": {
+     "broll_applied": false
+    },
+    "reframe_plan": {
+     "attached": true,
+     "delegate": null,
+     "shots": [
+      [
+       "split",
+       "interaction_exceeds_crop"
+      ],
+      [
+       "fit",
+       "no_subject"
+      ],
+      [
+       "single",
+       "face_blur_avoided"
+      ],
+      [
+       "fit",
+       "no_subject"
+      ],
+      [
+       "fit",
+       "text_heavy"
+      ],
+      [
+       "fit",
+       "no_subject"
+      ]
+     ]
+    }
+   },
+   "frames": [
+    "clip2_8pct.png",
+    "clip2_50pct.png",
+    "clip2_90pct.png"
+   ]
+  }
+ ]
+}

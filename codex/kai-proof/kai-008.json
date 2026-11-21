@@ -1,0 +1,46 @@
+{
+  "ok": true,
+  "duration": 57.52,
+  "words": 50,
+  "caption_coverage": {
+    "ok": false,
+    "uncovered": [
+      [
+        2.95,
+        14.35
+      ],
+      [
+        14.8,
+        25.55
+      ],
+      [
+        26.85,
+        28.35
+      ],
+      [
+        28.7,
+        32.85
+      ],
+      [
+        33.25,
+        36.4
+      ],
+      [
+        41.9,
+        43.15
+      ],
+      [
+        50.55,
+        50.9
+      ],
+      [
+        55.05,
+        57.5
+      ]
+    ],
+    "uncovered_seconds": 35.0,
+    "silent_cues": []
+  },
+  "beat_density": null,
+  "error": null
+}

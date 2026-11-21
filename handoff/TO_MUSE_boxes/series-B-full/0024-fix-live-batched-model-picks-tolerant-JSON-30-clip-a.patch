@@ -1,0 +1,127 @@
+From 11af911dd4720fb097f56510465fb8685bae9469 Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Thu, 19 Nov 2026 21:20:16 +0530
+Subject: [PATCH 24/27] fix(live): batched model picks + tolerant JSON (30-clip
+ answer broke), skip stream intro, facecam required for face-on-top, loud SFX
+ on every cut
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/live/vod.py          | 59 ++++++++++++++++++++++++++++----
+ backend/src/media/hook_finish.py |  2 +-
+ 2 files changed, 53 insertions(+), 8 deletions(-)
+
+diff --git a/backend/src/live/vod.py b/backend/src/live/vod.py
+index d1be8c9..8b08b8f 100644
+--- a/backend/src/live/vod.py
++++ b/backend/src/live/vod.py
+@@ -305,6 +305,50 @@ fewer than {count} if fewer match, or an empty array if none does.
+ """
+ 
+ 
++def _parse_picks(text: str) -> Optional[List[Dict[str, Any]]]:
++    """The model's JSON array; when it is cut off or broken, every complete
++    {...} object inside it is still used (a 30-clip answer broke at char 3625)."""
++    match = re.search(r"\[.*\]", text, re.S)
++    if match:
++        try:
++            data = json.loads(match.group(0))
++            if isinstance(data, list):
++                return data
++        except ValueError:
++            pass
++    objects = []
++    for chunk in re.findall(r"\{[^{}]*\}", text, re.S):
++        try:
++            obj = json.loads(chunk)
++        except ValueError:
++            continue
++        if isinstance(obj, dict) and "id" in obj:
++            objects.append(obj)
++    return objects or None
++
++
++def llm_pick_batched(candidates: List[Dict[str, Any]], count: int, request: Optional[str] = None,
++                     creator: Optional[str] = None, batch: int = 15) -> Optional[List[Dict[str, Any]]]:
++    """Ask the model in batches of ``batch`` candidates (one big prompt for 90
++    moments came back truncated), each for its share of the clips, then keep
++    the best overall."""
++    if len(candidates) <= batch:
++        return llm_pick(candidates, count, request=request, creator=creator)
++    picks: List[Dict[str, Any]] = []
++    answered = False
++    groups = [candidates[i:i + batch] for i in range(0, len(candidates), batch)]
++    share = max(1, -(-count // len(groups)) + 1)
++    for group in groups:
++        got = llm_pick(group, share, request=request, creator=creator)
++        if got is not None:
++            answered = True
++            picks.extend(got)
++    if not answered:
++        return None
++    picks.sort(key=lambda p: -(p.get("virality") or 0))
++    return picks[:count]
++
++
+ def _emoji_set() -> List[str]:
+     try:
+         from ..media.edl_render import ASSETS_DIR
+@@ -333,11 +377,9 @@ def llm_pick(candidates: List[Dict[str, Any]], count: int,
+     text = _chat(prompt)
+     if text is None:
+         return None
+-    try:
+-        match = re.search(r"\[.*\]", text, re.S)
+-        picks = json.loads(match.group(0)) if match else []
+-    except Exception as exc:
+-        logger.warning("Clip picking model gave no usable answer (%s); using the strongest signals", exc)
++    picks = _parse_picks(text)
++    if picks is None:
++        logger.warning("Clip picking model gave no usable answer; using the strongest signals")
+         return None
+     by_id = {c["id"]: c for c in candidates}
+     out = []
+@@ -645,6 +687,9 @@ class VodSession:
+         if not candidates:
+             candidates = find_candidates(series, info["heatmap"],
+                                          want * (VodPlan.candidates_per_clip + (2 if request else 0)))
++        # The first minutes of a stream are the intro screen / "starting soon".
++        skip = float(os.getenv("LIVE_VOD_SKIP_INTRO_SEC", "300")) if duration > 3600 else 0.0
++        candidates = [c for c in candidates if c["onset"] >= skip]
+         if not candidates:
+             raise RuntimeError("no reactions found in the audio")
+         for i, c in enumerate(candidates):
+@@ -663,7 +708,7 @@ class VodSession:
+         self._progress(f'Picking the moments that match "{request}"' if request
+                        else "Picking the clips most likely to go viral", duration)
+         creator = (getattr(s, "credit", None) or "").strip().lstrip("@").replace("credit", "").strip() or None
+-        picks = llm_pick(candidates, want, request=request, creator=creator)
++        picks = llm_pick_batched(candidates, want, request=request, creator=creator)
+         if picks is None:
+             picks = signal_pick(candidates, series.get("voiced_frac") or [], want)
+         if not picks:
+@@ -692,7 +737,7 @@ class VodSession:
+                 continue
+             if s.layout_template:
+                 ok, why = creator_on_camera(section, pick["onset"] - pick["start"], min_ratio=0.0)
+-                if not ok and "no facecam" not in why:
++                if not ok:  # face-on-top needs the streamer's camera (intro screens, cutscenes)
+                     self._emit({**moment, "status": "rejected", "reason": f"[{stamp}] {why}"})
+                     continue
+             self._emit({**moment, "status": "queued", "preview_path": str(section)})
+diff --git a/backend/src/media/hook_finish.py b/backend/src/media/hook_finish.py
+index 6916848..842f008 100644
+--- a/backend/src/media/hook_finish.py
++++ b/backend/src/media/hook_finish.py
+@@ -273,7 +273,7 @@ def finish_hook(clip_path: Path, edl: Optional[Dict[str, Any]] = None, seed: str
+             hits = (times or [at])[:4]  # a whoosh on each of the first cuts
+             split = f"[{audio_index}:a]asplit={len(hits)}" + "".join(f"[w{i}]" for i in range(len(hits)))
+             delayed = ";".join(f"[w{i}]adelay={max(0, int((h - 0.15) * 1000))}|{max(0, int((h - 0.15) * 1000))},"
+-                               f"volume={0.9 if i == 0 else 0.6}[d{i}]" for i, h in enumerate(hits))
++                               f"volume=0.95[d{i}]" for i, h in enumerate(hits))
+             mix = "[0:a]" + "".join(f"[d{i}]" for i in range(len(hits)))
+             cmd += ["-i", str(whoosh), "-filter_complex",
+                     f"{graph};{split};{delayed};{mix}amix=inputs={len(hits) + 1}:duration=first:normalize=0[a]",
+-- 
+2.56.0.windows.2
+

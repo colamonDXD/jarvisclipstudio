@@ -1,0 +1,522 @@
+From a033fea3c4bf25ddd4c5e7aaebe8f1eb66981131 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 11:25:35 +0530
+Subject: [PATCH 02/18] feat(edl): cut, zoom and transition only where the
+ footage gives a reason
+
+Root cause of clip1.mp4 (handoff/quality-clip1/ROOT_CAUSE.md): build_edl
+sliced clips into equal intervals by cuts-per-minute (Gaming: 21 slices in
+58 s), snapped them to the beats of the music bed the app adds, punched in
+every 12 s ("rehook"), pushed in over the opening and flashed on the bed.
+
+auto_director/content_cuts.py, behind EDL_CONTENT_CUTS (default OFF until
+Luffy approves the corrected render, per Sanji Q15):
+- segments start only at a source shot change (clip["scene_cuts"], from
+  detect_clip_scene_cuts: scene > 0.25 over the clip window; 0.4 found none
+  of the real cuts in the clip1 venue footage, which score 0.28-0.36) or a
+  sentence end; cuts-per-minute is a ceiling; min shot 2.5 s;
+- no interval or automatic opening zooms; an energy punch needs speech
+  under it, max one per 8 s, not in the first/last second;
+- the signature transition only on a real shot change;
+- a beat grid that follows the added music bed is not applied (no snapping
+  or flashing to decoration); source-audio grids still apply;
+- every decision recorded under edl["edit_restraint"].
+video_service and the phase-2 harness pass the clip's scene cuts.
+
+Evidence (same 141-199 s window): handoff/quality-clip1/step1/ (render,
+before/after, cut list with reasons, ffprobe, render log).
+Tests: test_content_cuts 7/7. With the switch off the existing edit suites
+are unchanged; 8 render tests fail identically on 996d074 (Windows drawtext
+paths, NVENC hatch) and test_pipeline_edl_honours_classifier_and_fallback
+fails on 996d074 too once assets/music is populated (Auto bed applies).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                              |   1 +
+ backend/src/auto_director/content_cuts.py | 215 ++++++++++++++++++++++
+ backend/src/auto_director/edl.py          |  49 ++++-
+ backend/src/services/video_service.py     |  17 ++
+ backend/tests/unit/test_content_cuts.py   |  95 ++++++++++
+ tools/phase2/auto_edit.py                 |  10 +-
+ 6 files changed, 385 insertions(+), 2 deletions(-)
+ create mode 100644 backend/src/auto_director/content_cuts.py
+ create mode 100644 backend/tests/unit/test_content_cuts.py
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 49c4efb..45d3e20 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,7 @@ What changed in SnipNova for people using the product. Newest dates are first.
+ Add a line here when a pull request changes something a user can see. Use **New**, **Improved**, **Fixed**, or **Under the hood**, describe the change in plain language, and link the pull request. Skip internal-only work, or fold it into one **Under the hood** line. Do not include customer names, email addresses, user IDs, or anything else private.
+ 
+ ## 2026-11-18
++- **Improved:** Auto edits can now cut only where the footage gives a reason: a real camera change or the end of a sentence. Before, clips were sliced into equal pieces, with zooms every few seconds and cuts snapped to the background music. Zooms now need speech behind them, and decorative transitions only land on real camera changes. Off until approved: set `EDL_CONTENT_CUTS=on` to try it. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **New:** Auto clips no longer all sound the same once the extended library is installed (one command, checked file by file). Each music mood then has a library of free tracks, and each sound-effect cue has many variants. Every clip gets its own pick, and keeps it when it is re-rendered. New moods are available too: epic, suspense, emotional, cinematic and world. Everything shipped is public domain (CC0) or our own original, and the packaging check refuses any file without a recorded licence. Set `ASSET_VARIANTS=off` for the old one-file-per-mood behaviour. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **New:** Meme & comedy clips use a meme sound pack of our own: deep booms, boing, rimshot, sad trombone, slide whistle and more. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+ - **New:** B-roll works without any stock API key. When Pixabay and Coverr are not set up, or find nothing, Auto clips use public-domain photos from Openverse as slow-zoom cutaways. They pass the same relevance checks. Set `BROLL_OPENVERSE=off` to turn this off. ([#TBD](https://github.com/FujiwaraChoki/supoclip/pulls))
+diff --git a/backend/src/auto_director/content_cuts.py b/backend/src/auto_director/content_cuts.py
+new file mode 100644
+index 0000000..c9c49ec
+--- /dev/null
++++ b/backend/src/auto_director/content_cuts.py
+@@ -0,0 +1,215 @@
++"""Editorial restraint: cut, zoom and transition only where the footage says so.
++
++Root cause behind clip1.mp4 (handoff/quality-clip1/ROOT_CAUSE.md): build_edl
++sliced every clip into EQUAL intervals sized by the profile's cuts-per-minute
++target (58 s of Gaming became 21 slices, one every 2.8 s), snapped them to
++the beats of the music bed the app itself added, punched in every 12 s
++("rehook"), pushed in over the opening and flashed on the bed's hits, none
++of it tied to anything on screen or in the speech.
++
++With ``EDL_CONTENT_CUTS=on`` (default off until the owner approves the
++corrected render) build_edl asks this module instead:
++
++- **Segments** start only at a real reason: a source shot change
++  (``clip["scene_cuts"]``, clip-relative seconds) or the end of a spoken
++  sentence. The profile's cuts-per-minute becomes a CEILING; shots shorter
++  than the profile's ``min_shot_sec`` (at least 2.5 s) are never made. A
++  clip with no reason to cut is one segment. Every join is a plain cut.
++- **Zooms**: no interval punches and no automatic opening push-in. An
++  energy-peak punch survives only when the peak falls on speech, at most one
++  per 8 s and never in the first or last second. Speaker-change punches
++  (diarisation evidence) and a profile's declared Ken Burns drift stay.
++- **Signature transition**: kept only on a join that is a real shot change.
++- **Music-bed beat grid / flashes**: not applied. Snapping cuts to (or
++  flashing on) a bed the app added is decoration, not editing. Grids built
++  from the SOURCE audio (music-artist profiles) still apply.
++
++Every decision is recorded on the EDL under ``edit_restraint`` so a render
++can be audited cut by cut. Unset / ``off`` keeps the quota edit.
++"""
++from __future__ import annotations
++
++import os
++from typing import Any, Iterable, Optional
++
++MIN_SHOT_FLOOR_SEC = 2.5
++PUNCH_MIN_GAP_SEC = 8.0
++PUNCH_EDGE_GUARD_SEC = 1.0
++SCENE_SNAP_SEC = 0.25
++_SENTENCE_END = (".", "?", "!")
++
++
++def content_cuts_enabled() -> bool:
++    # Default OFF until Luffy approves the corrected render (Sanji, Q15:
++    # quality fixes ship switched off, enabled after the owner watches
++    # the proof). The test page and harness turn it on explicitly.
++    return os.getenv("EDL_CONTENT_CUTS", "off").strip().lower() in ("on", "1", "true", "yes")
++
++
++def _word_text(word: dict) -> str:
++    return str(word.get("text") or word.get("word") or "").strip()
++
++
++def _word_times(word: dict) -> tuple[float, float]:
++    return float(word.get("start", 0) or 0), float(word.get("end", 0) or 0)
++
++
++def sentence_boundaries(words: list[dict], clip_duration: float) -> list[float]:
++    """Mid-gap times after words that end a sentence (clip-relative)."""
++    times: list[float] = []
++    for index, word in enumerate(words):
++        if not _word_text(word).endswith(_SENTENCE_END):
++            continue
++        _, end = _word_times(word)
++        if index + 1 < len(words):
++            next_start, _ = _word_times(words[index + 1])
++            at = (end + next_start) / 2 if next_start > end else end
++        else:
++            at = end
++        if 0 < at < clip_duration:
++            times.append(round(at, 3))
++    return times
++
++
++def plan_content_segments(
++    profile: dict,
++    clip_duration: float,
++    transcript_words: list[dict],
++    scene_cuts: Optional[Iterable[float]] = None,
++) -> tuple[list[dict], list[dict]]:
++    """Segments whose every boundary has a reason; plus the decision notes."""
++    pacing = profile.get("pacing", {}) or {}
++    min_shot = max(MIN_SHOT_FLOOR_SEC, float(pacing.get("min_shot_sec", 0) or 0))
++    target = pacing.get("target_cuts_per_min", [5, 8]) or [5, 8]
++    ceiling_per_min = float(max(target)) if isinstance(target, (list, tuple)) else float(target)
++    max_cuts = max(0, int(clip_duration / 60.0 * ceiling_per_min))
++
++    cuts = sorted(
++        float(c) for c in (scene_cuts or [])
++        if min_shot <= float(c) <= clip_duration - min_shot
++    )
++    candidates: list[tuple[float, str]] = [(c, "scene_cut") for c in cuts]
++    for at in sorted(set(sentence_boundaries(transcript_words, clip_duration))):
++        if min_shot <= at <= clip_duration - min_shot and all(
++            abs(at - c) > SCENE_SNAP_SEC for c in cuts
++        ):
++            candidates.append((at, "sentence_end"))
++    # Shot changes win over sentence ends; then earliest first.
++    candidates.sort(key=lambda item: (item[1] != "scene_cut", item[0]))
++
++    chosen: list[tuple[float, str]] = []
++    dropped: list[dict] = []
++    for at, reason in candidates:
++        if len(chosen) >= max_cuts:
++            dropped.append({"at_sec": round(at, 3), "reason": reason, "why": "cut ceiling"})
++            continue
++        edges = [0.0, clip_duration] + [c for c, _ in chosen]
++        if any(abs(at - e) < min_shot for e in edges):
++            dropped.append({"at_sec": round(at, 3), "reason": reason, "why": "shorter than min shot"})
++            continue
++        chosen.append((at, reason))
++    chosen.sort()
++
++    bounds = [(0.0, "clip_start")] + chosen + [(clip_duration, "clip_end")]
++    segments: list[dict] = []
++    for index in range(len(bounds) - 1):
++        start, reason = bounds[index]
++        end = bounds[index + 1][0]
++        segments.append({
++            "index": index,
++            "start": start,
++            "end": end,
++            "duration": end - start,
++            "transition_in": "none" if index == 0 else "cut",
++            "transition_duration": 0,
++            "boundary_reason": reason,
++        })
++    notes = [{"at_sec": round(at, 3), "reason": reason} for at, reason in chosen]
++    return segments, notes + [{"dropped": dropped}] if dropped else notes
++
++
++def _on_speech(t: float, words: list[dict], pad: float = 0.15) -> bool:
++    for word in words:
++        start, end = _word_times(word)
++        if start - pad <= t <= end + pad:
++            return True
++    return False
++
++
++def restrain_zooms(
++    keyframes: list[dict], transcript_words: list[dict], clip_duration: float
++) -> tuple[list[dict], list[dict]]:
++    """Keep only zooms with evidence; return (kept, dropped-with-reason)."""
++    kept: list[dict] = []
++    dropped: list[dict] = []
++    last_punch = float("-inf")
++    for kf in sorted(keyframes, key=lambda k: float(k.get("time", k.get("start", 0)) or 0)):
++        kind = kf.get("type")
++        if kind == "ken_burns":
++            kept.append(kf)
++            continue
++        if kind != "punch_in":
++            kept.append(kf)
++            continue
++        t = float(kf.get("time", 0) or 0)
++        trigger = str(kf.get("trigger") or "")
++        if trigger == "rehook":
++            dropped.append({"time": round(t, 3), "why": "interval punch (no emphasis)"})
++            continue
++        if t < PUNCH_EDGE_GUARD_SEC or t > clip_duration - PUNCH_EDGE_GUARD_SEC:
++            dropped.append({"time": round(t, 3), "why": "inside first/last second"})
++            continue
++        if trigger != "speaker_change" and not _on_speech(t, transcript_words):
++            dropped.append({"time": round(t, 3), "why": "loudness peak without speech"})
++            continue
++        if t - last_punch < PUNCH_MIN_GAP_SEC:
++            dropped.append({"time": round(t, 3), "why": f"within {PUNCH_MIN_GAP_SEC:.0f}s of another punch"})
++            continue
++        kept.append(kf)
++        last_punch = t
++    return kept, dropped
++
++
++def signature_on_shot_change(segments: list[dict], index: int) -> bool:
++    """A signature transition may land only on a real source shot change."""
++    if 0 <= index < len(segments):
++        return segments[index].get("boundary_reason") == "scene_cut"
++    return False
++
++
++def decorative_grid(beat_cfg: Optional[dict]) -> bool:
++    """True when the profile's beat grid follows the added music bed."""
++    return bool(beat_cfg) and str(beat_cfg.get("source", "music")) == "music"
++
++
++def detect_clip_scene_cuts(
++    video_path: Any, start: float, duration: float, threshold: float = 0.25
++) -> list[float]:
++    """Source shot changes inside [start, start+duration], clip-relative.
++
++    Same scene score as ``visual_moments.detect_scene_cut_times`` (ffmpeg
++    ``select=gt(scene,t)``), decoded at 320 px wide over the clip window
++    only. Threshold 0.25, not that module's 0.4: in the clip1 source (dark
++    venue footage) the real camera cuts score 0.28-0.36 and 0.4 found none. Any failure returns [] (the planner then cuts on sentences alone).
++    """
++    import re
++    import subprocess
++
++    try:
++        result = subprocess.run(
++            [
++                "ffmpeg", "-hide_banner", "-ss", f"{max(0.0, float(start)):.3f}",
++                "-t", f"{max(0.0, float(duration)):.3f}", "-i", str(video_path),
++                "-an", "-filter:v", f"scale=320:-2,select='gt(scene,{threshold})',showinfo",
++                "-f", "null", "-",
++            ],
++            capture_output=True, text=True, timeout=300,
++        )
++    except Exception:
++        return []
++    if result.returncode != 0:
++        return []
++    return sorted(
++        round(float(t), 3) for t in re.findall(r"pts_time:([0-9.]+)", result.stderr)
++        if 0 < float(t) < float(duration)
++    )
+diff --git a/backend/src/auto_director/edl.py b/backend/src/auto_director/edl.py
+index d890bea..5e39e98 100644
+--- a/backend/src/auto_director/edl.py
++++ b/backend/src/auto_director/edl.py
+@@ -1540,6 +1540,20 @@ def build_edl(
+     color = profile.get("color", {})
+     hook = profile.get("hook", {})
+ 
++    # Editorial restraint (auto_director.content_cuts): cut only at a
++    # source shot change or a sentence end, the cuts-per-minute target
++    # being a ceiling. EDL_CONTENT_CUTS=off restores the quota slicing.
++    from .content_cuts import (
++        content_cuts_enabled,
++        decorative_grid,
++        plan_content_segments,
++        restrain_zooms,
++        signature_on_shot_change,
++    )
++
++    content_mode = content_cuts_enabled()
++    restraint: dict[str, Any] = {}
++
+     # Build segments based on target cuts per minute
+     target_cuts = pacing.get("target_cuts_per_min", [5, 8])
+     avg_cuts = sum(target_cuts) / 2
+@@ -1569,9 +1583,22 @@ def build_edl(
+             "transition_duration": trans_dur
+         })
+ 
++    if content_mode:
++        segments, cut_notes = plan_content_segments(
++            profile, clip_duration, transcript_words, clip.get("scene_cuts")
++        )
++        restraint["cuts"] = cut_notes
++        restraint["segments"] = len(segments)
++
+     # Beat-grid consumption (opt-in profiles only): snap boundaries to
+     # beats, anchor the drop, quantise the payoff, assign speed ramps.
+     beat_cfg = profile_beat_config(profile)
++    if content_mode and decorative_grid(beat_cfg):
++        # The grid follows the music bed the app adds: snapping cuts,
++        # punching and flashing to it edits to decoration, not footage.
++        restraint["beat_grid"] = "skipped: grid follows the added music bed"
++        beat_cfg = None
++        beat_grid = None
+     beat_info = None
+     if beat_cfg is not None and beat_grid is not None:
+         segments, beat_info = consume_beat_grid(
+@@ -1597,6 +1624,17 @@ def build_edl(
+     signature_info = apply_signature_transition(
+         segments, profile, clip_duration
+     )
++    if (
++        content_mode
++        and signature_info is not None
++        and not signature_on_shot_change(segments, int(signature_info["segment_index"]))
++    ):
++        index = int(signature_info["segment_index"])
++        name, duration = pre_signature_joins[index]
++        segments[index]["transition_in"] = name
++        segments[index]["transition_duration"] = duration
++        restraint["signature"] = "suppressed: not on a source shot change"
++        signature_info = None
+ 
+     # Transition discipline for the signature: a slide planted in the
+     # middle of a sentence is the exact defect Luffy flagged, so the
+@@ -1683,7 +1721,14 @@ def build_edl(
+     # of every Auto clip (see _apply_opening_ramp). Runs after the
+     # establishing filter; the ramp is a ken-burns keyframe, which the
+     # guard exempts by design, and Plain strips all keyframes anyway.
+-    zoom_keyframes = _apply_opening_ramp(zoom_keyframes, clip_duration)
++    if not content_mode or (profile.get("zooms") or {}).get("opening_ramp"):
++        zoom_keyframes = _apply_opening_ramp(zoom_keyframes, clip_duration)
++    if content_mode:
++        zoom_keyframes, zooms_dropped = restrain_zooms(
++            zoom_keyframes, transcript_words, clip_duration
++        )
++        if zooms_dropped:
++            restraint["zooms_dropped"] = zooms_dropped
+ 
+     # Persistent hook title (user request, 2026-11-09): the title stays on
+     # screen for the WHOLE clip by default. A shorter on-screen duration
+@@ -1791,6 +1836,8 @@ def build_edl(
+         ]
+         if points:
+             edl["audio_flashes"] = {**flash_plan, "points": points}
++    if content_mode:
++        edl["edit_restraint"] = restraint
+     look_override = captions.get("look_override")
+     if isinstance(look_override, dict) and look_override:
+         # Reference Style caption look: a partial caption template the
+diff --git a/backend/src/services/video_service.py b/backend/src/services/video_service.py
+index 118a3f5..7ca3708 100644
+--- a/backend/src/services/video_service.py
++++ b/backend/src/services/video_service.py
+@@ -1344,7 +1344,24 @@ class VideoService:
+             # Off means build_edl plans zero cues, so the stock
+             # resolution below never runs for this task either.
+             from ..auto_director.broll_setting import resolve_broll_enabled
++            from ..auto_director.content_cuts import (
++                content_cuts_enabled,
++                detect_clip_scene_cuts,
++            )
+ 
++            if content_cuts_enabled() and video_path is not None and "scene_cuts" not in clip:
++                # Real source shot changes: the only visual reason the
++                # content-cut planner accepts for a cut (sentence ends
++                # are the other). A failure just means sentence cuts.
++                try:
++                    clip = {
++                        **clip,
++                        "scene_cuts": detect_clip_scene_cuts(
++                            video_path, start_seconds, clip_duration,
++                        ),
++                    }
++                except Exception:
++                    logger.warning("Scene-cut detection failed; cutting on sentences only")
+             edl = build_edl(
+                 clip,
+                 words,
+diff --git a/backend/tests/unit/test_content_cuts.py b/backend/tests/unit/test_content_cuts.py
+new file mode 100644
+index 0000000..ae8707a
+--- /dev/null
++++ b/backend/tests/unit/test_content_cuts.py
+@@ -0,0 +1,95 @@
++"""Editorial restraint in build_edl (auto_director.content_cuts, EDL_CONTENT_CUTS).
++
++Pinned against the clip1.mp4 failure: Gaming sliced 58 s into 21 equal
++pieces, punched in every 12 s, pushed in over the opening and snapped cuts
++to the added music bed (handoff/quality-clip1/ROOT_CAUSE.md).
++"""
++from __future__ import annotations
++
++import pytest
++
++from src.auto_director import content_cuts as cc
++from src.auto_director.edl import build_edl, load_profile
++
++
++def _words(*items):
++    return [{"text": t, "word": t, "start": s, "end": e} for t, s, e in items]
++
++
++@pytest.fixture(autouse=True)
++def _on(monkeypatch):
++    monkeypatch.setenv("EDL_CONTENT_CUTS", "on")
++
++
++def test_no_reason_means_one_segment():
++    profile = load_profile("gaming")
++    edl = build_edl({"id": "c", "start": 0, "end": 58, "duration": 58.0}, [], profile, [])
++    assert len(edl["segments"]) == 1
++    assert edl["segments"][0]["transition_in"] == "none"
++
++
++def test_cuts_land_only_on_shot_changes_and_sentence_ends():
++    profile = load_profile("gaming")
++    words = _words(("Hello", 1.0, 1.4), ("there.", 1.5, 2.0), ("Next", 9.0, 9.4), ("bit.", 9.5, 10.0),
++                   ("And", 20.0, 20.3), ("more", 20.4, 20.8))
++    clip = {"id": "c", "start": 0, "end": 30, "duration": 30.0, "scene_cuts": [14.0, 14.1]}
++    edl = build_edl(clip, words, profile, [])
++    reasons = [(round(s["start"], 2), s["boundary_reason"]) for s in edl["segments"]]
++    # "there." ends at 2.0 and speech resumes at 9.0: the cut sits mid-pause (5.5).
++    # "bit." -> mid-pause 15.0 is within the minimum shot of the 14.0 shot change: dropped.
++    # 14.1 reports the same shot change and is dropped the same way.
++    assert reasons == [(0.0, "clip_start"), (5.5, "sentence_end"), (14.0, "scene_cut")]
++    assert all(s["transition_in"] in ("none", "cut") for s in edl["segments"])
++    assert edl["edit_restraint"]["segments"] == len(edl["segments"])
++
++
++def test_cuts_per_minute_is_a_ceiling():
++    profile = {"pacing": {"target_cuts_per_min": [2, 4], "min_shot_sec": 1.0}}
++    cuts = [5.0 * k for k in range(1, 12)]  # 11 shot changes in 60 s
++    segments, _ = cc.plan_content_segments(profile, 60.0, [], cuts)
++    assert len(segments) - 1 == 4
++
++
++def test_zoom_restraint():
++    words = _words(("big", 3.0, 3.4), ("news", 3.5, 3.9), ("wow", 6.0, 6.4), ("yes", 20.0, 20.5))
++    keyframes = [
++        {"type": "punch_in", "trigger": "rehook", "time": 12.0},
++        {"type": "punch_in", "trigger": "action", "time": 3.2},
++        {"type": "punch_in", "trigger": "action", "time": 6.1},   # < 8 s after 3.2
++        {"type": "punch_in", "trigger": "action", "time": 15.0},  # crowd peak, no speech
++        {"type": "punch_in", "trigger": "action", "time": 20.2},
++        {"type": "punch_in", "trigger": "action", "time": 0.4},   # first second
++        {"type": "ken_burns", "start": 0.0, "end": 30.0},
++    ]
++    kept, dropped = cc.restrain_zooms(keyframes, words, 30.0)
++    assert sorted(k.get("time", -1) for k in kept) == [-1, 3.2, 20.2]
++    whys = {d["time"]: d["why"] for d in dropped}
++    assert whys[12.0].startswith("interval punch")
++    assert whys[15.0] == "loudness peak without speech"
++    assert "8s" in whys[6.1]
++    assert whys[0.4] == "inside first/last second"
++
++
++def test_gaming_clip_has_no_interval_or_opening_zoom_and_no_bed_grid():
++    profile = load_profile("gaming")
++    grid = {"tempo_bpm": 120, "beats": [i * 0.5 for i in range(120)], "energy_curve": {}}
++    edl = build_edl({"id": "c", "start": 0, "end": 58, "duration": 58.0}, [], profile, [], beat_grid=grid)
++    assert not [z for z in edl["zoom_keyframes"] if z.get("type") == "punch_in"]
++    assert not [z for z in edl["zoom_keyframes"] if z.get("trigger") == "opening_punch"]
++    assert "beat_grid" not in edl
++    assert edl["edit_restraint"]["beat_grid"].startswith("skipped")
++
++
++def test_signature_only_on_a_shot_change():
++    segments = [{"boundary_reason": "clip_start"}, {"boundary_reason": "sentence_end"},
++                {"boundary_reason": "scene_cut"}]
++    assert not cc.signature_on_shot_change(segments, 1)
++    assert cc.signature_on_shot_change(segments, 2)
++
++
++def test_off_switch_restores_quota_slicing(monkeypatch):
++    monkeypatch.setenv("EDL_CONTENT_CUTS", "off")
++    profile = load_profile("gaming")
++    edl = build_edl({"id": "c", "start": 0, "end": 58, "duration": 58.0}, [], profile, [])
++    assert len(edl["segments"]) == 21
++    assert "edit_restraint" not in edl
+diff --git a/tools/phase2/auto_edit.py b/tools/phase2/auto_edit.py
+index 8fd57a5..1353c92 100644
+--- a/tools/phase2/auto_edit.py
++++ b/tools/phase2/auto_edit.py
+@@ -166,7 +166,15 @@ async def main_async(a) -> int:
+         rel = [{"word": w["text"], "text": w["text"], "start": round(w["start"] - start, 3), "end": round(w["end"] - start, 3)}
+                for w in words if start <= w["start"] < end]
+         plain = a.template == "plain"
+-        edl = E.build_edl({"start": start, "end": end, "duration": dur}, rel, profile, energy_peaks=[],
++        clip_info = {"id": f"clip{i + 1}", "start": start, "end": end, "duration": dur}
++        # The harness renders with editorial restraint on (EDL_CONTENT_CUTS
++        # defaults off in the product until the owner approves it).
++        os.environ.setdefault("EDL_CONTENT_CUTS", "on")
++        from src.auto_director.content_cuts import content_cuts_enabled, detect_clip_scene_cuts
++        if content_cuts_enabled():
++            # Same as services/video_service.py: real shot changes feed the planner.
++            clip_info["scene_cuts"] = detect_clip_scene_cuts(video, start, dur)
++        edl = E.build_edl(clip_info, rel, profile, energy_peaks=[],
+                           broll_enabled=not plain)
+         # Same order as services/video_service.py: Plain strips every
+         # template element right after the EDL is built; Auto runs the
+-- 
+2.56.0.windows.2
+

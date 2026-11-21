@@ -1,0 +1,210 @@
+{
+ "video": "D:\\SnipNova-Dev\\claude-code\\test-footage\\tryit\\1cf9a50cd3\\tryit_1cf9a50cd3.mp4",
+ "niche": "gaming",
+ "llm": "ollama:qwen3:8b",
+ "stock_broll": false,
+ "timings": {
+  "transcribe_s": 31.5,
+  "story_events_s": 232.4,
+  "select_s": 0.0
+ },
+ "clips": [
+  {
+   "clip": "clip1.mp4",
+   "render_ok": true,
+   "render_s": 55.7,
+   "source_start": 297.29,
+   "source_end": 357.29,
+   "duration": 60.0,
+   "selection": {
+    "virality": null,
+    "hook_type": "visual-event-window",
+    "payoff": {
+     "extended_from": 357.29,
+     "to": 357.29,
+     "because": {
+      "start": 332.0,
+      "end": 378.0,
+      "label": "award",
+      "description": "a person on stage holding an award trophy",
+      "score": 0.0736
+     }
+    },
+    "hook_title": null,
+    "reasoning": "No-model fallback: strongest visual story moment with its lead-in [(332.0, 378.0, 'award')]"
+   },
+   "decisions": {
+    "segments": 9,
+    "transitions": [],
+    "zooms": 0,
+    "broll_planned": 0,
+    "broll_inserted": 0,
+    "broll": [],
+    "broll_dropped": [],
+    "music": "energetic",
+    "music_volume": 0.18,
+    "sfx": 0,
+    "overlays": 0,
+    "template": "auto",
+    "captions": "tiktok_animated"
+   },
+   "qc": {
+    "ffprobe": [
+     {
+      "codec_type": "video",
+      "width": 1080,
+      "height": 1920
+     },
+     {
+      "codec_type": "audio",
+      "width": null,
+      "height": null
+     }
+    ],
+    "output_seconds": 59.9,
+    "loudness_lufs": -13.6,
+    "black_seconds": 0,
+    "boundary": {
+     "ok": true,
+     "starts_on_sentence": true,
+     "ends_on_sentence": true,
+     "cuts_a_word": false,
+     "first_words": "Presenting the award for Mr. The",
+     "last_words": "the Year presented by YouTube are..."
+    },
+    "layout": {
+     "broll_applied": false
+    },
+    "reframe_plan": {
+     "attached": true,
+     "delegate": null,
+     "shots": [
+      [
+       "fit",
+       "user_fit"
+      ],
+      [
+       "fit",
+       "user_fit"
+      ],
+      [
+       "fit",
+       "user_fit"
+      ],
+      [
+       "fit",
+       "user_fit"
+      ],
+      [
+       "fit",
+       "user_fit"
+      ],
+      [
+       "fit",
+       "user_fit"
+      ],
+      [
+       "fit",
+       "user_fit"
+      ],
+      [
+       "fit",
+       "user_fit"
+      ]
+     ]
+    }
+   },
+   "frames": [
+    "clip1_8pct.png",
+    "clip1_50pct.png",
+    "clip1_90pct.png"
+   ]
+  }
+ ],
+ "story_events": [
+  {
+   "start": 6.0,
+   "end": 12.0,
+   "label": "award",
+   "description": "a person on stage holding an award trophy",
+   "score": 0.0796
+  },
+  {
+   "start": 72.0,
+   "end": 78.0,
+   "label": "laugh",
+   "description": "a person laughing hard",
+   "score": 0.024
+  },
+  {
+   "start": 94.0,
+   "end": 100.0,
+   "label": "celebrate",
+   "description": "people hugging and celebrating",
+   "score": 0.0578
+  },
+  {
+   "start": 110.0,
+   "end": 136.0,
+   "label": "stage_speech",
+   "description": "a person speaking into a microphone on a stage",
+   "score": 0.0239
+  },
+  {
+   "start": 142.0,
+   "end": 146.0,
+   "label": "celebrate",
+   "description": "people hugging and celebrating",
+   "score": 0.0317
+  },
+  {
+   "start": 156.0,
+   "end": 160.0,
+   "label": "award",
+   "description": "a person on stage holding an award trophy",
+   "score": 0.0379
+  },
+  {
+   "start": 190.0,
+   "end": 244.0,
+   "label": "stage_speech",
+   "description": "a person speaking into a microphone on a stage",
+   "score": 0.0545
+  },
+  {
+   "start": 258.0,
+   "end": 276.0,
+   "label": "award",
+   "description": "a person on stage holding an award trophy",
+   "score": 0.0285
+  },
+  {
+   "start": 280.0,
+   "end": 290.0,
+   "label": "award",
+   "description": "a person on stage holding an award trophy",
+   "score": 0.0288
+  },
+  {
+   "start": 332.0,
+   "end": 378.0,
+   "label": "award",
+   "description": "a person on stage holding an award trophy",
+   "score": 0.0736
+  },
+  {
+   "start": 398.0,
+   "end": 416.0,
+   "label": "award",
+   "description": "a person on stage holding an award trophy",
+   "score": 0.0496
+  },
+  {
+   "start": 420.0,
+   "end": 432.0,
+   "label": "award",
+   "description": "a person on stage holding an award trophy",
+   "score": 0.0363
+  }
+ ]
+}

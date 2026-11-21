@@ -1,0 +1,305 @@
+# Tracks listed on the archived freepd.com category pages (web.archive.org
+# snapshots 2022-2025, "<category>.php"), under the site-wide statement
+# "100% FREE MUSIC - CREATIVE COMMONS 0". Format: page|title|time|author.
+# Only archive.org `freepd` files whose title appears here are taken.
+upbeat|Fresh Focus|2:04|Kevin MacLeod
+upbeat|Natural Vibes|2:09|Kevin MacLeod
+upbeat|And Just Like That|1:54|Bryan Teoh
+upbeat|Bar Brawl|2:03|Bryan Teoh
+upbeat|From Page to Practice|2:17|Bryan Teoh
+upbeat|Inventing Flight|2:24|Bryan Teoh
+upbeat|Funshine|2:45|Kevin MacLeod
+upbeat|Pickled Pink|2:55|Kevin MacLeod
+upbeat|Screen Saver|3:02|Kevin MacLeod
+upbeat|City Sunshine|3:05|Kevin MacLeod
+upbeat|Still Pickin|4:58|Kevin MacLeod
+upbeat|Limit 70|5:02|Kevin MacLeod
+upbeat|Motions|1:56|Rafael Krux
+upbeat|Happy Whistling Ukulele|2:03|Rafael Krux
+upbeat|Advertime|2:14|Rafael Krux
+upbeat|Inspiration|2:18|Rafael Krux
+upbeat|Ukulele Song|2:18|Rafael Krux
+upbeat|Stereotype News|1:05|Rafael Krux
+upbeat|Be Chillin|3:23|Alexander Nakarada
+upbeat|Relaxing Ballad|3:28|Alexander Nakarada
+epic|Battle Ready|1:18|Bryan Teoh
+epic|Think About It|2:00|Bryan Teoh
+epic|Release the Hybrids|2:04|Bryan Teoh
+epic|Honor Bound|2:51|Bryan Teoh
+epic|Go On Without Me|3:15|Bryan Teoh
+epic|The Ice Giants|0:44|Kevin MacLeod
+epic|Gothamlicious|0:48|Kevin MacLeod
+epic|New Hero in Town|0:57|Kevin MacLeod
+epic|Strength of the Titans|1:02|Kevin MacLeod
+epic|Ancient Rite|1:53|Kevin MacLeod
+epic|Evil Incoming|2:55|Kevin MacLeod
+epic|Night Vigil|4:28|Kevin MacLeod
+epic|Adventure|1:25|Rafael Krux
+epic|Behind Enemy Lines|1:55|Rafael Krux
+epic|Mothership|2:06|Rafael Krux
+epic|Emotional Blockbuster 2|2:12|Rafael Krux
+epic|Hit n Smash|2:13|Rafael Krux
+epic|Cornfield Chase|2:18|Rafael Krux
+epic|Rulers of Our Lands|2:19|Rafael Krux
+epic|Black Knight|2:22|Rafael Krux
+epic|Heroic Adventure|2:22|Rafael Krux
+epic|Video Game Blockbuster|2:23|Rafael Krux
+epic|Big Eyes|2:29|Rafael Krux
+epic|Night Attack|2:33|Rafael Krux
+epic|Epic Blockbuster 2|2:40|Rafael Krux
+epic|Kings Trailer|2:43|Rafael Krux
+epic|Epic Boss Battle|2:50|Rafael Krux
+epic|Assassin|3:06|Rafael Krux
+epic|Lonely Mountain|3:10|Rafael Krux
+epic|The Range|0:00|Rafael Krux
+epic|Adventures of Flying Jack|1:13|Alexander Nakarada
+epic|Beyond Part 2|4:44|Alexander Nakarada
+epic|Fanfare X|0:41|Alexander Nakarada
+epic|Overture|1:38|Alexander Nakarada
+epic|Putin's Lullaby|2:06|Alexander Nakarada
+epic|The Enemy|1:43|Alexander Nakarada
+horror|Footsteps in the Attic|0:55|Arthur Fordsworthy
+horror|Mysterious Lights|2:59|Bryan Teoh
+horror|Alien Spaceship Atmosphere|2:04|Kevin MacLeod
+horror|Satin Danger|2:44|Kevin MacLeod
+horror|Horroriffic|2:48|Kevin MacLeod
+horror|Mind Chaos|3:04|Kevin MacLeod
+horror|Cursed Intro|1:16|Rafael Krux
+horror|Hidden Truth|1:39|Rafael Krux
+horror|The Land of the Dead|1:47|Rafael Krux
+horror|Horror Mytery|2:04|Rafael Krux
+horror|Horror Suspense|2:20|Rafael Krux
+horror|Dawn of the Apocalypse|2:24|Rafael Krux
+horror|Alien Invasion|3:05|Rafael Krux
+horror|Asking Questions|0:00|Rafael Krux
+horror|Cockroaches|3:29|Alexander Nakarada
+horror|Consecrated Ground|1:51|Alexander Nakarada
+horror|Creepy Hallow|1:59|Alexander Nakarada
+horror|Halloween Theme 1|2:00|Alexander Nakarada
+horror|Hor Hor|5:32|Alexander Nakarada
+horror|Nightmare|0:54|Alexander Nakarada
+horror|Pantscrapper|2:09|Alexander Nakarada
+horror|The Abyss|2:51|Alexander Nakarada
+romantic|Isolation Waltz|3:25|Bryan Teoh
+romantic|Lucky Break|4:45|Bryan Teoh
+romantic|Landra's Dream|1:29|Jason Shaw
+romantic|Piano Magic Motive|1:18|Kevin MacLeod
+romantic|Amazing Grace|1:54|Kevin MacLeod
+romantic|Night in Venice|3:38|Kevin MacLeod
+romantic|Patience Party|4:03|Kevin MacLeod
+romantic|A Very Brady Special|6:28|Kevin MacLeod
+romantic|Champ de tournesol|1:58|Komiku
+romantic|La Citadelle|2:42|Komiku
+romantic|Lovely Piano Song|1:36|Rafael Krux
+romantic|Shining Stars|2:20|Rafael Krux
+romantic|Romantic Inspiration|2:30|Rafael Krux
+romantic|Pond|2:32|Rafael Krux
+romantic|Nostalgic Piano|3:16|Rafael Krux
+romantic|Brothers Unite|3:03|Alexander Nakarada
+romantic|Burt's Requiem|6:28|Alexander Nakarada
+romantic|Horizon Flare|1:42|Alexander Nakarada
+romantic|Parhelion|2:41|Alexander Nakarada
+romantic|Piña Colada|2:44|Alexander Nakarada
+romantic|Winter|5:12|Alexander Nakarada
+comedy|Wizard Circus|2:35|Kevin MacLeod
+comedy|Cha-Cha Ender|0:05|Anonymous
+comedy|Hello! Ma Baby|0:50|Anonymous
+comedy|Busybody|1:26|Bryan Teoh
+comedy|Wakka Wakka|2:01|Bryan Teoh
+comedy|Going Bananas|2:21|Bryan Teoh
+comedy|Managing Mischief|2:44|Bryan Teoh
+comedy|My Giant Bunny Friend|2:45|Bryan Teoh
+comedy|Spring Chicken|2:47|Bryan Teoh
+comedy|Fright Night Twist|2:56|Bryan Teoh
+comedy|Alls Fair In Love|3:59|Bryan Teoh
+comedy|Take the Ride|4:22|Bryan Teoh
+comedy|Comic Game Loop - Mischief|0:43|Kevin MacLeod
+comedy|Baltic Levity|0:48|Kevin MacLeod
+comedy|Dance of the Tuba Plum Fairy|0:48|Kevin MacLeod
+comedy|Circus of Freaks|0:56|Kevin MacLeod
+comedy|Barroom Ballet|0:57|Kevin MacLeod
+comedy|Holiday Weasel|1:25|Kevin MacLeod
+comedy|Organ Filler|1:30|Kevin MacLeod
+comedy|Krampus's Workshop|1:31|Kevin MacLeod
+comedy|Drunken Party|2:01|Kevin MacLeod
+comedy|BeBop for Joey|2:19|Kevin MacLeod
+comedy|Fenster's Explanation|2:49|Kevin MacLeod
+comedy|Frogs Legs Rag|2:50|Kevin MacLeod
+comedy|Maple Leaf Rag|2:59|Kevin MacLeod
+comedy|Night in the Castle|3:09|Kevin MacLeod
+comedy|The Entertainer|3:13|Kevin MacLeod
+comedy|Horns|3:24|Kevin MacLeod
+comedy|Joey's Song|3:27|Kevin MacLeod
+comedy|Sad Drunken Party|4:43|Kevin MacLeod
+comedy|Attic Secrets|1:06|Rafael Krux
+comedy|Fancy Family|1:07|Rafael Krux
+comedy|Vintage Party|1:15|Rafael Krux
+comedy|Llama in Pajama|1:37|Rafael Krux
+comedy|Barnville|1:42|Rafael Krux
+comedy|Hopeful|1:54|Rafael Krux
+comedy|Monsters in Hotel|2:06|Rafael Krux
+comedy|Rush|2:14|Rafael Krux
+comedy|Creepy Comedy|2:18|Rafael Krux
+comedy|Jungle Mission|3:06|Rafael Krux
+comedy|Ghost Town|0:00|Rafael Krux
+comedy|Madness of Linda|0:00|Rafael Krux
+comedy|Silly Boy|0:00|Rafael Krux
+comedy|Foam Rubber|2:32|Alexander Nakarada
+comedy|Lurking Sloth|2:37|Alexander Nakarada
+comedy|Silly Intro|0:25|Alexander Nakarada
+comedy|USSR|1:45|Alexander Nakarada
+world|Modern Island Jam|3:08|Kevin MacLeod
+world|Palm and Soul|4:00|Kevin MacLeod
+world|Coy Koi|0:48|Anonymous
+world|Bavarian Seascape|3:51|Anonymous
+world|Aquatic City Vanished|2:29|Bryan Teoh
+world|Forest Frolic Loop|0:37|Kevin MacLeod
+world|Village Tarantella|0:53|Kevin MacLeod
+world|Connecting Rainbows|1:56|Kevin MacLeod
+world|Windy Old Weather|2:00|Kevin MacLeod
+world|Bollywood Groove|2:30|Kevin MacLeod
+world|Experimental Test Subject|2:44|Kevin MacLeod
+world|Hillbilly Swing|2:47|Kevin MacLeod
+world|Cumbish|3:12|Kevin MacLeod
+world|Del Rio Bravo|3:24|Kevin MacLeod
+world|Midnight in the Green House|3:32|Kevin MacLeod
+world|Breaking Bollywood|3:45|Kevin MacLeod
+world|Shenzhen Nightlife|4:23|Kevin MacLeod
+world|Desert Conflict|2:39|Rafael Krux
+world|Eye of Forgiveness|0:00|Rafael Krux
+world|Ambient Bongos|1:28|Alexander Nakarada
+world|Be Jammin|2:47|Alexander Nakarada
+world|Blacksmith|2:40|Alexander Nakarada
+world|Blood Eagle|3:48|Alexander Nakarada
+world|Bonfire|1:38|Alexander Nakarada
+world|Le Baguette|0:54|Alexander Nakarada
+world|Marked|2:32|Alexander Nakarada
+world|Nomadic Sunset|3:10|Alexander Nakarada
+world|Norður|3:35|Alexander Nakarada
+world|Sunny Rasta|2:20|Alexander Nakarada
+world|The Desert|2:10|Alexander Nakarada
+world|The Story|2:27|Alexander Nakarada
+scoring|Stunted Adventure|1:10|Bryan Teoh
+scoring|Slice of Life|2:21|Bryan Teoh
+scoring|Patron Saint of Heists|3:07|Bryan Teoh
+scoring|Driving Concern|3:20|Kevin MacLeod
+scoring|Funky Energy Loop|3:22|Kevin MacLeod
+scoring|City Run|0:37|Rafael Krux
+scoring|Dreams of Vain|1:37|Rafael Krux
+scoring|The Drama|1:37|Rafael Krux
+scoring|After the End|1:38|Rafael Krux
+scoring|Beginning of Conflict|1:39|Rafael Krux
+scoring|Guerilla Tactics|1:49|Rafael Krux
+scoring|Travelers Notebook|2:03|Rafael Krux
+scoring|Desert Fox|2:13|Rafael Krux
+scoring|Desert Fox Underscore|2:13|Rafael Krux
+scoring|Action Strike|2:14|Rafael Krux
+scoring|Ice and Snow|2:21|Rafael Krux
+scoring|Final Step|0:00|Rafael Krux
+scoring|Magic in the Garden|0:00|Rafael Krux
+scoring|Find Them|2:22|Alexander Nakarada
+scoring|Novus Initium|2:42|Alexander Nakarada
+scoring|The Lagoon|2:34|Alexander Nakarada
+electronic|Backbeat|0:46|Kevin MacLeod
+electronic|Bit Bit Loop|1:17|Kevin MacLeod
+electronic|Hear What They Say|2:18|Kevin MacLeod
+electronic|Meditating Beat|2:37|Kevin MacLeod
+electronic|Arpent|2:42|Kevin MacLeod
+electronic|Beat One|3:00|Kevin MacLeod
+electronic|Goodnightmare|4:00|Kevin MacLeod
+electronic|3 am West End|4:51|statusq
+electronic|Beat Thee|3:11|Alexander Nakarada
+electronic|Chronos|2:09|Alexander Nakarada
+electronic|Favorite|2:55|Alexander Nakarada
+electronic|Fireworks|3:11|Alexander Nakarada
+electronic|Hippety Hop|1:57|Alexander Nakarada
+electronic|Space Ambience|4:35|Alexander Nakarada
+misc|Awkward Apocalyptic Pickup|0:44|Anonymous
+misc|Improv for Evil|0:58|Brian Boyko
+misc|Ambush in Rattlesnake Gulch|10:14|Brian Boyko
+misc|Sun Up Gunned Down|1:27|Bryan Teoh
+misc|Shutup I'm Doing This alt|1:57|Bryan Teoh
+misc|Murder On The Bayou|2:08|Bryan Teoh
+misc|Gotta Keep On Movin|2:24|Bryan Teoh
+misc|Drop Point|3:04|Bryan Teoh
+misc|Finally See The Light|3:21|Bryan Teoh
+misc|A Waltz For Naseem|3:37|dogsounds
+misc|River Meditation|2:47|Jason Shaw
+misc|Sciencenet Theme|0:44|Kevin MacLeod
+misc|Improved Ice Cream Truck|0:51|Kevin MacLeod
+misc|Sunday Dub|3:29|Kevin MacLeod
+misc|Burning Trapezoid of Fire|4:01|Kevin MacLeod
+misc|Abstract Anxiety|4:29|Kevin MacLeod
+misc|Bass Meant Jazz|4:40|Kevin MacLeod
+misc|A Good Bass for Gambling|2:36|Komiku
+misc|Bleu|3:31|Komiku
+misc|Spec Ops|2:17|Rafael Krux
+misc|Quick Metal Riff 1|0:07|Brett VanDonsel
+misc|Jethro on the Run|3:51|Anonymous
+misc|Trip Up North|2:47|Bryan Teoh
+misc|Lukewarm Banjo|0:32|Kevin MacLeod
+misc|Magical Transition|0:31|Kevin MacLeod
+misc|Painting Room|1:46|Kevin MacLeod
+misc|Royal Coupling|2:14|Kevin MacLeod
+misc|Nordic Wist|2:29|Kevin MacLeod
+misc|Dancing at the Inn|2:38|Kevin MacLeod
+misc|Witch Waltz|3:06|Kevin MacLeod
+misc|The Britons|5:07|Kevin MacLeod
+misc|Forest Night|2:22|Phase Shift
+misc|One Step Closer|1:33|Rafael Krux
+misc|Brewing Potions|1:34|Rafael Krux
+misc|Stompin at Midnight - Vinyl Recording|1:57|Kevin MacLeod
+misc|Stompin at Midnight|1:57|Kevin MacLeod
+misc|Swing Maching|2:15|Kevin MacLeod
+misc|Martini Sunset|2:54|Anonymous
+misc|Groovin|4:00|Brian Boyko
+misc|Hold on a Sec|2:06|Bryan Teoh
+misc|Fake It Til You Fake It|2:54|Kevin MacLeod
+misc|Funkeriffic|3:30|Kevin MacLeod
+misc|Compy Jazz|4:07|Kevin MacLeod
+misc|Flutey Jazz|4:07|Kevin MacLeod
+misc|Neptunian Princess|2:05|Bryan Teoh
+misc|Downtown Boogie|2:27|Bryan Teoh
+misc|I Guess What I'm Trying to Say|2:33|Bryan Teoh
+misc|Soundtrack From the Starcourt Mall|3:37|Bryan Teoh
+misc|Planeteer Reaction|4:08|Bryan Teoh
+misc|Rain or Snow alt|5:30|Bryan Teoh
+misc|Infinite Peace|1:16|Kevin MacLeod
+misc|Blippy Trance|2:00|Kevin MacLeod
+misc|Energizing|2:13|Kevin MacLeod
+misc|Wisdom in the Sun|2:35|Kevin MacLeod
+misc|Adding the Sun|2:56|Kevin MacLeod
+misc|Infinite Wonder|3:10|Kevin MacLeod
+misc|Mana Two - Part 3|3:12|Kevin MacLeod
+misc|Study and Relax|3:43|Kevin MacLeod
+misc|Mana Two - Part 1|3:54|Kevin MacLeod
+misc|Mana Two - Part 2|6:02|Kevin MacLeod
+misc|Kalimba Relaxation Music|7:08|Kevin MacLeod
+misc|Kauge Kaja|3:34|Aetherwave
+misc|Koiduuni|2:55|Aetherwave
+misc|Lainete Laul|3:00|Aetherwave
+misc|Mere Hingamine|3:05|Aetherwave
+misc|Taeva Hääl|3:08|Aetherwave
+misc|Udune Maastik|2:26|Aetherwave
+misc|Valguse Templid|3:30|Aetherwave
+misc|Vivace Momentum|1:49|Kevin MacLeod
+misc|Goldcrest|2:22|James Anderson
+misc|Dark Hallway|0:47|Kevin MacLeod
+misc|Painful Disorientation|1:31|Kevin MacLeod
+misc|Aquarium|2:24|Kevin MacLeod
+misc|Icicles Melting|2:58|Kevin MacLeod
+misc|The Celebrated Minuet|3:37|Rafael Krux
+misc|The Celebrated Minuet for Piano|3:37|Rafael Krux
+misc|Apex|5:17|Alexander Nakarada
+misc|Circuit (no intro)|3:00|Alexander Nakarada
+misc|Construction|3:14|Alexander Nakarada
+misc|Jack The Lumberer|2:50|Alexander Nakarada
+misc|One Destination, Two Journeys|4:16|Alexander Nakarada
+misc|Uberpunch|1:34|Alexander Nakarada
+misc|Behind the Sword|2:58|Alexander Nakarada
+misc|Bouchedag|1:16|Alexander Nakarada
+misc|Celebration|2:23|Alexander Nakarada
+misc|Cold Journey|4:50|Alexander Nakarada
+misc|Land of Pirates|1:53|Alexander Nakarada
+misc|The Crown|3:53|Alexander Nakarada
+misc|The Vikings|2:40|Alexander Nakarada

@@ -1,0 +1,963 @@
+From 92da2cc22688b5381f2374b35e34b02dfeb95191 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Wed, 18 Nov 2026 09:30:53 +0530
+Subject: [PATCH 2/2] feat(media): detect changing burned-in caption bands
+
+Add backend/src/media/burned_captions.py, an OpenCV + NumPy detector for
+source subtitles that are already in the picture. It samples frames,
+scans each one with a sliding horizontal strip, and keeps only wide,
+glyph-rich strips that hold outlined bright strokes and spike in edge
+density against the equal-size strips just above and below them. This
+finds a subtitle that touches other scene edges, which a connected-box
+scan does not.
+
+Candidates are clustered by vertical centre across the samples. A
+cluster becomes a CaptionBand only when it appears in at least 35% of
+the samples and its fixed-rectangle stroke mask changes between frames
+(Jaccard distance), so static channel names, "follow us" panels, logos,
+no-text footage and busy textures are rejected. The band is returned in
+source pixels with confidence and the sample counts.
+
+Add synthetic ffmpeg drawtext tests for changing bottom and top bands,
+static text in one and both bands, no text, a noisy texture, and a
+static tag over moving video; add tools/burned-captions-proof/run_proof.py,
+which runs the detector over the four phase-2 sources, times it, and
+saves one outlined debug frame per source.
+
+Attribution: OpenCode (DeepSeek V4.1 Flash Free), lane-b/round2.
+---
+ backend/src/media/burned_captions.py       | 483 +++++++++++++++++++++
+ backend/tests/unit/test_burned_captions.py | 213 +++++++++
+ tools/burned-captions-proof/.gitignore     |   2 +
+ tools/burned-captions-proof/run_proof.py   | 200 +++++++++
+ 4 files changed, 898 insertions(+)
+ create mode 100644 backend/src/media/burned_captions.py
+ create mode 100644 backend/tests/unit/test_burned_captions.py
+ create mode 100644 tools/burned-captions-proof/.gitignore
+ create mode 100644 tools/burned-captions-proof/run_proof.py
+
+diff --git a/backend/src/media/burned_captions.py b/backend/src/media/burned_captions.py
+new file mode 100644
+index 0000000..2a9f70c
+--- /dev/null
++++ b/backend/src/media/burned_captions.py
+@@ -0,0 +1,483 @@
++"""Find burned-in subtitles that change while staying in one band.
++
++Some sources already carry captions. Our 9:16 crop can slice them and our
++own captions then sit on top, so the render needs to know where the
++source captions live. This detector is deliberately about *subtitles*,
++not about text in general: a channel name, a logo or a static "follow
++us" panel must not move our captions, because it never changes.
++
++The detector works per sampled frame:
++
++1. Canny edges are scanned with a sliding horizontal strip. A strip is
++   kept only when it is wide, glyph-rich, edged much more densely than
++   the equal-size strips just above and below it, and holds outlined
++   bright strokes (the usual subtitle look). This finds a subtitle even
++   when it touches other scene edges, which a connected-box approach
++   does not.
++2. Overlapping strips on one frame are reduced to the best few, so one
++   frame cannot outvote the rest.
++3. The outlined-stroke mask of the band's fixed rectangle is the frame's
++   signature.
++
++Across frames the candidates are clustered by vertical centre. A cluster
++is a caption band only when it appears in a good share of the sampled
++frames *and* its stroke masks differ between frames: static text keeps
++the same mask, changing subtitles do not. Busy textures fail at step 1
++because their edges are spread evenly, not concentrated in a wide, short
++band.
++
++OpenCV + NumPy only. No OCR model, no downloads, no GPU.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from pathlib import Path
++from typing import List, Optional, Sequence, Tuple
++
++import cv2
++import numpy as np
++
++ANALYSIS_WIDTH = 480
++SAMPLE_COUNT = 12
++
++# A band has to show up in at least this share of decoded samples.
++MIN_FRAME_SHARE = 0.35
++MIN_FRAME_COUNT = 3
++# Vertical centre tolerance, as a fraction of the frame height.
++BAND_TOLERANCE = 0.055
++
++# Strip heights tried by the sliding scan, in analysis-frame pixels.
++STRIP_HEIGHTS = (6, 8, 10, 12, 14, 17, 20, 24, 28, 33, 40, 48)
++# A strip must be at least this wide, as a fraction of the frame.
++MIN_BAND_WIDTH = 0.10
++MAX_BAND_WIDTH = 0.96
++# The column projection must carry an edge in at least this share of
++# the strip's rows to be treated as text-bearing.
++MIN_COLUMN_SHARE = 0.20
++
++# Edge-density limits inside a candidate strip.
++MIN_EDGE_DENSITY = 0.080
++MAX_EDGE_DENSITY = 0.45
++# The strip must hold more edges than the equal-size strips above and
++# below it; parallel neighbours make a busy texture fail this.
++MIN_EDGE_RATIO = 1.40
++# Neighbour strips are sampled this many band heights away, so a
++# descender or an outline cannot leak into the comparison.
++NEIGHBOUR_GAP = 0.50
++
++MIN_GLYPHS = 3
++MIN_GLYPH_SPREAD = 0.25
++# Share of the band's pixels that must be outlined bright strokes. A
++# subtitle line clears this easily; a noisy texture and a moving test
++# pattern sit far below it.
++MIN_STROKE_SHARE = 0.018
++MAX_CANDIDATES_PER_FRAME = 3
++BAND_SIGNATURE = (256, 32)
++
++# Jaccard distance between two binary stroke masks (0..1).
++CHANGE_THRESHOLD = 0.30
++# Share of frame pairs that must differ for the band to be "changing".
++MIN_CHANGING_SHARE = 0.15
++
++
++@dataclass(frozen=True)
++class CaptionBand:
++    """A burned-in caption band, in source pixels."""
++
++    y: int
++    h: int
++    confidence: float
++    frames_with_text: int
++    frames_checked: int
++
++
++@dataclass
++class _Candidate:
++    top: float
++    bottom: float
++    left: float
++    right: float
++    strokes: np.ndarray
++    score: float
++
++    @property
++    def centre(self) -> float:
++        return (self.top + self.bottom) / 2.0
++
++
++def _analysis_frame(frame: np.ndarray) -> np.ndarray:
++    height, width = frame.shape[:2]
++    scale = ANALYSIS_WIDTH / float(width)
++    if scale == 1.0:
++        return frame
++    return cv2.resize(
++        frame,
++        (ANALYSIS_WIDTH, max(1, int(round(height * scale)))),
++        interpolation=cv2.INTER_AREA,
++    )
++
++
++def _stroke_mask(gray: np.ndarray) -> np.ndarray:
++    """Outlined bright strokes: white glyphs with a dark edge/shadow."""
++    bright = (gray >= 185).astype(np.uint8)
++    dark = cv2.dilate((gray <= 85).astype(np.uint8), np.ones((3, 3), np.uint8))
++    return (bright & dark).astype(np.uint8)
++
++
++def _edge_density(edges: np.ndarray) -> float:
++    if edges.size == 0:
++        return 0.0
++    return float(np.count_nonzero(edges)) / float(edges.size)
++
++
++def _glyph_count(
++    edges: np.ndarray, box_width: int, box_height: int
++) -> Tuple[int, float]:
++    count, _, stats, centres = cv2.connectedComponentsWithStats(edges)
++    glyphs = 0
++    xs: List[float] = []
++    for index in range(1, count):
++        _x, _y, cw, ch, area = stats[index]
++        if (
++            box_height * 0.15 <= ch <= box_height * 1.10
++            and cw <= box_height * 1.20
++            and area >= 4
++        ):
++            glyphs += 1
++            xs.append(float(centres[index][0]))
++    spread = (max(xs) - min(xs)) if len(xs) >= 2 else 0.0
++    return glyphs, spread
++
++
++def _strip_candidate(
++    edges: np.ndarray,
++    strokes: np.ndarray,
++    y0: int,
++    strip: int,
++    width: int,
++    height: int,
++) -> Optional[_Candidate]:
++    """Score one horizontal strip, or return ``None`` when it is not text."""
++    y1 = y0 + strip
++    inside = edges[y0:y1]
++    required = max(2, int(round(strip * MIN_COLUMN_SHARE)))
++    columns = np.where(inside.sum(axis=0) >= required)[0]
++    if columns.size < 4:
++        return None
++    x0, x1 = int(columns[0]), int(columns[-1]) + 1
++    span = x1 - x0
++    if span < width * MIN_BAND_WIDTH or span > width * MAX_BAND_WIDTH:
++        return None
++
++    box = inside[:, x0:x1]
++    density = _edge_density(box)
++    if not (MIN_EDGE_DENSITY <= density <= MAX_EDGE_DENSITY):
++        return None
++
++    stroke_box = strokes[y0:y1, x0:x1]
++    stroke_share = _edge_density(stroke_box)
++    if stroke_share < MIN_STROKE_SHARE:
++        return None
++
++    # Equal-size strips just above and below: a caption line spikes
++    # against them, a texture does not.
++    gap = max(2, int(round(strip * NEIGHBOUR_GAP)))
++    above = edges[max(0, y0 - gap - strip):max(0, y0 - gap), x0:x1]
++    below = edges[min(height, y1 + gap):min(height, y1 + gap + strip), x0:x1]
++    blocks = [block for block in (above, below) if block.size]
++    if not blocks:
++        return None
++    outside = sum(int(np.count_nonzero(block)) for block in blocks) / float(
++        sum(block.size for block in blocks)
++    )
++    ratio = density / max(outside, 0.004)
++    if ratio < MIN_EDGE_RATIO:
++        return None
++
++    glyphs, spread = _glyph_count(box, span, strip)
++    if glyphs < MIN_GLYPHS or spread < span * MIN_GLYPH_SPREAD:
++        return None
++
++    return _Candidate(
++        top=y0 / height,
++        bottom=y1 / height,
++        left=x0 / width,
++        right=x1 / width,
++        strokes=strokes,
++        score=float(density * min(ratio, 6.0)),
++    )
++
++
++def _suppress(candidates: List[_Candidate]) -> List[_Candidate]:
++    """Keep the best non-overlapping strips of one frame.
++
++    Every band yields several overlapping strips (one per height), and
++    counting them all would let a single frame outvote the rest during
++    clustering.
++    """
++    ordered = sorted(candidates, key=lambda item: item.score, reverse=True)
++    kept: List[_Candidate] = []
++    for candidate in ordered:
++        candidate_height = candidate.bottom - candidate.top
++        overlap = False
++        for other in kept:
++            shared = min(candidate.bottom, other.bottom) - max(
++                candidate.top, other.top
++            )
++            other_height = other.bottom - other.top
++            if shared > 0.5 * min(candidate_height, other_height):
++                overlap = True
++                break
++        if overlap:
++            continue
++        kept.append(candidate)
++        if len(kept) >= MAX_CANDIDATES_PER_FRAME:
++            break
++    return kept
++
++
++def candidates_in_frame(frame: np.ndarray) -> List[_Candidate]:
++    """Return the subtitle-like bands of one BGR frame."""
++    if frame is None or frame.size == 0:
++        return []
++    frame = _analysis_frame(frame)
++    height, width = frame.shape[:2]
++    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
++    edges = cv2.Canny(cv2.GaussianBlur(gray, (3, 3), 0), 70, 180)
++    strokes = _stroke_mask(gray)
++
++    found: List[_Candidate] = []
++    for strip in STRIP_HEIGHTS:
++        if strip >= height:
++            continue
++        for y0 in range(0, height - strip + 1):
++            candidate = _strip_candidate(
++                edges, strokes, y0, strip, width, height
++            )
++            if candidate is not None:
++                found.append(candidate)
++    return _suppress(found)
++
++
++def _cluster(
++    candidates: List[Tuple[int, _Candidate]]
++) -> List[List[Tuple[int, _Candidate]]]:
++    """Group ``(frame index, candidate)`` pairs by vertical centre."""
++    ordered = sorted(candidates, key=lambda item: item[1].centre)
++    clusters: List[List[Tuple[int, _Candidate]]] = []
++    for item in ordered:
++        if not clusters:
++            clusters.append([item])
++            continue
++        current = clusters[-1]
++        centre = float(np.median([entry[1].centre for entry in current]))
++        if abs(item[1].centre - centre) <= BAND_TOLERANCE:
++            current.append(item)
++        else:
++            clusters.append([item])
++    return clusters
++
++
++def _mask_change(first: np.ndarray, second: np.ndarray) -> float:
++    """Jaccard distance of two stroke masks: XOR over union."""
++    left = first > 0.5
++    right = second > 0.5
++    union = int(np.count_nonzero(left | right))
++    if not union:
++        return 0.0
++    xor = int(np.count_nonzero(left ^ right))
++    return xor / float(union)
++
++
++def _band_strip(
++    strokes: np.ndarray,
++    top: float,
++    bottom: float,
++    left: float,
++    right: float,
++) -> np.ndarray:
++    """Crop one fixed band from a full-frame stroke mask.
++
++    The crop is anchored to the band median, not to this frame's
++    bounding box, so a one-pixel box wobble cannot change the mask. A
++    small vertical pad keeps ascenders and descenders in view.
++    """
++    height, width = strokes.shape[:2]
++    band = max(1.0 / height, bottom - top)
++    y0 = int(round((top - band * 0.30) * height))
++    y1 = int(round((bottom + band * 0.30) * height))
++    y0 = max(0, min(height - 1, y0))
++    y1 = max(y0 + 1, min(height, y1))
++
++    span = max(1.0 / width, right - left)
++    x0 = int(round((left - span * 0.15) * width))
++    x1 = int(round((right + span * 0.15) * width))
++    x0 = max(0, min(width - 1, x0))
++    x1 = max(x0 + 1, min(width, x1))
++
++    strip = strokes[y0:y1, x0:x1]
++    return cv2.resize(
++        strip, BAND_SIGNATURE, interpolation=cv2.INTER_NEAREST
++    )
++
++
++def _aggregate(
++    frames: List[List[_Candidate]],
++    frames_checked: int,
++    height: int,
++) -> Optional[CaptionBand]:
++    usable = [
++        (index, candidate)
++        for index, frame in enumerate(frames)
++        for candidate in frame
++    ]
++    if not usable or frames_checked <= 0:
++        return None
++    clusters = _cluster(usable)
++    if not clusters:
++        return None
++
++    def frames_of(cluster: List[Tuple[int, _Candidate]]) -> set:
++        return {index for index, _ in cluster}
++
++    def rank(cluster: List[Tuple[int, _Candidate]]):
++        return (
++            len(frames_of(cluster)),
++            float(np.median([item.score for _, item in cluster])),
++        )
++
++    best = max(clusters, key=rank)
++    frames_with_text = len(frames_of(best))
++    required = max(
++        MIN_FRAME_COUNT, int(np.ceil(frames_checked * MIN_FRAME_SHARE))
++    )
++    if frames_with_text < required:
++        return None
++
++    # Compare one strip per frame: several overlapping strips of the
++    # same frame must not masquerade as temporal change.
++    by_frame: dict[int, _Candidate] = {}
++    for index, item in best:
++        current = by_frame.get(index)
++        if current is None or item.score > current.score:
++            by_frame[index] = item
++
++    # The band is the union of the frame-level strips: taking a median
++    # would clip whichever rows the densest strip missed.
++    top = min(item.top for item in by_frame.values())
++    bottom = max(item.bottom for item in by_frame.values())
++    left = min(item.left for item in by_frame.values())
++    right = max(item.right for item in by_frame.values())
++    top = max(0.0, min(1.0, top))
++    bottom = max(top, min(1.0, bottom))
++    left = max(0.0, min(1.0, left))
++    right = max(left, min(1.0, right))
++
++    strips = [
++        _band_strip(item.strokes, top, bottom, left, right)
++        for item in by_frame.values()
++    ]
++    if len(strips) >= 2:
++        changes = [
++            _mask_change(strips[i], strips[j])
++            for i in range(len(strips))
++            for j in range(i + 1, len(strips))
++        ]
++        changing_share = float(
++            np.mean([change >= CHANGE_THRESHOLD for change in changes])
++        )
++        p75 = float(np.percentile(changes, 75))
++    else:
++        changing_share = 0.0
++        p75 = 0.0
++    if changing_share < MIN_CHANGING_SHARE:
++        return None
++
++    frame_share = frames_with_text / float(frames_checked)
++    change_score = min(1.0, p75 / (2.0 * CHANGE_THRESHOLD))
++    confidence = float(
++        max(0.0, min(1.0, 0.55 * frame_share + 0.45 * change_score))
++    )
++
++    y = int(round(top * height))
++    band_height = max(1, int(round((bottom - top) * height)))
++    if y + band_height > height:
++        band_height = max(1, height - y)
++    return CaptionBand(
++        y=y,
++        h=band_height,
++        confidence=round(confidence, 3),
++        frames_with_text=frames_with_text,
++        frames_checked=frames_checked,
++    )
++
++
++def _even_times(video_path: Path, count: int) -> List[float]:
++    capture = cv2.VideoCapture(str(video_path))
++    try:
++        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
++        frames = float(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0)
++    finally:
++        capture.release()
++    if fps <= 0 or frames <= 0:
++        return []
++    duration = frames / fps
++    return [duration * (index + 0.5) / count for index in range(count)]
++
++
++def detect_burned_caption_band(
++    video_path,
++    times: Optional[Sequence[float]] = None,
++    width: Optional[int] = None,
++    height: Optional[int] = None,
++    sample_count: int = SAMPLE_COUNT,
++) -> Optional[CaptionBand]:
++    """Detect a changing burned-in caption band in ``video_path``.
++
++    ``times`` are source seconds to sample. When omitted, ``sample_count``
++    times are spread evenly across the video. ``width``/``height`` are the
++    source dimensions the result must be expressed in; when omitted the
++    decoded frame size is used.
++    """
++    path = Path(video_path)
++    if not path.is_file():
++        return None
++    if times is None:
++        times = _even_times(path, sample_count)
++    times = list(times or [])
++    if not times:
++        return None
++
++    capture = cv2.VideoCapture(str(path))
++    per_frame: List[List[_Candidate]] = []
++    frames_checked = 0
++    try:
++        if not capture.isOpened():
++            return None
++        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
++        source_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
++        source_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
++        for when in times:
++            if fps > 0:
++                index = max(0, int(round(float(when) * fps)))
++                ok = capture.set(cv2.CAP_PROP_POS_FRAMES, index)
++                if not ok:
++                    capture.set(cv2.CAP_PROP_POS_MSEC, float(when) * 1000.0)
++            else:
++                capture.set(cv2.CAP_PROP_POS_MSEC, float(when) * 1000.0)
++            ok, frame = capture.read()
++            if not ok or frame is None:
++                continue
++            frames_checked += 1
++            per_frame.append(candidates_in_frame(frame))
++    finally:
++        capture.release()
++
++    if frames_checked == 0:
++        return None
++    out_width = int(width or source_width or 0)
++    out_height = int(height or source_height or 0)
++    if out_width <= 0 or out_height <= 0:
++        return None
++    return _aggregate(per_frame, frames_checked, out_height)
+diff --git a/backend/tests/unit/test_burned_captions.py b/backend/tests/unit/test_burned_captions.py
+new file mode 100644
+index 0000000..cc706bf
+--- /dev/null
++++ b/backend/tests/unit/test_burned_captions.py
+@@ -0,0 +1,213 @@
++"""Burned-in caption detection on synthetic clips with known captions.
++
++Each fixture is a real H.264 file built with ffmpeg ``drawtext``:
++
++* changing words in a bottom band,
++* changing words in a top band,
++* static channel text in both bands,
++* a static caption in the bottom band alone,
++* moving test video with no text,
++* moving test video with heavy noise (a busy texture),
++* moving test video with a static channel tag.
++
++The detector must find the two changing bands and reject every
++non-changing case. That is the contract the render relies on: only a
++band whose glyphs actually change may push our own captions away.
++"""
++
++from __future__ import annotations
++
++import shutil
++import subprocess
++from pathlib import Path
++
++import pytest
++
++from src.media.burned_captions import (
++    CaptionBand,
++    candidates_in_frame,
++    detect_burned_caption_band,
++)
++
++WIDTH = 320
++HEIGHT = 240
++RATE = 20
++SECONDS = 6.0
++WORDS = [
++    "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX",
++    "SEVEN", "EIGHT", "NINE", "TEN", "ELEVEN", "TWELVE",
++]
++FONT = Path(__file__).resolve().parents[2] / "fonts" / "Anton-Regular.ttf"
++SAMPLE_TIMES = [SECONDS * (index + 0.5) / 12 for index in range(12)]
++
++requires_ffmpeg = pytest.mark.skipif(
++    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
++    reason="ffmpeg and ffprobe are required",
++)
++
++
++def _font_option() -> str:
++    # FFmpeg's filter parser treats ':' as an option separator; a
++    # Windows drive letter has to be escaped even inside quotes.
++    return str(FONT).replace("\\", "/").replace(":", "\\:")
++
++
++def _caption(word: str, y: int, size: int = 30) -> str:
++    return (
++        f"drawtext=fontfile='{_font_option()}':text='{word}':"
++        f"fontcolor=white:fontsize={size}:borderw=3:bordercolor=black:"
++        f"x=(w-text_w)/2:y={y}"
++    )
++
++
++def _changing_words(y: int) -> str:
++    parts = []
++    for index, word in enumerate(WORDS):
++        start = index * 0.5
++        parts.append(
++            _caption(word, y)
++            + f":enable=between(t\\,{start}\\,{start + 0.5})"
++        )
++    return ",".join(parts)
++
++
++def _build(
++    directory: Path,
++    name: str,
++    source: str,
++    filters: str = "",
++) -> Path:
++    target = directory / f"{name}.mp4"
++    command = [
++        "ffmpeg", "-y", "-v", "error",
++        "-f", "lavfi", "-i", source,
++    ]
++    if filters:
++        command += ["-vf", filters]
++    command += [
++        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
++        str(target),
++    ]
++    rendered = subprocess.run(
++        command, capture_output=True, text=True, timeout=120
++    )
++    assert rendered.returncode == 0, (
++        f"could not build {name}:\n{rendered.stderr[-1200:]}"
++    )
++    return target
++
++
++def _colour() -> str:
++    return f"color=c=0x24344E:s={WIDTH}x{HEIGHT}:r={RATE}:d={SECONDS}"
++
++
++def _motion() -> str:
++    return f"testsrc2=size={WIDTH}x{HEIGHT}:rate={RATE}:duration={SECONDS}"
++
++
++@pytest.fixture(scope="module")
++def clips(tmp_path_factory) -> dict[str, Path]:
++    directory = tmp_path_factory.mktemp("burned-captions")
++    assert FONT.is_file(), f"missing test font: {FONT}"
++    return {
++        "bottom": _build(directory, "bottom", _colour(), _changing_words(190)),
++        "top": _build(directory, "top", _colour(), _changing_words(10)),
++        "static_both": _build(
++            directory,
++            "static_both",
++            _colour(),
++            _caption("FOLLOW US", 12, 28) + "," + _caption("@channel", 200, 22),
++        ),
++        "static_bottom": _build(
++            directory, "static_bottom", _colour(), _caption("FOLLOW US", 190, 30)
++        ),
++        "no_text": _build(directory, "no_text", _motion()),
++        "texture": _build(
++            directory, "texture", _motion(), "noise=alls=45:allf=t"
++        ),
++        "moving_static": _build(
++            directory,
++            "moving_static",
++            _motion(),
++            _caption("@channel", 8, 26),
++        ),
++    }
++
++
++@requires_ffmpeg
++def test_finds_a_changing_bottom_band(clips):
++    band = detect_burned_caption_band(
++        clips["bottom"], SAMPLE_TIMES, WIDTH, HEIGHT
++    )
++    assert isinstance(band, CaptionBand)
++    assert abs(band.y - 187) <= 8, band
++    assert abs(band.h - 33) <= 10, band
++    assert band.frames_with_text >= 10, band
++    assert band.confidence >= 0.7, band
++
++
++@requires_ffmpeg
++def test_finds_a_changing_top_band(clips):
++    band = detect_burned_caption_band(
++        clips["top"], SAMPLE_TIMES, WIDTH, HEIGHT
++    )
++    assert isinstance(band, CaptionBand)
++    assert abs(band.y - 7) <= 8, band
++    assert band.h <= 48, band
++    assert band.frames_with_text >= 10, band
++
++
++@requires_ffmpeg
++def test_rejects_static_text_in_both_bands(clips):
++    assert (
++        detect_burned_caption_band(
++            clips["static_both"], SAMPLE_TIMES, WIDTH, HEIGHT
++        )
++        is None
++    )
++
++
++@requires_ffmpeg
++def test_rejects_static_text_in_one_band(clips):
++    assert (
++        detect_burned_caption_band(
++            clips["static_bottom"], SAMPLE_TIMES, WIDTH, HEIGHT
++        )
++        is None
++    )
++
++
++@requires_ffmpeg
++def test_rejects_video_without_text(clips):
++    assert (
++        detect_burned_caption_band(
++            clips["no_text"], SAMPLE_TIMES, WIDTH, HEIGHT
++        )
++        is None
++    )
++
++
++@requires_ffmpeg
++def test_rejects_a_busy_texture(clips):
++    assert (
++        detect_burned_caption_band(
++            clips["texture"], SAMPLE_TIMES, WIDTH, HEIGHT
++        )
++        is None
++    )
++
++
++@requires_ffmpeg
++def test_rejects_static_text_over_moving_video(clips):
++    assert (
++        detect_burned_caption_band(
++            clips["moving_static"], SAMPLE_TIMES, WIDTH, HEIGHT
++        )
++        is None
++    )
++
++
++def test_a_blank_frame_has_no_candidates():
++    import numpy as np
++
++    assert candidates_in_frame(np.zeros((HEIGHT, WIDTH, 3), np.uint8)) == []
+diff --git a/tools/burned-captions-proof/.gitignore b/tools/burned-captions-proof/.gitignore
+new file mode 100644
+index 0000000..ea93687
+--- /dev/null
++++ b/tools/burned-captions-proof/.gitignore
+@@ -0,0 +1,2 @@
++out/
++__pycache__/
+diff --git a/tools/burned-captions-proof/run_proof.py b/tools/burned-captions-proof/run_proof.py
+new file mode 100644
+index 0000000..93d5461
+--- /dev/null
++++ b/tools/burned-captions-proof/run_proof.py
+@@ -0,0 +1,200 @@
++#!/usr/bin/env python3
++"""Run the burned-in caption detector over real footage.
++
++The four sources under ``claude-code/test-footage/phase2_src`` are
++read-only inputs; this tool never writes to them. For each source it:
++
++* samples 12 frames spread evenly across the file,
++* records what the detector found (band, confidence, coverage),
++* times the detection,
++* saves one outlined debug frame showing every candidate box and the
++  accepted band.
++
++Results go to ``out/results.json`` and ``out/<source>.png``.
++
++Usage (from the repository root, with the backend venv's python):
++
++    python tools/burned-captions-proof/run_proof.py
++    python tools/burned-captions-proof/run_proof.py --samples 24
++"""
++
++from __future__ import annotations
++
++import argparse
++import json
++import sys
++import time
++from pathlib import Path
++
++import cv2
++
++REPO_ROOT = Path(__file__).resolve().parents[2]
++sys.path.insert(0, str(REPO_ROOT / "backend" / "src"))
++
++from media.burned_captions import (  # noqa: E402
++    candidates_in_frame,
++    detect_burned_caption_band,
++)
++
++DEFAULT_FOOTAGE = Path(
++    r"D:\SnipNova-Dev\claude-code\test-footage\phase2_src"
++)
++SOURCES = (
++    ("TkHlhgTutFs.mp4", "bottom burned subtitles", True),
++    ("dwZK6iQlyEw.mp4", "bottom burned subtitles", True),
++    ("1oXjtK5Nsjw.mp4", "static panels", False),
++    ("D3cAyFmhi_M.mp4", "vlog", False),
++)
++
++
++def _video_info(path: Path) -> dict:
++    capture = cv2.VideoCapture(str(path))
++    try:
++        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
++        frames = float(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0)
++        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
++        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
++    finally:
++        capture.release()
++    return {
++        "fps": fps,
++        "frames": int(frames),
++        "duration": (frames / fps) if fps > 0 else 0.0,
++        "width": width,
++        "height": height,
++    }
++
++
++def _sample_times(duration: float, count: int) -> list[float]:
++    return [duration * (index + 0.5) / count for index in range(count)]
++
++
++def _debug_frame(path: Path, when: float, band, output: Path) -> dict:
++    capture = cv2.VideoCapture(str(path))
++    try:
++        capture.set(cv2.CAP_PROP_POS_MSEC, when * 1000.0)
++        ok, frame = capture.read()
++    finally:
++        capture.release()
++    if not ok or frame is None:
++        return {"saved": False, "when": when}
++    height, width = frame.shape[:2]
++    candidates = candidates_in_frame(frame)
++    for candidate in candidates:
++        x0 = int(round(candidate.left * width))
++        y0 = int(round(candidate.top * height))
++        x1 = int(round(candidate.right * width))
++        y1 = int(round(candidate.bottom * height))
++        cv2.rectangle(frame, (x0, y0), (x1, y1), (0, 220, 0), 2)
++    if band is not None:
++        cv2.rectangle(
++            frame, (0, band.y), (width - 1, band.y + band.h), (0, 0, 255), 3
++        )
++        label = f"band y={band.y} h={band.h} conf={band.confidence:.2f}"
++    else:
++        label = "no changing caption band"
++    cv2.rectangle(frame, (0, 0), (width, 28), (0, 0, 0), -1)
++    cv2.putText(
++        frame, label, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
++        (255, 255, 255), 1, cv2.LINE_AA,
++    )
++    output.parent.mkdir(parents=True, exist_ok=True)
++    saved = bool(cv2.imwrite(str(output), frame))
++    return {
++        "saved": saved,
++        "when": when,
++        "candidates": len(candidates),
++        "path": str(output),
++    }
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument(
++        "--footage", type=Path, default=DEFAULT_FOOTAGE,
++        help=f"directory holding the four sources (default {DEFAULT_FOOTAGE})",
++    )
++    parser.add_argument(
++        "--out", type=Path,
++        default=Path(__file__).resolve().parent / "out",
++        help="output directory",
++    )
++    parser.add_argument(
++        "--samples", type=int, default=12,
++        help="frames sampled per source (default 12)",
++    )
++    args = parser.parse_args(argv)
++
++    out_dir = args.out.resolve()
++    out_dir.mkdir(parents=True, exist_ok=True)
++    results = []
++    missing = []
++    for filename, label, expected in SOURCES:
++        path = args.footage / filename
++        if not path.is_file():
++            missing.append(str(path))
++            print(f"MISSING {path}")
++            continue
++        info = _video_info(path)
++        times = _sample_times(info["duration"], args.samples)
++        started = time.perf_counter()
++        band = detect_burned_caption_band(
++            path,
++            times,
++            info["width"],
++            info["height"],
++        )
++        seconds = time.perf_counter() - started
++        debug = _debug_frame(
++            path,
++            times[len(times) // 2] if times else 0.0,
++            band,
++            out_dir / f"{path.stem}.png",
++        )
++        entry = {
++            "source": filename,
++            "label": label,
++            "expected_detected": expected,
++            "detected": band is not None,
++            "matches_expectation": (band is not None) == expected,
++            "band": (
++                {
++                    "y": band.y,
++                    "h": band.h,
++                    "confidence": band.confidence,
++                    "frames_with_text": band.frames_with_text,
++                    "frames_checked": band.frames_checked,
++                }
++                if band is not None
++                else None
++            ),
++            "seconds": round(seconds, 3),
++            "samples": args.samples,
++            "times": [round(value, 3) for value in times],
++            "video": info,
++            "debug": debug,
++        }
++        results.append(entry)
++        print(
++            f"{filename:22s} {info['width']}x{info['height']} "
++            f"{info['duration']:8.1f}s  "
++            f"{'DETECTED' if band is not None else 'none':8s} "
++            f"{'' if band is None else f'y={band.y} h={band.h} '}"
++            f"{seconds:6.2f}s"
++        )
++
++    payload = {
++        "footage": str(args.footage),
++        "samples_per_source": args.samples,
++        "sources": results,
++        "missing": missing,
++    }
++    (out_dir / "results.json").write_text(
++        json.dumps(payload, indent=2), encoding="utf-8"
++    )
++    print(f"Results: {out_dir / 'results.json'}")
++    return 1 if missing else 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+-- 
+2.56.0.windows.2
+

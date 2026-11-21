@@ -1,0 +1,183 @@
+"""Local "try it" page for the Phase 1 + Phase 2 auto-editor (owner testing).
+
+  backend\\.venv\\Scripts\\python.exe tools\\phase2\\try_it.py      ->  http://127.0.0.1:8765
+
+Upload a video, pick the niche (and, for gaming, the "face on top" template
+and credit), and it runs tools/phase2/auto_edit.py: the production
+transcription, selection, EDL, reframe, B-roll, captions and render
+functions. The page then shows the finished clips and the QC report.
+Bound to 127.0.0.1 only. Nothing touches the installed app, its .env or
+its database. AI selection and stock B-roll need the owner's free keys:
+paste the path of the .env that holds them (only GROQ_API_KEY,
+PIXABAY_API_KEY and COVERR_API_KEY are read, never printed or saved).
+"""
+from __future__ import annotations
+
+import html
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+
+import uvicorn
+from fastapi import FastAPI, File, Form, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+
+ROOT = Path(__file__).resolve().parents[2]
+PY = ROOT / "backend" / ".venv" / "Scripts" / "python.exe"
+if not PY.exists():
+    PY = Path(sys.executable)
+RUNS = ROOT / "test-footage" / "tryit"
+OUT = ROOT / "test-footage" / "phase2"
+SHIM = Path(__file__).resolve().parent / "_winshim"
+PROFILES = sorted(p.stem for p in (ROOT / "backend" / "src" / "auto_director" / "profiles").glob("*.json"))
+
+app = FastAPI(title="SnipNova try-it (local)")
+
+STYLE = """
+<style>
+ body{font-family:system-ui,Segoe UI,sans-serif;background:#0f0f12;color:#eee;margin:0;padding:24px;max-width:1100px}
+ h1{font-size:22px} a{color:#ffd400} label{display:block;margin:12px 0 4px;color:#bbb;font-size:14px}
+ input,select{background:#1b1b21;color:#eee;border:1px solid #333;border-radius:8px;padding:8px;width:320px}
+ button{margin-top:16px;background:#e5262b;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:15px;cursor:pointer}
+ .clips{display:flex;flex-wrap:wrap;gap:16px} .clip{background:#1b1b21;border-radius:12px;padding:10px;width:300px}
+ video{width:280px;border-radius:8px;background:#000} pre{white-space:pre-wrap;background:#1b1b21;padding:12px;border-radius:8px;font-size:12px}
+ .note{color:#999;font-size:13px}
+</style>"""
+
+
+def _run_dir(run_id: str) -> Path:
+    return RUNS / "".join(c for c in run_id if c.isalnum())
+
+
+@app.get("/", response_class=HTMLResponse)
+def home() -> str:
+    options = "".join(f'<option value="{p}"{" selected" if p == "gaming" else ""}>{p}</option>' for p in PROFILES)
+    runs = sorted(RUNS.glob("*/meta.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:8]
+    recent = "".join(
+        f'<li><a href="/run/{p.parent.name}">{html.escape(json.loads(p.read_text())["name"])}</a></li>' for p in runs
+    )
+    return f"""<html><head><title>SnipNova try-it</title>{STYLE}</head><body>
+<h1>SnipNova — try a video (Phase 1 + Phase 2, local)</h1>
+<p class="note">Runs on this PC. A 5–20 minute video takes a few minutes per clip on the CPU.</p>
+<form action="/run" method="post" enctype="multipart/form-data">
+ <label>Video file</label><input type="file" name="video" accept="video/*" required>
+ <label>Niche</label><select name="niche">{options}</select>
+ <label>Clips</label><input type="number" name="clips" value="2" min="1" max="6">
+ <label>Moment selection</label><select name="select">
+   <option value="fixed">Fixed windows (no key needed, not AI)</option>
+   <option value="ai">AI selection (needs the free Groq key in the .env below)</option></select>
+ <label>Layout (one look for the whole short)</label><select name="framing">
+   <option value="auto">Auto — picks ONE layout per clip</option>
+   <option value="crop">Face-follow crop (zoomed, follows the head)</option>
+   <option value="fit">Whole frame (fit, nothing cut off)</option></select>
+ <label>Gaming layout (gaming niche, clips with a facecam)</label><select name="template">
+   <option value="">Auto</option><option value="facecam_red">Face top · red</option>
+   <option value="facecam_gold">Face top · gold</option></select>
+ <label>Credit line (optional, e.g. @KaiCenat)</label><input type="text" name="credit" maxlength="40">
+ <label>.env path for AI selection / stock B-roll (optional)</label>
+ <input type="text" name="env_file" placeholder="D:\\EditedTool\\JarvisClipStudio\\.env">
+ <br><button type="submit">Make clips</button>
+</form>
+<h3>Recent runs</h3><ul>{recent or '<li class="note">none yet</li>'}</ul>
+</body></html>"""
+
+
+@app.post("/run")
+async def run(video: UploadFile = File(...), niche: str = Form("gaming"), clips: int = Form(2),
+              select: str = Form("fixed"), template: str = Form(""), credit: str = Form(""),
+              env_file: str = Form(""), framing: str = Form("auto")):
+    if env_file.strip() and not Path(env_file.strip()).is_file():
+        return HTMLResponse(
+            f"<html><head>{STYLE}</head><body><h1>That .env file was not found</h1>"
+            f"<p>{html.escape(env_file.strip())}</p><p>Nothing was run. Go back and fix the path, "
+            "or leave it empty to use fixed windows.</p><p><a href='/'>← back</a></p></body></html>",
+            status_code=400,
+        )
+    run_id = uuid.uuid4().hex[:10]
+    folder = _run_dir(run_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    suffix = Path(video.filename or "video.mp4").suffix.lower() or ".mp4"
+    stem = f"tryit_{run_id}"
+    source = folder / f"{stem}{suffix}"
+    with source.open("wb") as handle:
+        shutil.copyfileobj(video.file, handle, length=8 * 1024 * 1024)
+    niche = niche if niche in PROFILES else "gaming"
+    cmd = [str(PY), str(ROOT / "tools" / "phase2" / "auto_edit.py"), "--video", str(source),
+           "--niche", niche, "--clips", str(max(1, min(6, int(clips)))),
+           "--select", "ai" if select == "ai" else "fixed",
+           "--framing", framing if framing in ("auto", "fit", "crop") else "auto"]
+    if template in ("facecam_red", "facecam_gold"):
+        cmd += ["--layout-template", template]
+        if credit.strip():
+            cmd += ["--credit", credit.strip()[:40]]
+    if env_file.strip() and Path(env_file.strip()).is_file():
+        cmd += ["--env-file", env_file.strip()]
+    env = dict(os.environ, NO_PROXY="localhost", PYTHONIOENCODING="utf-8")
+    if os.name == "nt":
+        env["PYTHONPATH"] = str(SHIM) + os.pathsep + env.get("PYTHONPATH", "")
+    log = (folder / "log.txt").open("wb")
+    # Own process group: Ctrl+C in the page's terminal (restarting the page)
+    # must not kill a render that is already running.
+    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+    proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT, env=env,
+                            creationflags=flags, start_new_session=(os.name != "nt"))
+    (folder / "meta.json").write_text(json.dumps({
+        "name": f"{video.filename} · {niche} · {framing}{' · ' + template if template else ''}",
+        "stem": stem, "pid": proc.pid, "started": time.time(),
+    }), encoding="utf-8")
+    return RedirectResponse(f"/run/{run_id}", status_code=303)
+
+
+def _alive(pid: int) -> bool:
+    if os.name == "nt":
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
+        return str(pid) in out
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+@app.get("/run/{run_id}", response_class=HTMLResponse)
+def status(run_id: str) -> str:
+    folder = _run_dir(run_id)
+    meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+    out = OUT / meta["stem"]
+    log_text = (folder / "log.txt").read_text(encoding="utf-8", errors="replace") if (folder / "log.txt").exists() else ""
+    lines = [l for l in log_text.splitlines() if not l.startswith('{"timestamp')][-14:]
+    running = _alive(int(meta["pid"])) and "done:" not in log_text
+    clips = sorted(out.glob("clip*.mp4")) if out.exists() else []
+    cards = "".join(
+        f'<div class="clip"><video src="/file/{run_id}/{c.name}" controls preload="metadata"></video>'
+        f'<div><a href="/file/{run_id}/{c.name}" download>Download {c.name}</a></div></div>' for c in clips
+    )
+    report = (out / "report.md").read_text(encoding="utf-8") if (out / "report.md").exists() else ""
+    refresh = '<meta http-equiv="refresh" content="5">' if running else ""
+    elapsed = int(time.time() - meta["started"])
+    state = f"Working… {elapsed // 60}m {elapsed % 60}s" if running else ("Done" if clips else "Stopped — see the log")
+    return f"""<html><head><title>SnipNova run</title>{refresh}{STYLE}</head><body>
+<p><a href="/">← new video</a></p><h1>{html.escape(meta['name'])}</h1><h3>{state}</h3>
+<div class="clips">{cards}</div>
+{'<h3>Report</h3><pre>' + html.escape(report) + '</pre>' if report else ''}
+<h3>Log</h3><pre>{html.escape(chr(10).join(lines))}</pre></body></html>"""
+
+
+@app.get("/file/{run_id}/{name}")
+def file(run_id: str, name: str):
+    meta = json.loads((_run_dir(run_id) / "meta.json").read_text(encoding="utf-8"))
+    path = (OUT / meta["stem"] / Path(name).name).resolve()
+    if not str(path).startswith(str((OUT / meta["stem"]).resolve())) or not path.is_file():
+        return HTMLResponse("not found", status_code=404)
+    return FileResponse(path)
+
+
+if __name__ == "__main__":
+    RUNS.mkdir(parents=True, exist_ok=True)
+    print("SnipNova try-it page: http://127.0.0.1:8765  (Ctrl+C to stop)")
+    uvicorn.run(app, host="127.0.0.1", port=8765, log_level="warning")

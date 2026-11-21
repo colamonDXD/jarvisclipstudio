@@ -1,0 +1,753 @@
+.FFFFFFFsFFFFFFFFF................................FFFF.................. [ 58%]
+....................................................                     [100%]
+================================== FAILURES ===================================
+______________ test_tasks_insert_executes_against_a_real_engine _______________
+
+    def test_tasks_insert_executes_against_a_real_engine():
+        sql = _insert_sql()
+        cols = _columns(sql)
+        conn = sqlite3.connect(":memory:")
+        col_defs = ", ".join(
+            f"{c} TEXT" for c in cols if c not in ("created_at", "updated_at")
+        )
+        conn.execute(
+            f"CREATE TABLE tasks ({col_defs}, created_at TEXT, updated_at TEXT)"
+        )
+        sqlite_sql = sql.replace("NOW()", "CURRENT_TIMESTAMP")
+        sqlite_sql = re.sub(r"RETURNING id", "", sqlite_sql)
+        params = {
+            "task_id": "t-1",
+            "user_id": "u-1",
+            "source_id": "s-1",
+            "status": "queued",
+            "font_family": None,
+            "font_size": None,
+            "font_color": None,
+            "caption_template": "default",
+            "include_broll": 0,
+            "processing_mode": "fast",
+            "niche_override": None,
+            "music_override": None,
+            "music_mode": "auto",
+            "template_mode": None,
+            "framing_mode": None,
+            "layout_template": None,
+            "layout_credit": None,
+            "broll_enabled": 1,
+            "separation_opt_in": 0,
+            "target_clip_count": 10,
+            "source_duration_seconds": 2365,
+            "content_brief": None,
+            "campaign_id": None,
+            "brand_kit_id": None,
+            "intro_asset": None,
+            "outro_asset": None,
+            "creation_mode": "full_auto",
+            "manual_ranges_json": None,
+        }
+>       conn.execute(sqlite_sql, params)
+E       sqlite3.ProgrammingError: You did not supply a value for binding parameter :hook_title_enabled.
+
+tests\unit\test_task_insert_columns.py:81: ProgrammingError
+_______________ test_plain_task_settings_survive_get_task_by_id _______________
+
+    async def test_plain_task_settings_survive_get_task_by_id():
+        session = _session()
+>       task_id = await _create(
+            session,
+            template_mode="plain",
+            music_mode="off",
+            broll_enabled=False,
+            separation_opt_in=True,
+        )
+
+tests\unit\test_task_settings_readback.py:110: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\unit\test_task_settings_readback.py:95: in _create
+    return await TaskRepository.create_task(session, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF06335E90>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF06337E10>
+params = {'brand_kit_id': None, 'broll_enabled': False, 'campaign_id': None, 'caption_template': 'default', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+_______________ test_auto_task_settings_survive_get_task_by_id ________________
+
+    async def test_auto_task_settings_survive_get_task_by_id():
+        session = _session()
+>       task_id = await _create(
+            session,
+            template_mode="auto",
+            music_mode="on",
+            broll_enabled=True,
+            separation_opt_in=False,
+        )
+
+tests\unit\test_task_settings_readback.py:138: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\unit\test_task_settings_readback.py:95: in _create
+    return await TaskRepository.create_task(session, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF056D7990>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF056D7D50>
+params = {'brand_kit_id': None, 'broll_enabled': True, 'campaign_id': None, 'caption_template': 'default', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+_______________ test_plain_task_settings_survive_get_user_tasks _______________
+
+    async def test_plain_task_settings_survive_get_user_tasks():
+        session = _session()
+>       task_id = await _create(
+            session,
+            template_mode="plain",
+            music_mode="off",
+            broll_enabled=False,
+            separation_opt_in=True,
+        )
+
+tests\unit\test_task_settings_readback.py:156: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\unit\test_task_settings_readback.py:95: in _create
+    return await TaskRepository.create_task(session, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF062FE750>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF062FE910>
+params = {'brand_kit_id': None, 'broll_enabled': False, 'campaign_id': None, 'caption_template': 'default', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+_________________ test_legacy_null_settings_read_back_as_none _________________
+
+    async def test_legacy_null_settings_read_back_as_none():
+        """Rows that predate the controls store NULL and must keep
+        reading as None (the legacy behaves-as-Auto rule), not crash."""
+        session = _session()
+>       task_id = await _create(session)
+                  ^^^^^^^^^^^^^^^^^^^^^^
+
+tests\unit\test_task_settings_readback.py:178: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\unit\test_task_settings_readback.py:95: in _create
+    return await TaskRepository.create_task(session, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF061C85D0>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF061CBE50>
+params = {'brand_kit_id': None, 'broll_enabled': None, 'campaign_id': None, 'caption_template': 'default', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+______________ test_db_round_tripped_plain_task_builds_plain_edl ______________
+
+tmp_path = WindowsPath('C:/Users/Prateek T H/AppData/Local/Temp/pytest-of-Prateek T H/pytest-354/test_db_round_tripped_plain_ta0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001BF061D7110>
+
+    async def test_db_round_tripped_plain_task_builds_plain_edl(
+        tmp_path, monkeypatch
+    ):
+        """A Plain task whose broll_enabled is NULL (channel-monitor and
+        other non-form creators store it that way) must still plan as
+        Plain end to end: stamped EDL, no cues, no stock calls, no bed."""
+        session = _session()
+>       task_id = await _create(
+            session, template_mode="plain", music_mode="off",
+            broll_enabled=None, separation_opt_in=False,
+        )
+
+tests\unit\test_task_settings_readback.py:261: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\unit\test_task_settings_readback.py:95: in _create
+    return await TaskRepository.create_task(session, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF061D6ED0>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF061D4D50>
+params = {'brand_kit_id': None, 'broll_enabled': None, 'campaign_id': None, 'caption_template': 'default', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+_________ test_db_round_tripped_music_off_auto_task_builds_silent_edl _________
+
+tmp_path = WindowsPath('C:/Users/Prateek T H/AppData/Local/Temp/pytest-of-Prateek T H/pytest-354/test_db_round_tripped_music_of0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001BF06280B90>
+
+    async def test_db_round_tripped_music_off_auto_task_builds_silent_edl(
+        tmp_path, monkeypatch
+    ):
+        """Music Off stored on an Auto task must reach the music chain:
+        the built EDL carries the proven no-music shape."""
+        session = _session()
+>       task_id = await _create(
+            session, template_mode="auto", music_mode="off",
+            broll_enabled=True, separation_opt_in=False,
+        )
+
+tests\unit\test_task_settings_readback.py:288: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\unit\test_task_settings_readback.py:95: in _create
+    return await TaskRepository.create_task(session, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF06281010>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF06281B50>
+params = {'brand_kit_id': None, 'broll_enabled': True, 'campaign_id': None, 'caption_template': 'default', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+______________ test_full_create_surface_survives_get_task_by_id _______________
+
+    async def test_full_create_surface_survives_get_task_by_id():
+        session = _session()
+>       task_id = await _create(
+            session,
+            status="queued",
+            font_family="TikTokSans-Regular",
+            font_size=28,
+            font_color="#FFDD00",
+            caption_template="karaoke",
+            include_broll=True,
+            processing_mode="quality",
+            niche_override="travel_vlog",
+            music_override="calm.wav",
+            music_mode="on",
+            template_mode="auto",
+            broll_enabled=True,
+            separation_opt_in=True,
+            target_clip_count=7,
+            creation_mode="find_moments",
+            manual_ranges_json='[{"start": 1.0, "end": 9.0}]',
+            content_brief='{"must_include": ["harbour"]}',
+            campaign_id="camp-1",
+            brand_kit_id="kit-1",
+            intro_asset="intro.mp4",
+            outro_asset="outro.mp4",
+        )
+
+tests\unit\test_settings_integrity_matrix.py:105: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\unit\test_settings_integrity_matrix.py:96: in _create
+    return await TaskRepository.create_task(session, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF063CE850>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF063CE290>
+params = {'brand_kit_id': 'kit-1', 'broll_enabled': True, 'campaign_id': 'camp-1', 'caption_template': 'karaoke', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+___________ test_get_user_tasks_projection_carries_pipeline_fields ____________
+
+    async def test_get_user_tasks_projection_carries_pipeline_fields():
+        """The list view is a projection. Its ONLY consumer is the task
+        list route (tasks.py:561); every pipeline reader — both resume
+        paths included (tasks.py:2790, task_service.py:642) — loads the
+        full dict via get_task_by_id. The projection must still carry the
+        four repaired fields (the fix lane added them here too, and the
+        list displays mode state), and — pinned deliberately — it does NOT
+        carry the styling/brand fields, which nothing reads from this
+        dict. See SETTINGS_INTEGRITY_AUDIT.md finding F-3."""
+        session = _session()
+>       task_id = await _create(
+            session,
+            template_mode="plain",
+            niche_override="travel_vlog",
+            target_clip_count=3,
+            creation_mode="full_auto",
+            font_family="TikTokSans-Regular",
+            caption_template="karaoke",
+            brand_kit_id="kit-1",
+        )
+
+tests\unit\test_settings_integrity_matrix.py:162: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\unit\test_settings_integrity_matrix.py:96: in _create
+    return await TaskRepository.create_task(session, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF06114A90>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF06115FD0>
+params = {'brand_kit_id': 'kit-1', 'broll_enabled': None, 'campaign_id': None, 'caption_template': 'karaoke', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+___________ test_plain_with_music_on_still_builds_silent_plain_edl ____________
+
+tmp_path = WindowsPath('C:/Users/Prateek T H/AppData/Local/Temp/pytest-of-Prateek T H/pytest-354/test_plain_with_music_on_still0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001BF052A7BD0>
+
+    async def test_plain_with_music_on_still_builds_silent_plain_edl(
+        tmp_path, monkeypatch
+    ):
+        """Plain's contract beats the music control: even Music On stored
+        on a Plain task yields no bed (template_mode module docstring)."""
+        session = _session()
+>       task_id = await _create(
+            session, template_mode="plain", music_mode="on",
+            broll_enabled=True,
+        )
+
+tests\unit\test_settings_integrity_matrix.py:284: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\unit\test_settings_integrity_matrix.py:96: in _create
+    return await TaskRepository.create_task(session, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF06086C90>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF06085090>
+params = {'brand_kit_id': None, 'broll_enabled': True, 'campaign_id': None, 'caption_template': 'default', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+__________ test_plain_with_music_auto_still_builds_silent_plain_edl ___________
+
+tmp_path = WindowsPath('C:/Users/Prateek T H/AppData/Local/Temp/pytest-of-Prateek T H/pytest-354/test_plain_with_music_auto_sti0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001BF056D7B10>
+
+    async def test_plain_with_music_auto_still_builds_silent_plain_edl(
+        tmp_path, monkeypatch
+    ):
+        session = _session()
+>       task_id = await _create(
+            session, template_mode="plain", music_mode=None,
+            broll_enabled=None,
+        )
+
+tests\unit\test_settings_integrity_matrix.py:301: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\unit\test_settings_integrity_matrix.py:96: in _create
+    return await TaskRepository.create_task(session, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF06253650>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF06253F10>
+params = {'brand_kit_id': None, 'broll_enabled': None, 'campaign_id': None, 'caption_template': 'default', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+_________________ test_auto_with_music_on_builds_audible_edl __________________
+
+tmp_path = WindowsPath('C:/Users/Prateek T H/AppData/Local/Temp/pytest-of-Prateek T H/pytest-354/test_auto_with_music_on_builds0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001BF063C7FD0>
+
+    async def test_auto_with_music_on_builds_audible_edl(tmp_path, monkeypatch):
+        session = _session()
+>       task_id = await _create(
+            session, template_mode="auto", music_mode="on",
+            broll_enabled=False,
+        )
+
+tests\unit\test_settings_integrity_matrix.py:315: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\unit\test_settings_integrity_matrix.py:96: in _create
+    return await TaskRepository.create_task(session, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF063C7D50>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF063C7AD0>
+params = {'brand_kit_id': None, 'broll_enabled': False, 'campaign_id': None, 'caption_template': 'default', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+________ test_auto_broll_explicit_off_plans_no_cues_and_no_stock_calls ________
+
+tmp_path = WindowsPath('C:/Users/Prateek T H/AppData/Local/Temp/pytest-of-Prateek T H/pytest-354/test_auto_broll_explicit_off_p0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001BF06143990>
+
+    async def test_auto_broll_explicit_off_plans_no_cues_and_no_stock_calls(
+        tmp_path, monkeypatch
+    ):
+        session = _session()
+>       task_id = await _create(
+            session, template_mode="auto", music_mode="auto",
+            broll_enabled=False,
+        )
+
+tests\unit\test_settings_integrity_matrix.py:330: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\unit\test_settings_integrity_matrix.py:96: in _create
+    return await TaskRepository.create_task(session, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF06426E90>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF06426A10>
+params = {'brand_kit_id': None, 'broll_enabled': False, 'campaign_id': None, 'caption_template': 'default', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+________________ test_auto_broll_null_uses_template_default_on ________________
+
+tmp_path = WindowsPath('C:/Users/Prateek T H/AppData/Local/Temp/pytest-of-Prateek T H/pytest-354/test_auto_broll_null_uses_temp0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001BF05628210>
+
+    async def test_auto_broll_null_uses_template_default_on(
+        tmp_path, monkeypatch
+    ):
+        session = _session()
+>       task_id = await _create(
+            session, template_mode="auto", music_mode="auto",
+            broll_enabled=None,
+        )
+
+tests\unit\test_settings_integrity_matrix.py:344: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\unit\test_settings_integrity_matrix.py:96: in _create
+    return await TaskRepository.create_task(session, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF05501F90>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF05683F10>
+params = {'brand_kit_id': None, 'broll_enabled': None, 'campaign_id': None, 'caption_template': 'default', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+___________________ test_auto_broll_explicit_on_plans_cues ____________________
+
+tmp_path = WindowsPath('C:/Users/Prateek T H/AppData/Local/Temp/pytest-of-Prateek T H/pytest-354/test_auto_broll_explicit_on_pl0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001BF06282190>
+
+    async def test_auto_broll_explicit_on_plans_cues(tmp_path, monkeypatch):
+        session = _session()
+>       task_id = await _create(
+            session, template_mode="auto", music_mode="auto",
+            broll_enabled=True,
+        )
+
+tests\unit\test_settings_integrity_matrix.py:356: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\unit\test_settings_integrity_matrix.py:96: in _create
+    return await TaskRepository.create_task(session, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF061C8050>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF061C94D0>
+params = {'brand_kit_id': None, 'broll_enabled': True, 'campaign_id': None, 'caption_template': 'default', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+_______________ test_unrecognised_stored_values_resolve_as_auto _______________
+
+tmp_path = WindowsPath('C:/Users/Prateek T H/AppData/Local/Temp/pytest-of-Prateek T H/pytest-354/test_unrecognised_stored_value0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001BF0621AF50>
+caplog = <_pytest.logging.LogCaptureFixture object at 0x000001BF0621BBD0>
+
+    async def test_unrecognised_stored_values_resolve_as_auto(
+        tmp_path, monkeypatch, caplog
+    ):
+        """Only a direct DB write can plant these (the API validators 422
+        them). The serializer carries them faithfully; the render loop's
+        reads then reject them loudly — a warning names each field and the
+        bad value — and the documented defaults apply (unknown template is
+        not Plain, unknown music mode lands in the music chain's Auto
+        branch). See SETTINGS_INTEGRITY_AUDIT.md finding F-2."""
+        session = _session()
+>       task_id = await _create(
+            session, template_mode="auto", music_mode="auto",
+            broll_enabled=None,
+        )
+
+tests\unit\test_settings_integrity_matrix.py:381: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\unit\test_settings_integrity_matrix.py:96: in _create
+    return await TaskRepository.create_task(session, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF0621B4D0>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF0621BF90>
+params = {'brand_kit_id': None, 'broll_enabled': None, 'campaign_id': None, 'caption_template': 'default', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+______________ test_framing_mode_survives_both_serializers[auto] ______________
+
+value = 'auto'
+
+    @pytest.mark.parametrize("value", ["auto", "fit", "crop", None])
+    async def test_framing_mode_survives_both_serializers(value):
+        session = _session()
+>       task_id = await TaskRepository.create_task(
+            session,
+            user_id="user-1",
+            source_id="src-1",
+            source_duration_seconds=600,
+            framing_mode=value,
+        )
+
+tests\unit\test_framing_mode.py:151: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF06226490>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF062262D0>
+params = {'brand_kit_id': None, 'broll_enabled': None, 'campaign_id': None, 'caption_template': 'default', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+______________ test_framing_mode_survives_both_serializers[fit] _______________
+
+value = 'fit'
+
+    @pytest.mark.parametrize("value", ["auto", "fit", "crop", None])
+    async def test_framing_mode_survives_both_serializers(value):
+        session = _session()
+>       task_id = await TaskRepository.create_task(
+            session,
+            user_id="user-1",
+            source_id="src-1",
+            source_duration_seconds=600,
+            framing_mode=value,
+        )
+
+tests\unit\test_framing_mode.py:151: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF06002DD0>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF06003550>
+params = {'brand_kit_id': None, 'broll_enabled': None, 'campaign_id': None, 'caption_template': 'default', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+______________ test_framing_mode_survives_both_serializers[crop] ______________
+
+value = 'crop'
+
+    @pytest.mark.parametrize("value", ["auto", "fit", "crop", None])
+    async def test_framing_mode_survives_both_serializers(value):
+        session = _session()
+>       task_id = await TaskRepository.create_task(
+            session,
+            user_id="user-1",
+            source_id="src-1",
+            source_duration_seconds=600,
+            framing_mode=value,
+        )
+
+tests\unit\test_framing_mode.py:151: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF054D2CD0>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF061E1190>
+params = {'brand_kit_id': None, 'broll_enabled': None, 'campaign_id': None, 'caption_template': 'default', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+______________ test_framing_mode_survives_both_serializers[None] ______________
+
+value = None
+
+    @pytest.mark.parametrize("value", ["auto", "fit", "crop", None])
+    async def test_framing_mode_survives_both_serializers(value):
+        session = _session()
+>       task_id = await TaskRepository.create_task(
+            session,
+            user_id="user-1",
+            source_id="src-1",
+            source_duration_seconds=600,
+            framing_mode=value,
+        )
+
+tests\unit\test_framing_mode.py:151: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\repositories\task_repository.py:141: in create_task
+    result = await db.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sql_exec_support.ExecSession object at 0x000001BF06036310>
+statement = <sqlalchemy.sql.elements.TextClause object at 0x000001BF061177D0>
+params = {'brand_kit_id': None, 'broll_enabled': None, 'campaign_id': None, 'caption_template': 'default', ...}
+
+    async def execute(self, statement, params: dict | None = None) -> ExecResult:
+>       cursor = self.conn.execute(to_sqlite(str(statement)), dict(params or {}))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       sqlite3.OperationalError: table tasks has no column named hook_title_enabled
+
+tests\unit\sql_exec_support.py:283: OperationalError
+============================== warnings summary ===============================
+tests/unit/test_framing_mode.py::test_process_task_warns_and_defaults_on_invalid_stored_framing
+tests/unit/test_framing_mode.py::test_process_task_forwards_a_valid_stored_framing_mode
+  D:\SnipNova-Dev\v12-base\backend\src\services\task_service.py:2214: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    await self.task_repo.load_source_metadata(self.db, task_id)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/unit/test_framing_mode.py::test_process_task_warns_and_defaults_on_invalid_stored_framing
+tests/unit/test_framing_mode.py::test_process_task_forwards_a_valid_stored_framing_mode
+  D:\SnipNova-Dev\v12-base\backend\src\services\task_service.py:2634: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    await self.task_repo.load_source_metadata(self.db, task_id)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/unit/test_framing_mode.py::test_process_task_warns_and_defaults_on_invalid_stored_framing
+tests/unit/test_framing_mode.py::test_process_task_forwards_a_valid_stored_framing_mode
+  D:\SnipNova-Dev\v12-base\backend\src\repositories\clip_repository.py:329: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    async with db.begin_nested():
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/unit/test_framing_mode.py::test_process_task_warns_and_defaults_on_invalid_stored_framing
+tests/unit/test_framing_mode.py::test_process_task_forwards_a_valid_stored_framing_mode
+  D:\SnipNova-Dev\v12-base\backend\src\repositories\edit_transaction.py:15: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    if not db.info.get(_EDIT_TASK):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/unit/test_framing_mode.py::test_process_task_warns_and_defaults_on_invalid_stored_framing
+tests/unit/test_framing_mode.py::test_process_task_forwards_a_valid_stored_framing_mode
+  D:\SnipNova-Dev\opencode\backend\.venv\Lib\site-packages\_pytest\stash.py:108: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    del self._storage[key]
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/unit/test_task_insert_columns.py::test_tasks_insert_executes_against_a_real_engine
+FAILED tests/unit/test_task_settings_readback.py::test_plain_task_settings_survive_get_task_by_id
+FAILED tests/unit/test_task_settings_readback.py::test_auto_task_settings_survive_get_task_by_id
+FAILED tests/unit/test_task_settings_readback.py::test_plain_task_settings_survive_get_user_tasks
+FAILED tests/unit/test_task_settings_readback.py::test_legacy_null_settings_read_back_as_none
+FAILED tests/unit/test_task_settings_readback.py::test_db_round_tripped_plain_task_builds_plain_edl
+FAILED tests/unit/test_task_settings_readback.py::test_db_round_tripped_music_off_auto_task_builds_silent_edl
+FAILED tests/unit/test_settings_integrity_matrix.py::test_full_create_surface_survives_get_task_by_id
+FAILED tests/unit/test_settings_integrity_matrix.py::test_get_user_tasks_projection_carries_pipeline_fields
+FAILED tests/unit/test_settings_integrity_matrix.py::test_plain_with_music_on_still_builds_silent_plain_edl
+FAILED tests/unit/test_settings_integrity_matrix.py::test_plain_with_music_auto_still_builds_silent_plain_edl
+FAILED tests/unit/test_settings_integrity_matrix.py::test_auto_with_music_on_builds_audible_edl
+FAILED tests/unit/test_settings_integrity_matrix.py::test_auto_broll_explicit_off_plans_no_cues_and_no_stock_calls
+FAILED tests/unit/test_settings_integrity_matrix.py::test_auto_broll_null_uses_template_default_on
+FAILED tests/unit/test_settings_integrity_matrix.py::test_auto_broll_explicit_on_plans_cues
+FAILED tests/unit/test_settings_integrity_matrix.py::test_unrecognised_stored_values_resolve_as_auto
+FAILED tests/unit/test_framing_mode.py::test_framing_mode_survives_both_serializers[auto]
+FAILED tests/unit/test_framing_mode.py::test_framing_mode_survives_both_serializers[fit]
+FAILED tests/unit/test_framing_mode.py::test_framing_mode_survives_both_serializers[crop]
+FAILED tests/unit/test_framing_mode.py::test_framing_mode_survives_both_serializers[None]
+20 failed, 103 passed, 1 skipped, 10 warnings in 339.96s (0:05:39)
+EXIT 1

@@ -1,0 +1,1326 @@
+From 1b0fcc86595d7aeb8d53d64467cbd4204528fa21 Mon Sep 17 00:00:00 2001
+From: Claude Lane A <lane-a@local.invalid>
+Date: Tue, 17 Nov 2026 21:59:26 +0530
+Subject: [PATCH 06/22] feat(layout): "face on top, game below" templates for
+ streamer clips
+
+Luffy's reference reel (gaming pages' streamer cuts): the facecam,
+cropped tight, fills the top 45 % of the frame, the gameplay fills the
+bottom, a coloured divider marks the seam, captions sit centred on the
+seam one to three words at a time, and a small credit line sits at the
+bottom. Two looks: facecam_red (red divider, white Anton with a red
+outline) and facecam_gold (gold divider, white with a black outline,
+spoken word in yellow).
+
+- media/gaming_templates.py builds the graph; choose_reaction_layout
+  uses it when the task picked a template and a facecam is found.
+- Per-task layout_template / layout_credit: migration
+  20261117_0001, model, repository, POST /tasks/ (422 on a bad
+  template), processing and every clip re-render path. NULL keeps the
+  automatic layout; the render call shape is unchanged without it.
+- Caption templates seam_red / seam_gold; the template's caption look
+  wins over the task font and the profile's words-per-line.
+- Create form: a "Gaming layout" picker (Gaming niche only) and a
+  credit box, 6 locales, 4 vitest tests; tsc clean.
+- The credit drawtext reads a temp file (user text never enters the
+  graph); its cleanup timer is a daemon so short-lived processes exit.
+- Four hand-written SQLite mirrors of the tasks table gain the two
+  columns, as they did for framing_mode.
+- Phase 2 harness: --layout-template / --credit / --out-suffix, and
+  --only runs merge into INDEX.md.
+
+Proof: Kai Cenat 1080p, both templates, 4/4 clips rendered with seam
+captions and credit; 14 backend tests, 4 frontend tests.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/api/routes/tasks.py               |   9 +
+ backend/src/caption_templates.py              |  52 ++++++
+ backend/src/media/gaming_templates.py         |  30 +++-
+ backend/src/media/reframing.py                |  16 +-
+ .../20261117_0001_task_layout_template.sql    |   5 +
+ backend/src/models.py                         |   9 +
+ backend/src/repositories/task_repository.py   |  12 +-
+ backend/src/services/clip_service.py          |  48 +++++-
+ backend/src/services/task_service.py          |  29 ++++
+ backend/src/services/video_service.py         |   9 +
+ backend/src/video_utils.py                    |  40 ++++-
+ backend/tests/unit/test_broll_toggle.py       |   2 +-
+ backend/tests/unit/test_framing_mode.py       |   2 +-
+ backend/tests/unit/test_gaming_templates.py   | 159 ++++++++++++++++++
+ .../unit/test_settings_integrity_matrix.py    |   2 +-
+ .../tests/unit/test_task_settings_readback.py |   2 +-
+ docs/phase2/AUTO_EDITOR.md                    |  47 ++++++
+ frontend/messages/de/home.json                |   8 +
+ frontend/messages/en/home.json                |   8 +
+ frontend/messages/es/home.json                |   8 +
+ frontend/messages/id/home.json                |   8 +
+ frontend/messages/pt/home.json                |   8 +
+ frontend/messages/zh/home.json                |   8 +
+ .../home-app-gaming-layout.test.tsx           | 117 +++++++++++++
+ frontend/src/components/home-app.tsx          |  52 ++++++
+ tools/phase2/auto_edit.py                     |  11 +-
+ tools/phase2/run_all.py                       |  15 +-
+ 27 files changed, 697 insertions(+), 19 deletions(-)
+ create mode 100644 backend/src/migrations/sql/20261117_0001_task_layout_template.sql
+ create mode 100644 backend/tests/unit/test_gaming_templates.py
+ create mode 100644 docs/phase2/AUTO_EDITOR.md
+ create mode 100644 frontend/src/components/home-app-gaming-layout.test.tsx
+
+diff --git a/backend/src/api/routes/tasks.py b/backend/src/api/routes/tasks.py
+index b61a599..452eaa2 100644
+--- a/backend/src/api/routes/tasks.py
++++ b/backend/src/api/routes/tasks.py
+@@ -70,6 +70,7 @@ from ...services.learning_service import (
+ from ...media.music_library import validate_music_mode, validate_music_override
+ from ...auto_director.template_mode import validate_template_mode
+ from ...auto_director.framing_mode import validate_framing_mode
++from ...media.gaming_templates import clean_layout_credit, validate_layout_template
+ from ...auto_director.broll_setting import validate_broll_enabled
+ from ...media.separation import validate_separation_opt_in
+ from ...ai import validate_target_clip_count
+@@ -701,6 +702,10 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
+     try:
+         template_mode = validate_template_mode(data.get("template_mode"))
+         framing_mode = validate_framing_mode(data.get("framing_mode"))
++        layout_template = validate_layout_template(data.get("layout_template"))
++        layout_credit = (
++            clean_layout_credit(data.get("layout_credit")) if layout_template else None
++        )
+         broll_enabled = validate_broll_enabled(data.get("broll_enabled"))
+         separation_opt_in = validate_separation_opt_in(
+             data.get("separation_opt_in")
+@@ -779,6 +784,8 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
+             "music_mode": music_mode,
+             "template_mode": template_mode,
+             "framing_mode": framing_mode,
++            "layout_template": layout_template,
++            "layout_credit": layout_credit,
+             "broll_enabled": broll_enabled,
+             "separation_opt_in": separation_opt_in,
+             "target_clip_count": target_clip_count,
+@@ -892,6 +899,8 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
+                 music_mode=music_mode,
+                 template_mode=template_mode,
+                 framing_mode=framing_mode,
++                layout_template=layout_template,
++                layout_credit=layout_credit,
+                 broll_enabled=broll_enabled,
+                 separation_opt_in=separation_opt_in,
+                 target_clip_count=target_clip_count,
+diff --git a/backend/src/caption_templates.py b/backend/src/caption_templates.py
+index 47f17da..d2c09d6 100644
+--- a/backend/src/caption_templates.py
++++ b/backend/src/caption_templates.py
+@@ -272,6 +272,58 @@ CAPTION_TEMPLATES: Dict[str, Dict[str, Any]] = {
+         "max_words_per_line": 5,
+         "position_y": 0.80,
+     },
++    # The two "Face on top, game below" streamer looks
++    # (media/gaming_templates.py). Captions sit centred on the
++    # facecam/gameplay seam, one to three punchy words at a time, in a tall
++    # condensed face at the size cap (~7 % of the frame on the reference
++    # cards). A thin stroke: the outline scales with the font
++    # (font_px * stroke / 26), so a "normal" 4-5 merges into a solid box.
++    "seam_red": {
++        "name": "Seam — red",
++        "description": "Condensed white words with a red outline on the face/game seam",
++        "font_family": "Anton-Regular",
++        "font_size": 68,
++        "font_color": "#FFFFFF",
++        "highlight_color": "#FFFFFF",
++        "emphasis_color": "#FFFFFF",
++        "stroke_color": "#E5262B",
++        "stroke_width": 2,
++        "background": False,
++        "background_color": None,
++        "word_box": False,
++        "word_box_color": None,
++        "animation": "pop",
++        "word_pop": True,
++        "emoji": False,
++        "uppercase": True,
++        "shadow": True,
++        "glow": False,
++        "max_words_per_line": 2,
++        "position_y": 0.45,
++    },
++    "seam_gold": {
++        "name": "Seam — gold",
++        "description": "Condensed white words, black outline, the spoken word in yellow",
++        "font_family": "Anton-Regular",
++        "font_size": 64,
++        "font_color": "#FFFFFF",
++        "highlight_color": "#FFD400",
++        "emphasis_color": "#FFD400",
++        "stroke_color": "#000000",
++        "stroke_width": 2,
++        "background": False,
++        "background_color": None,
++        "word_box": False,
++        "word_box_color": None,
++        "animation": "karaoke",
++        "word_pop": True,
++        "emoji": False,
++        "uppercase": False,
++        "shadow": True,
++        "glow": False,
++        "max_words_per_line": 3,
++        "position_y": 0.45,
++    },
+ }
+ 
+ 
+diff --git a/backend/src/media/gaming_templates.py b/backend/src/media/gaming_templates.py
+index 7e3f06a..8af8b4a 100644
+--- a/backend/src/media/gaming_templates.py
++++ b/backend/src/media/gaming_templates.py
+@@ -20,6 +20,7 @@ clips keep the normal planner and just get the template's caption style.
+ 
+ from __future__ import annotations
+ 
++import atexit
+ import os
+ import tempfile
+ import threading
+@@ -127,16 +128,37 @@ def _credit_filter(credit: str) -> str:
+     path = Path(name)
+     with os.fdopen(fd, "w", encoding="utf-8") as handle:
+         handle.write(credit.replace("%", r"\%"))
+-    threading.Timer(3600.0, lambda: path.unlink(missing_ok=True)).start()
++    # Removed an hour later (the render has long finished) or at exit. The
++    # timer must be a daemon: a plain Timer keeps a short-lived process
++    # (a test run, the auto-edit harness) alive for the full hour.
++    timer = threading.Timer(3600.0, lambda: path.unlink(missing_ok=True))
++    timer.daemon = True
++    timer.start()
++    atexit.register(lambda: path.unlink(missing_ok=True))
+     font = Path(__file__).resolve().parents[2] / "fonts" / "Montserrat-ExtraBold.ttf"
+-    font_arg = f":fontfile='{ffmpeg_escape_filter_path(font)}'" if font.exists() else ""
++    font_arg = f":fontfile={ffmpeg_escape_filter_path(font)}" if font.exists() else ""
+     return (
+-        f"drawtext=textfile='{ffmpeg_escape_filter_path(path)}'{font_arg}"
++        f"drawtext=textfile={ffmpeg_escape_filter_path(path)}{font_arg}"
+         ":fontsize=30:fontcolor=white@0.85:borderw=2:bordercolor=black@0.6"
+         f":x=(w-text_w)/2:y=h-{GAME_PANEL_H // 14}"
+     )
+ 
+ 
++def seam_caption_y(template: str) -> float:
++    """Caption position that centres the template's captions ON the seam.
++
++    The caption builder treats the position as the caption's bottom edge
++    (centre = position - half the estimated text height, which is 1.5 x
++    the font size), so the seam is raised by half that height.
++    """
++    from ..caption_templates import get_template
++    from .captions import get_scaled_font_size
++
++    spec = LAYOUT_TEMPLATES[template]
++    font_px = get_scaled_font_size(int(get_template(spec["caption_template"])["font_size"]), OUT_W)
++    return (FACE_PANEL_H + font_px * 1.5 / 2) / OUT_H
++
++
+ def build_facecam_stack_layout(
+     width: int,
+     height: int,
+@@ -169,7 +191,7 @@ def build_facecam_stack_layout(
+         "kind": "reaction",
+         "template": template,
+         "video_filter": ";".join(graph),
+-        "caption_y": FACE_PANEL_H / OUT_H,
++        "caption_y": seam_caption_y(template),
+         "inset": inset,
+         "face_crop": (fw_, fh_, fx_, fy_),
+         "game_crop": (gw, gh, gx, gy),
+diff --git a/backend/src/media/reframing.py b/backend/src/media/reframing.py
+index 8a3db99..5c62842 100644
+--- a/backend/src/media/reframing.py
++++ b/backend/src/media/reframing.py
+@@ -1457,6 +1457,8 @@ def build_vertical_filter_plan(
+     speaker_turns: Optional[List[Dict[str, Any]]] = None,
+     speaker_words: Optional[List[Dict[str, Any]]] = None,
+     framing: Optional[str] = None,
++    layout_template: Optional[str] = None,
++    layout_credit: Optional[str] = None,
+ ) -> Tuple[str, str, Optional[float]]:
+     """Build the 9:16 reframing filter for the default vertical mode.
+ 
+@@ -1472,7 +1474,8 @@ def build_vertical_filter_plan(
+     None (every historical caller) leaves the decision to the planner.
+     """
+     described = describe_vertical_layout(
+-        input_path, width, height, speaker_turns, speaker_words, framing=framing
++        input_path, width, height, speaker_turns, speaker_words, framing=framing,
++        layout_template=layout_template, layout_credit=layout_credit,
+     )
+     return described["video_filter"], described["mode"], described["caption_y"]
+ 
+@@ -1484,6 +1487,8 @@ def describe_vertical_layout(
+     speaker_turns: Optional[List[Dict[str, Any]]] = None,
+     speaker_words: Optional[List[Dict[str, Any]]] = None,
+     framing: Optional[str] = None,
++    layout_template: Optional[str] = None,
++    layout_credit: Optional[str] = None,
+ ) -> Dict[str, Any]:
+     """Same plan as ``build_vertical_filter_plan``, plus a layout ``kind``.
+ 
+@@ -1593,10 +1598,15 @@ def describe_vertical_layout(
+         except Exception as exc:
+             logger.debug("Reaction detail analysis unavailable: %s", exc)
+     reaction = choose_reaction_layout(
+-        input_path, width, height, duration, face_samples, scene_cuts
++        input_path, width, height, duration, face_samples, scene_cuts,
++        layout_template=layout_template, layout_credit=layout_credit,
+     )
+     if reaction and framing != "crop":
+-        logger.info("Reaction layout: inset %s, %d source sections", reaction['inset'], len(reaction['source_runs']))
++        logger.info(
++            "Reaction layout%s: inset %s, %d source sections",
++            f" ({reaction['template']})" if reaction.get("template") else "",
++            reaction["inset"], len(reaction.get("source_runs") or []),
++        )
+         return _described("reaction", reaction["video_filter"], "complex", reaction["caption_y"])
+ 
+     if all(s["kind"] == "fit" for s in plan) and content_fits and framing != "crop":
+diff --git a/backend/src/migrations/sql/20261117_0001_task_layout_template.sql b/backend/src/migrations/sql/20261117_0001_task_layout_template.sql
+new file mode 100644
+index 0000000..a7ef002
+--- /dev/null
++++ b/backend/src/migrations/sql/20261117_0001_task_layout_template.sql
+@@ -0,0 +1,5 @@
++-- Per-task streamer layout template from the create form ("face on top, game below":
++-- facecam_red, facecam_gold) and the optional credit line it draws ("@creator").
++-- NULL means the automatic layout (every task before this control).
++ALTER TABLE tasks ADD COLUMN IF NOT EXISTS layout_template VARCHAR(20);
++ALTER TABLE tasks ADD COLUMN IF NOT EXISTS layout_credit VARCHAR(48);
+diff --git a/backend/src/models.py b/backend/src/models.py
+index fa43ffe..d7cc050 100644
+--- a/backend/src/models.py
++++ b/backend/src/models.py
+@@ -230,6 +230,15 @@ class Task(Base):
+     framing_mode: Mapped[Optional[str]] = mapped_column(
+         String(10), nullable=True
+     )
++    # Streamer layout template from the create form ("face on top, game
++    # below": facecam_red / facecam_gold, media.gaming_templates) and the
++    # optional credit line it draws. NULL = the automatic layout.
++    layout_template: Mapped[Optional[str]] = mapped_column(
++        String(20), nullable=True
++    )
++    layout_credit: Mapped[Optional[str]] = mapped_column(
++        String(48), nullable=True
++    )
+     # B-roll switch from the create form: the user's own On/Off for stock
+     # cutaways, independent of the other template effects. NULL means the
+     # row predates the control and the template default decides (Auto
+diff --git a/backend/src/repositories/task_repository.py b/backend/src/repositories/task_repository.py
+index c0fe7fd..1555201 100644
+--- a/backend/src/repositories/task_repository.py
++++ b/backend/src/repositories/task_repository.py
+@@ -118,6 +118,8 @@ class TaskRepository:
+         music_mode: Optional[str] = None,
+         template_mode: Optional[str] = None,
+         framing_mode: Optional[str] = None,
++        layout_template: Optional[str] = None,
++        layout_credit: Optional[str] = None,
+         broll_enabled: Optional[bool] = None,
+         separation_opt_in: bool = False,
+         target_clip_count: Optional[int] = None,
+@@ -140,7 +142,7 @@ class TaskRepository:
+                     INSERT INTO tasks (
+                         id, user_id, source_id, status, font_family, font_size, font_color,
+                         caption_template, include_broll, processing_mode, niche_override,
+-                        music_override, music_mode, template_mode, framing_mode, broll_enabled, separation_opt_in,
++                        music_override, music_mode, template_mode, framing_mode, layout_template, layout_credit, broll_enabled, separation_opt_in,
+                         target_clip_count, source_duration_seconds, content_brief, campaign_id,
+                         brand_kit_id, intro_asset, outro_asset, creation_mode, manual_ranges_json,
+                         created_at, updated_at
+@@ -148,7 +150,7 @@ class TaskRepository:
+                     VALUES (
+                         :task_id, :user_id, :source_id, :status, :font_family, :font_size, :font_color,
+                         :caption_template, :include_broll, :processing_mode, :niche_override,
+-                        :music_override, :music_mode, :template_mode, :framing_mode, :broll_enabled, :separation_opt_in,
++                        :music_override, :music_mode, :template_mode, :framing_mode, :layout_template, :layout_credit, :broll_enabled, :separation_opt_in,
+                         :target_clip_count, :source_duration_seconds, :content_brief, :campaign_id,
+                         :brand_kit_id, :intro_asset, :outro_asset, :creation_mode, :manual_ranges_json,
+                         NOW(), NOW()
+@@ -171,6 +173,8 @@ class TaskRepository:
+                     "music_mode": music_mode,
+                     "template_mode": template_mode,
+                     "framing_mode": framing_mode,
++                    "layout_template": layout_template,
++                    "layout_credit": layout_credit,
+                     "broll_enabled": broll_enabled,
+                     "separation_opt_in": separation_opt_in,
+                     "target_clip_count": target_clip_count,
+@@ -296,6 +300,8 @@ class TaskRepository:
+             "music_mode": getattr(row, "music_mode", None),
+             "template_mode": getattr(row, "template_mode", None),
+             "framing_mode": getattr(row, "framing_mode", None),
++            "layout_template": getattr(row, "layout_template", None),
++            "layout_credit": getattr(row, "layout_credit", None),
+             "target_clip_count": getattr(row, "target_clip_count", None),
+             "source_duration_seconds": getattr(
+                 row, "source_duration_seconds", None
+@@ -594,6 +600,8 @@ class TaskRepository:
+                     "music_mode": getattr(row, "music_mode", None),
+                     "template_mode": getattr(row, "template_mode", None),
+                     "framing_mode": getattr(row, "framing_mode", None),
++                    "layout_template": getattr(row, "layout_template", None),
++                    "layout_credit": getattr(row, "layout_credit", None),
+                     "broll_enabled": getattr(row, "broll_enabled", None),
+                     "separation_opt_in": getattr(
+                         row, "separation_opt_in", None
+diff --git a/backend/src/services/clip_service.py b/backend/src/services/clip_service.py
+index 1a8cd9d..8f9a3e5 100644
+--- a/backend/src/services/clip_service.py
++++ b/backend/src/services/clip_service.py
+@@ -4,7 +4,7 @@ The mixin uses TaskService's repositories, configuration, and cache key contract
+ """
+ 
+ from ..repositories.edit_transaction import serialized_task_edit
+-from typing import Dict, Any, List, Optional
++from typing import Dict, Any, List, Optional, Tuple
+ import logging
+ from pathlib import Path
+ import json
+@@ -49,6 +49,7 @@ from ..auto_director.broll_setting import (
+ )
+ from ..auto_director.niche import validate_niche_override
+ from ..auto_director.framing_mode import validate_framing_mode
++from ..media.gaming_templates import clean_layout_credit, validate_layout_template
+ from ..auto_director.template_mode import validate_template_mode
+ from ..media.music_library import validate_music_mode
+ from ..caption_templates import get_template_names
+@@ -64,6 +65,24 @@ from ..media.lut_library import list_luts
+ from ..stream_source import download_stream_sections
+ from .video_service import resolve_upload_for_edit
+ 
++
++def _stored_layout(task: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
++    """The task's streamer layout template and credit, or (None, None).
++
++    Re-renders keep the "face on top, game below" template the clip was
++    made with; an unreadable stored value falls back to the automatic layout.
++    """
++    try:
++        template = validate_layout_template(task.get("layout_template"))
++    except ValueError:
++        logger.warning(
++            "Ignoring invalid stored layout_template %r", task.get("layout_template")
++        )
++        return None, None
++    if not template:
++        return None, None
++    return template, clean_layout_credit(task.get("layout_credit"))
++
+ logger = logging.getLogger(__name__)
+ 
+ 
+@@ -253,6 +272,7 @@ class ClipEditingMixin:
+                 task_id,
+             )
+             stored_framing_mode = None
++        stored_layout_template, stored_layout_credit = _stored_layout(task)
+         include_broll = resolve_broll_gate(
+             stored_template_mode,
+             task.get("broll_enabled"),
+@@ -398,6 +418,14 @@ class ClipEditingMixin:
+                     if stored_framing_mode is not None
+                     else {}
+                 ),
++                **(
++                    {
++                        "layout_template": stored_layout_template,
++                        "layout_credit": stored_layout_credit,
++                    }
++                    if stored_layout_template
++                    else {}
++                ),
+             )
+             if time_map:
+                 for clip_info in clips_info:
+@@ -957,6 +985,7 @@ class ClipEditingMixin:
+                 task_id,
+             )
+             stored_framing_mode = None
++        stored_layout_template, stored_layout_credit = _stored_layout(task)
+ 
+         settings = await self._load_task_source_settings(task_id)
+         # The task's stored text bands (decided once at creation) are
+@@ -1401,6 +1430,14 @@ class ClipEditingMixin:
+                     if stored_framing_mode is not None
+                     else {}
+                 ),
++                **(
++                    {
++                        "layout_template": stored_layout_template,
++                        "layout_credit": stored_layout_credit,
++                    }
++                    if stored_layout_template
++                    else {}
++                ),
+             )
+             if clip_info is None:
+                 raise ValueError(
+@@ -1659,6 +1696,7 @@ class ClipEditingMixin:
+                 task_id,
+             )
+             stored_framing_mode = None
++        stored_layout_template, stored_layout_credit = _stored_layout(task)
+         niche = context["niche"]
+         source_ranges = context["source_ranges"]
+         start_seconds, end_seconds = context["bounds"]
+@@ -1849,6 +1887,14 @@ class ClipEditingMixin:
+                         if stored_framing_mode is not None
+                         else {}
+                     ),
++                    **(
++                        {
++                            "layout_template": stored_layout_template,
++                            "layout_credit": stored_layout_credit,
++                        }
++                        if stored_layout_template
++                        else {}
++                    ),
+                 )
+                 if clip_info is None:
+                     if spec["variant"] == hv.VARIANT_CURRENT:
+diff --git a/backend/src/services/task_service.py b/backend/src/services/task_service.py
+index 0f68f9b..e9eda26 100644
+--- a/backend/src/services/task_service.py
++++ b/backend/src/services/task_service.py
+@@ -67,6 +67,7 @@ from ..auto_director.niche import (
+ )
+ from ..auto_director.template_mode import validate_template_mode
+ from ..auto_director.framing_mode import validate_framing_mode
++from ..media.gaming_templates import clean_layout_credit, validate_layout_template
+ from ..clip_source_map import (
+     load_clip_caption_settings,
+     load_clip_reframe,
+@@ -1097,6 +1098,8 @@ class TaskService(ClipEditingMixin):
+         music_mode: Optional[str] = None,
+         template_mode: Optional[str] = None,
+         framing_mode: Optional[str] = None,
++        layout_template: Optional[str] = None,
++        layout_credit: Optional[str] = None,
+         broll_enabled: Optional[bool] = None,
+         separation_opt_in: bool = False,
+         target_clip_count: Optional[int] = None,
+@@ -1188,6 +1191,8 @@ class TaskService(ClipEditingMixin):
+             music_mode=music_mode,
+             template_mode=template_mode,
+             framing_mode=framing_mode,
++            layout_template=layout_template,
++            layout_credit=layout_credit,
+             broll_enabled=broll_enabled,
+             separation_opt_in=separation_opt_in,
+             target_clip_count=target_clip_count,
+@@ -2527,6 +2532,22 @@ class TaskService(ClipEditingMixin):
+                     task_id,
+                 )
+                 project_framing_mode = None
++            try:
++                project_layout_template = validate_layout_template(
++                    task_row.get("layout_template")
++                )
++            except ValueError:
++                logger.warning(
++                    "Ignoring invalid stored layout_template %r on task %s",
++                    task_row.get("layout_template"),
++                    task_id,
++                )
++                project_layout_template = None
++            project_layout_credit = (
++                clean_layout_credit(task_row.get("layout_credit"))
++                if project_layout_template
++                else None
++            )
+             project_broll_enabled = task_row.get("broll_enabled")
+             # Brand Kit application for this task's renders: resolved
+             # once from the opted-in kit, then threaded into every
+@@ -2814,6 +2835,14 @@ class TaskService(ClipEditingMixin):
+                             music_mode=project_music_mode,
+                             template_mode=project_template_mode,
+                             framing_mode=project_framing_mode,
++                            **(
++                                {
++                                    "layout_template": project_layout_template,
++                                    "layout_credit": project_layout_credit,
++                                }
++                                if project_layout_template
++                                else {}
++                            ),
+                             broll_enabled=project_broll_enabled,
+                             brand_application=brand_application or None,
+                             profile_adjustments=segment_adjustments,
+diff --git a/backend/src/services/video_service.py b/backend/src/services/video_service.py
+index 6c74902..2ad4b53 100644
+--- a/backend/src/services/video_service.py
++++ b/backend/src/services/video_service.py
+@@ -1702,6 +1702,8 @@ class VideoService:
+         music_mode: Optional[str] = None,
+         template_mode: Optional[str] = None,
+         framing_mode: Optional[str] = None,
++        layout_template: Optional[str] = None,
++        layout_credit: Optional[str] = None,
+         broll_enabled: Optional[bool] = None,
+         vocals_stem: Optional[Path] = None,
+         brand_application: Optional[Dict[str, Any]] = None,
+@@ -2249,6 +2251,13 @@ class VideoService:
+                     if task_text_bands is not None
+                     else {}
+                 ),
++                # A streamer layout template ("face on top, game below")
++                # rides the same rule: absent, the call shape is unchanged.
++                **(
++                    {"layout_template": layout_template, "layout_credit": layout_credit}
++                    if layout_template
++                    else {}
++                ),
+             )
+ 
+             if not success:
+diff --git a/backend/src/video_utils.py b/backend/src/video_utils.py
+index e542d0b..c419b38 100644
+--- a/backend/src/video_utils.py
++++ b/backend/src/video_utils.py
+@@ -282,6 +282,23 @@ def brand_template_override(
+     return merged
+ 
+ 
++def _layout_caption_override(
++    override: Optional[Dict[str, Any]],
++    caption_template: str,
++    layout_template: Optional[str],
++) -> Optional[Dict[str, Any]]:
++    """A layout template's seam captions keep their own words-per-line:
++    the profile's authored grouping must not stretch "[BEEP]" into four
++    words across the seam."""
++    if not layout_template or override is None:
++        return override
++    override = dict(override)
++    override["max_words_per_line"] = get_template(caption_template).get(
++        "max_words_per_line", override.get("max_words_per_line")
++    )
++    return override
++
++
+ def caption_template_override(
+     edl: Optional[Dict[str, Any]], caption_template: str
+ ) -> Optional[Dict[str, Any]]:
+@@ -454,9 +471,17 @@ def create_optimized_clip(
+     vocals_stem: Optional[Path] = None,
+     task_text_bands: Optional[Dict[str, Any]] = None,
+     framing_mode: Optional[str] = None,
++    layout_template: Optional[str] = None,
++    layout_credit: Optional[str] = None,
+ ) -> bool:
+     """Create clip with optional subtitles. output_format: 'vertical' (9:16) or 'original' (keep source size).
+ 
++    ``layout_template`` (``media.gaming_templates``: ``facecam_red`` /
++    ``facecam_gold``) renders a clip with a facecam as "face on top, game
++    below" with that template's divider, seam captions and optional
++    ``layout_credit`` line; the template's caption look replaces the task
++    font and the profile's words-per-line. None keeps the automatic layout.
++
+     ``broll_overlays`` are stock cutaways (path, start, duration on the clip
+     timeline) composited under the captions. If that render fails the clip is
+     rendered without them; ``layout_report["broll_applied"]`` says which —
+@@ -522,6 +547,13 @@ def create_optimized_clip(
+             return False
+ 
+         keep_original = output_format == "original"
++        if layout_template:
++            from .media.gaming_templates import caption_template_for
++
++            seam_template = caption_template_for(layout_template)
++            if seam_template:
++                caption_template = seam_template
++                font_family = font_size = font_color = None
+         logger.info(
+             f"Creating clip: {start_time:.1f}s - {end_time:.1f}s ({duration:.1f}s) "
+             f"subtitles={add_subtitles} template '{caption_template}' format={'original' if keep_original else 'vertical'}"
+@@ -697,6 +729,8 @@ def create_optimized_clip(
+                         video_filter, mode, caption_y = build_vertical_filter_plan(
+                             source_clip_path, src_w, src_h, speaker_turns, speaker_words,
+                             framing=framing_mode,
++                            layout_template=layout_template,
++                            layout_credit=layout_credit,
+                         )
+                         vertical_plan = (video_filter, mode)
+                     except Exception as exc:
+@@ -836,7 +870,11 @@ def create_optimized_clip(
+                     effective_keep_ranges,
+                     hook_title=hook_title,
+                     include_captions=add_subtitles,
+-                    template_override=caption_template_override(edl, caption_template),
++                    template_override=_layout_caption_override(
++                        caption_template_override(edl, caption_template),
++                        caption_template,
++                        layout_template,
++                    ),
+                     brand_title=(edl or {}).get("brand_title"),
+                     position_y_override=effective_caption_y,
+                     avoid_band=source_caption_band,
+diff --git a/backend/tests/unit/test_broll_toggle.py b/backend/tests/unit/test_broll_toggle.py
+index 4b54d7a..9a27937 100644
+--- a/backend/tests/unit/test_broll_toggle.py
++++ b/backend/tests/unit/test_broll_toggle.py
+@@ -240,7 +240,7 @@ CREATE TABLE tasks (
+     font_family TEXT, font_size INTEGER, font_color TEXT,
+     caption_template TEXT, include_broll INTEGER, processing_mode TEXT,
+     niche_override TEXT, music_override TEXT, music_mode TEXT,
+-    template_mode TEXT, framing_mode TEXT, broll_enabled INTEGER, separation_opt_in INTEGER,
++    template_mode TEXT, framing_mode TEXT, layout_template TEXT, layout_credit TEXT, broll_enabled INTEGER, separation_opt_in INTEGER,
+     target_clip_count INTEGER, source_duration_seconds INTEGER,
+     content_brief TEXT, campaign_id TEXT, brand_kit_id TEXT,
+     intro_asset TEXT, outro_asset TEXT, creation_mode TEXT,
+diff --git a/backend/tests/unit/test_framing_mode.py b/backend/tests/unit/test_framing_mode.py
+index 7da1b14..55ec125 100644
+--- a/backend/tests/unit/test_framing_mode.py
++++ b/backend/tests/unit/test_framing_mode.py
+@@ -111,7 +111,7 @@ CREATE TABLE tasks (
+     font_family TEXT, font_size INTEGER, font_color TEXT,
+     caption_template TEXT, include_broll INTEGER, processing_mode TEXT,
+     niche_override TEXT, music_override TEXT, music_mode TEXT,
+-    template_mode TEXT, framing_mode TEXT, broll_enabled INTEGER,
++    template_mode TEXT, framing_mode TEXT, layout_template TEXT, layout_credit TEXT, broll_enabled INTEGER,
+     separation_opt_in INTEGER,
+     target_clip_count INTEGER, source_duration_seconds INTEGER,
+     content_brief TEXT, campaign_id TEXT, brand_kit_id TEXT,
+diff --git a/backend/tests/unit/test_gaming_templates.py b/backend/tests/unit/test_gaming_templates.py
+new file mode 100644
+index 0000000..9ab9393
+--- /dev/null
++++ b/backend/tests/unit/test_gaming_templates.py
+@@ -0,0 +1,159 @@
++"""Streamer "face on top, game below" templates (media/gaming_templates.py)."""
++
++from __future__ import annotations
++
++import json
++import shutil
++import subprocess
++
++import numpy as np
++import pytest
++
++from src.media import facecam_rect, gaming_templates, reaction_layout, reframing
++from src.media.gaming_templates import (
++    FACE_PANEL_H,
++    build_facecam_stack_layout,
++    caption_template_for,
++    clean_layout_credit,
++    validate_layout_template,
++)
++from src.caption_templates import get_template
++from src.video_utils import _layout_caption_override
++
++needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
++
++W, H = 640, 360
++CAM = (0.0, 120.0, 170.0, 100.0)
++FACE = (55.0, 135.0, 50.0, 60.0)
++
++
++@pytest.mark.parametrize("value", [None, "", "auto", "AUTO", " none "])
++def test_absent_or_auto_means_the_automatic_layout(value):
++    assert validate_layout_template(value) is None
++
++
++def test_template_names_are_normalised_and_checked():
++    assert validate_layout_template(" Facecam_Red ") == "facecam_red"
++    assert validate_layout_template("facecam_gold") == "facecam_gold"
++    with pytest.raises(ValueError):
++        validate_layout_template("facecam_blue")
++    with pytest.raises(ValueError):
++        validate_layout_template(3)
++
++
++def test_credit_line():
++    assert clean_layout_credit("@KaiCenat") == "credit @KaiCenat"
++    assert clean_layout_credit("credit @iShowSpeed") == "credit @iShowSpeed"
++    assert clean_layout_credit("   ") is None
++    assert clean_layout_credit(None) is None
++    long = clean_layout_credit("@" + "x" * 80)
++    assert long.startswith("credit @") and len(long) <= len("credit ") + gaming_templates.CREDIT_MAX_CHARS
++
++
++def test_each_template_has_its_seam_caption_style():
++    assert caption_template_for("facecam_red") == "seam_red"
++    assert caption_template_for("facecam_gold") == "seam_gold"
++    assert caption_template_for(None) is None
++    red, gold = get_template("seam_red"), get_template("seam_gold")
++    assert red["stroke_color"] == "#E5262B" and red["font_family"] == "Anton-Regular"
++    assert gold["highlight_color"] == "#FFD400" and gold["stroke_color"] == "#000000"
++    assert red["max_words_per_line"] <= 2 and gold["max_words_per_line"] <= 3
++    # Big, with a thin outline (the outline scales with the font size).
++    assert red["font_size"] >= 60 and gold["font_size"] >= 60
++    assert red["stroke_width"] <= 2 and gold["stroke_width"] <= 2
++
++
++def test_seam_captions_keep_their_own_words_per_line():
++    profile_override = {**get_template("seam_red"), "max_words_per_line": 5}
++    kept = _layout_caption_override(profile_override, "seam_red", "facecam_red")
++    assert kept["max_words_per_line"] == 2
++    # Without a layout template the profile grouping is untouched.
++    assert _layout_caption_override(profile_override, "seam_red", None) is profile_override
++    assert _layout_caption_override(None, "seam_red", "facecam_red") is None
++
++
++def test_geometry_left_camera():
++    layout = build_facecam_stack_layout(1920, 1080, 6, (120.0, 360.0, 80.0, 100.0),
++                                        (0.0, 312.0, 396.0, 224.0), "facecam_red")
++    fw, fh, fx, fy = layout["face_crop"]
++    assert 0 <= fx and fx + fw <= 396 and 312 <= fy and fy + fh <= 536
++    assert abs(fw / fh - 1080 / FACE_PANEL_H) < 0.02
++    gw, gh, gx, gy = layout["game_crop"]
++    assert gh == 1080 and gx >= 396                  # gameplay stays clear of the camera
++    assert abs(gw / gh - 1080 / (1920 - FACE_PANEL_H)) < 0.02
++    # Centred on the seam: the builder's centre is position - 0.75 x font px.
++    from src.media.captions import get_scaled_font_size
++    font_px = get_scaled_font_size(get_template("seam_red")["font_size"], 1080)
++    assert layout["caption_y"] * 1920 - font_px * 0.75 == pytest.approx(FACE_PANEL_H)
++    assert "color=0xE5262B" in layout["video_filter"]
++    assert layout["video_filter"].endswith("[vout]")
++
++
++def test_geometry_right_camera_and_gold_divider():
++    layout = build_facecam_stack_layout(1920, 1080, 6, (1700.0, 60.0, 80.0, 100.0),
++                                        (1500.0, 0.0, 420.0, 260.0), "facecam_gold")
++    gw, _gh, gx, _gy = layout["game_crop"]
++    assert gx + gw <= 1500
++    assert "color=0xF5B700" in layout["video_filter"]
++
++
++def _render_source(path):
++    # Gameplay blue, camera window dark red, half-way down the left side.
++    x, y, w, h = (int(v) for v in CAM)
++    subprocess.run(
++        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
++         f"color=0x2040C0:size={W}x{H}:rate=10:duration=3,"
++         f"drawbox=x={x}:y={y}:w={w}:h={h}:color=0x802020:t=fill",
++         "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
++         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(path)],
++        check=True, capture_output=True,
++    )
++
++
++def _frame_rgb(path, t=1.0):
++    raw = subprocess.check_output(
++        ["ffmpeg", "-v", "error", "-ss", str(t), "-i", str(path), "-frames:v", "1",
++         "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
++    )
++    return np.frombuffer(raw, dtype=np.uint8).reshape(1920, 1080, 3)
++
++
++@needs_ffmpeg
++@pytest.mark.parametrize("template,divider", [("facecam_red", (229, 38, 43)), ("facecam_gold", (245, 183, 0))])
++def test_real_render_puts_face_on_top_game_below(tmp_path, template, divider):
++    source, output = tmp_path / "stream.mp4", tmp_path / "stack.mp4"
++    _render_source(source)
++    # A credit with characters that break naive filter quoting.
++    layout = build_facecam_stack_layout(W, H, 3, FACE, CAM, template, "credit @it's 100%: [ok], yes")
++    ok, out_w, out_h = reframing.render_reframed_clip_ffmpeg(
++        source, output, "vertical", vertical_plan=(layout["video_filter"], "complex")
++    )
++    assert ok and (out_w, out_h) == (1080, 1920)
++    probe = json.loads(subprocess.check_output(
++        ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(output)]))
++    assert {s["codec_type"] for s in probe["streams"]} == {"video", "audio"}
++    frame = _frame_rgb(output).astype(int)
++    top = frame[100:700, 100:980].reshape(-1, 3).mean(axis=0)
++    bottom = frame[1000:1700, 100:980].reshape(-1, 3).mean(axis=0)
++    assert top[0] > top[2] + 40          # the dark-red camera fills the top
++    assert bottom[2] > bottom[0] + 60    # the blue gameplay fills the bottom
++    seam = frame[FACE_PANEL_H - 2, 100:980].mean(axis=0)
++    assert np.abs(seam - np.array(divider)).max() < 60
++
++
++@needs_ffmpeg
++def test_choose_reaction_layout_uses_the_template_for_a_found_facecam(tmp_path, monkeypatch):
++    source = tmp_path / "stream.mp4"
++    _render_source(source)
++
++    def fake_find(path, width, height, times, detect=None):
++        return facecam_rect.FacecamRect(CAM, FACE, "left", 10, 10)
++
++    monkeypatch.setattr(facecam_rect, "find_facecam_rect", fake_find)
++    samples = [(t / 3, []) for t in range(9)]
++    layout = reaction_layout.choose_reaction_layout(
++        source, W, H, 3.0, samples, layout_template="facecam_gold", layout_credit="credit @x"
++    )
++    assert layout["template"] == "facecam_gold"
++    default = reaction_layout.choose_reaction_layout(source, W, H, 3.0, samples)
++    assert default["kind"] == "reaction" and "template" not in default
+diff --git a/backend/tests/unit/test_settings_integrity_matrix.py b/backend/tests/unit/test_settings_integrity_matrix.py
+index 802014d..3eb825d 100644
+--- a/backend/tests/unit/test_settings_integrity_matrix.py
++++ b/backend/tests/unit/test_settings_integrity_matrix.py
+@@ -53,7 +53,7 @@ CREATE TABLE tasks (
+     font_family TEXT, font_size INTEGER, font_color TEXT,
+     caption_template TEXT, include_broll INTEGER, processing_mode TEXT,
+     niche_override TEXT, music_override TEXT, music_mode TEXT,
+-    template_mode TEXT, framing_mode TEXT, broll_enabled INTEGER, separation_opt_in INTEGER,
++    template_mode TEXT, framing_mode TEXT, layout_template TEXT, layout_credit TEXT, broll_enabled INTEGER, separation_opt_in INTEGER,
+     target_clip_count INTEGER, source_duration_seconds INTEGER,
+     content_brief TEXT, campaign_id TEXT, brand_kit_id TEXT,
+     intro_asset TEXT, outro_asset TEXT, creation_mode TEXT,
+diff --git a/backend/tests/unit/test_task_settings_readback.py b/backend/tests/unit/test_task_settings_readback.py
+index 0bf7180..c00bd41 100644
+--- a/backend/tests/unit/test_task_settings_readback.py
++++ b/backend/tests/unit/test_task_settings_readback.py
+@@ -52,7 +52,7 @@ CREATE TABLE tasks (
+     font_family TEXT, font_size INTEGER, font_color TEXT,
+     caption_template TEXT, include_broll INTEGER, processing_mode TEXT,
+     niche_override TEXT, music_override TEXT, music_mode TEXT,
+-    template_mode TEXT, framing_mode TEXT, broll_enabled INTEGER, separation_opt_in INTEGER,
++    template_mode TEXT, framing_mode TEXT, layout_template TEXT, layout_credit TEXT, broll_enabled INTEGER, separation_opt_in INTEGER,
+     target_clip_count INTEGER, source_duration_seconds INTEGER,
+     content_brief TEXT, campaign_id TEXT, brand_kit_id TEXT,
+     intro_asset TEXT, outro_asset TEXT, creation_mode TEXT,
+diff --git a/docs/phase2/AUTO_EDITOR.md b/docs/phase2/AUTO_EDITOR.md
+new file mode 100644
+index 0000000..9674253
+--- /dev/null
++++ b/docs/phase2/AUTO_EDITOR.md
+@@ -0,0 +1,47 @@
++# Phase 2: one-click auto-editor across niches
++
++Goal (master brief §14): upload a video and get finished, publish-ready
++vertical clips without manual editing, for every niche, with the same
++pipeline the app runs. Branch `lane-a/phase2-auto-editor` (base `48dd1e9`,
++the Phase 1 tip).
++
++## How it is proven
++
++`tools/phase2/auto_edit.py` drives the production pipeline end to end on one
++video, using the same functions the worker calls:
++
++1. transcription (`get_video_transcript`, faster-whisper);
++2. selection: `--select ai` uses `get_most_relevant_parts_by_transcript`;
++   `--select fixed` uses sentence-aligned windows and is labelled as not AI;
++3. the EDL (`build_edl`), reframe plan (`attach_reframe_plan`), stock B-roll
++   (`resolve_edl_broll`, only with keys) and render (`create_optimized_clip`);
++4. QC on the finished file: probe, loudness, black frames, sentence
++   boundaries and the reframe decision, saved to `report.json` / `report.md`
++   with frames at 8 / 50 / 90 %.
++
++`tools/phase2/run_all.py` runs eight sources (finance, podcast, talking
++head, vlog, comedy, education, a 360p streamer and the same stream at
++1080p) and writes `test-footage/phase2/INDEX.md`.
++
++## What changed
++
++| Change | Switch | Commit |
++|---|---|---|
++| Transcription falls back to CPU int8 once when CUDA libraries are missing (it used to crash or hang) | `WHISPER_DEVICE=cpu` forces CPU | `545ce39` |
++| QC: loudness against -14 LUFS (±2 LU) and "starts/ends on a complete thought", both warn-only, now run in the pipeline | `CLIP_QC_LOUDNESS_LUFS=off`, `CLIP_QC_THOUGHT_BOUNDARIES=0` | `545ce39`, `25ac503` |
++| A still corner face only counts as a streamer facecam when its camera rectangle can be measured (video-call podcasts were shrunk into a small-faces fit) | `REFRAME_REACTOR_NEEDS_INSET=0` | `2b116b4` |
++| Facecam found from the camera window itself: persistent border, plausible size, a face inside, no second fixed camera | `FACECAM_RECT_DETECT=0` | `023f5f1` |
++| "Face on top, game below" templates for streamer clips (red and gold), chosen per task, with a create-form picker for the Gaming niche | `layout_template` per task; NULL = automatic | (next commit) |
++
++## Evidence
++
++See `test-footage/phase2/INDEX.md` and each folder's `report.md`.
++Numbers are filled in by the final run (below).
++
++## Not verified
++
++- AI selection on the eight sources (needs the owner's free Groq key: one
++  command, see the handoff).
++- Linux / Docker gate (Sanji's side).
++- The create-form picker in the real V10 frontend: it is written against
++  this copy's (V9) `home-app.tsx`; Sanji ports it.
+diff --git a/frontend/messages/de/home.json b/frontend/messages/de/home.json
+index c76c474..d41ab89 100644
+--- a/frontend/messages/de/home.json
++++ b/frontend/messages/de/home.json
+@@ -99,6 +99,14 @@
+     "modeOff": "Aus",
+     "plainHint": "Plain – nur Schnitte verwendet nie B-Roll"
+   },
++  "gamingLayout": {
++    "modeLabel": "Gaming-Layout",
++    "modeAuto": "Auto",
++    "modeRed": "Gesicht oben · rot",
++    "modeGold": "Gesicht oben · gold",
++    "hint": "Streamer-Clips: Facecam oben, Spiel unten",
++    "creditPlaceholder": "Credit, z. B. @iShowSpeed"
++  },
+   "cleanup": "Bereinigung",
+   "cleanupTitle": "Clip-Bereinigung",
+   "cleanupBody": "Kürzt Leerlauf und schneidet Fülllaute beim Rendern heraus.",
+diff --git a/frontend/messages/en/home.json b/frontend/messages/en/home.json
+index 5fdbc00..95bc5d5 100644
+--- a/frontend/messages/en/home.json
++++ b/frontend/messages/en/home.json
+@@ -99,6 +99,14 @@
+     "modeOff": "Off",
+     "plainHint": "Plain — just cuts never uses B-roll"
+   },
++  "gamingLayout": {
++    "modeLabel": "Gaming layout",
++    "modeAuto": "Auto",
++    "modeRed": "Face top · red",
++    "modeGold": "Face top · gold",
++    "hint": "Streamer clips: facecam on top, game below",
++    "creditPlaceholder": "Credit, e.g. @iShowSpeed"
++  },
+   "referenceStyle": {
+     "title": "Reference style",
+     "body": "Give Jarvis a finished short you like — upload it or paste its link — and it measures how that video was edited (cuts, captions, music, colours, hook) and saves it as a style you can pick in the style menu above.",
+diff --git a/frontend/messages/es/home.json b/frontend/messages/es/home.json
+index 0ca1d96..81b2f9d 100644
+--- a/frontend/messages/es/home.json
++++ b/frontend/messages/es/home.json
+@@ -99,6 +99,14 @@
+     "modeOff": "Desactivado",
+     "plainHint": "Plain (solo cortes) nunca usa B-roll"
+   },
++  "gamingLayout": {
++    "modeLabel": "Diseño gaming",
++    "modeAuto": "Auto",
++    "modeRed": "Cara arriba · rojo",
++    "modeGold": "Cara arriba · dorado",
++    "hint": "Clips de streamers: facecam arriba, juego abajo",
++    "creditPlaceholder": "Crédito, p. ej. @iShowSpeed"
++  },
+   "cleanup": "Limpieza",
+   "cleanupTitle": "Limpieza del clip",
+   "cleanupBody": "Reduce los silencios y corta sonidos de relleno al renderizar.",
+diff --git a/frontend/messages/id/home.json b/frontend/messages/id/home.json
+index bd32aab..3d8bc14 100644
+--- a/frontend/messages/id/home.json
++++ b/frontend/messages/id/home.json
+@@ -99,6 +99,14 @@
+     "modeOff": "Nonaktif",
+     "plainHint": "Plain — hanya potongan tidak pernah memakai B-roll"
+   },
++  "gamingLayout": {
++    "modeLabel": "Tata letak gaming",
++    "modeAuto": "Auto",
++    "modeRed": "Wajah di atas · merah",
++    "modeGold": "Wajah di atas · emas",
++    "hint": "Klip streamer: facecam di atas, game di bawah",
++    "creditPlaceholder": "Kredit, mis. @iShowSpeed"
++  },
+   "cleanup": "Pembersihan",
+   "cleanupTitle": "Pembersihan clip",
+   "cleanupBody": "Rapatkan jeda kosong dan potong suara pengisi saat render.",
+diff --git a/frontend/messages/pt/home.json b/frontend/messages/pt/home.json
+index f490157..0535b00 100644
+--- a/frontend/messages/pt/home.json
++++ b/frontend/messages/pt/home.json
+@@ -99,6 +99,14 @@
+     "modeOff": "Desligado",
+     "plainHint": "Plain (só cortes) nunca usa B-roll"
+   },
++  "gamingLayout": {
++    "modeLabel": "Layout de jogos",
++    "modeAuto": "Auto",
++    "modeRed": "Rosto em cima · vermelho",
++    "modeGold": "Rosto em cima · dourado",
++    "hint": "Clipes de streamers: facecam em cima, jogo embaixo",
++    "creditPlaceholder": "Crédito, ex.: @iShowSpeed"
++  },
+   "cleanup": "Limpeza",
+   "cleanupTitle": "Limpeza do clipe",
+   "cleanupBody": "Encurta os silêncios e corta sons de preenchimento na renderização.",
+diff --git a/frontend/messages/zh/home.json b/frontend/messages/zh/home.json
+index c6a3bfc..d61ee75 100644
+--- a/frontend/messages/zh/home.json
++++ b/frontend/messages/zh/home.json
+@@ -99,6 +99,14 @@
+     "modeOff": "关",
+     "plainHint": "Plain（纯剪辑）从不使用 B-roll 素材"
+   },
++  "gamingLayout": {
++    "modeLabel": "游戏布局",
++    "modeAuto": "自动",
++    "modeRed": "人脸在上 · 红",
++    "modeGold": "人脸在上 · 金",
++    "hint": "主播片段：摄像头在上，游戏在下",
++    "creditPlaceholder": "署名，例如 @iShowSpeed"
++  },
+   "cleanup": "清理",
+   "cleanupTitle": "片段清理",
+   "cleanupBody": "渲染时收紧空白，并切掉填充音。",
+diff --git a/frontend/src/components/home-app-gaming-layout.test.tsx b/frontend/src/components/home-app-gaming-layout.test.tsx
+new file mode 100644
+index 0000000..f7a8bd9
+--- /dev/null
++++ b/frontend/src/components/home-app-gaming-layout.test.tsx
+@@ -0,0 +1,117 @@
++import { fireEvent, render, screen, waitFor } from "@testing-library/react";
++import { beforeEach, expect, it, vi } from "vitest";
++
++import { TooltipProvider } from "@/components/ui/tooltip";
++import HomeApp from "./home-app";
++
++vi.mock("next/navigation", () => ({
++  usePathname: () => "/",
++  useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
++}));
++
++vi.mock("@/lib/auth-client", () => ({
++  useSession: () => ({
++    data: { user: { id: "user-1", name: "Ada", email: "ada@example.com" } },
++    isPending: false,
++  }),
++  signOut: vi.fn(),
++}));
++
++const billingSummary = {
++  monetization_enabled: true,
++  plan: "pro",
++  subscription_status: "active",
++  usage_count: 0,
++  usage_limit: null,
++  remaining: null,
++  can_create_task: true,
++  upgrade_required: false,
++  reason: null,
++  max_upload_bytes: 2_000_000_000,
++};
++
++beforeEach(() => {
++  // Radix Select scrolls the active option into view; jsdom lacks it.
++  HTMLElement.prototype.scrollIntoView = vi.fn();
++  vi.stubGlobal(
++    "fetch",
++    vi.fn(async (input: RequestInfo | URL) => {
++      const url = String(input);
++      if (url.includes("billing-summary")) return Response.json(billingSummary);
++      if (url.includes("/api/music/library")) return Response.json({ tracks: [] });
++      if (url.includes("/api/tasks/create")) return Response.json({ task_id: "task-1" });
++      if (url.includes("/api/tasks")) return Response.json({ tasks: [] });
++      if (url.includes("/api/fonts")) return Response.json({ fonts: [] });
++      if (url.includes("caption-templates")) return Response.json({ templates: [] });
++      if (url.includes("announcements")) return Response.json({ announcements: [] });
++      if (url.includes("social")) return Response.json({ enabled: false });
++      if (url.includes("service-status")) return Response.json({ status: "operational" });
++      return Response.json({});
++    })
++  );
++});
++
++async function pickNiche(label: string) {
++  fireEvent.click(screen.getByRole("combobox", { name: "Niche" }));
++  fireEvent.click(await screen.findByRole("option", { name: label }));
++}
++
++async function submitWithUrl() {
++  fireEvent.change(screen.getByLabelText("YouTube, Twitch, or Kick URL"), {
++    target: { value: "https://www.twitch.tv/videos/2922436506" },
++  });
++  const generate = screen.getByRole("button", { name: "Generate clips" });
++  await waitFor(() => expect(generate).toBeEnabled());
++  fireEvent.click(generate);
++  const fetchMock = vi.mocked(fetch);
++  await waitFor(() =>
++    expect(
++      fetchMock.mock.calls.some(([url]) => String(url).includes("/api/tasks/create"))
++    ).toBe(true)
++  );
++  const [, init] = fetchMock.mock.calls.find(([url]) =>
++    String(url).includes("/api/tasks/create")
++  )!;
++  return JSON.parse(String(init?.body));
++}
++
++it("the gaming layout picker only appears for the Gaming niche", async () => {
++  render(<HomeApp />, { wrapper: TooltipProvider });
++  expect(screen.queryByRole("group", { name: "Gaming layout" })).toBeNull();
++
++  await pickNiche("Gaming");
++  expect(await screen.findByRole("group", { name: "Gaming layout" })).toBeInTheDocument();
++}, 30000);
++
++it("Face top · red sends the template and the credit line", async () => {
++  render(<HomeApp />, { wrapper: TooltipProvider });
++  await pickNiche("Gaming");
++  fireEvent.click(await screen.findByRole("radio", { name: "Face top · red" }));
++  fireEvent.change(screen.getByLabelText("Credit, e.g. @iShowSpeed"), {
++    target: { value: "  @KaiCenat " },
++  });
++
++  const body = await submitWithUrl();
++  expect(body.niche_override).toBe("gaming");
++  expect(body.layout_template).toBe("facecam_red");
++  expect(body.layout_credit).toBe("@KaiCenat");
++}, 30000);
++
++it("Face top · gold without a credit sends no credit field", async () => {
++  render(<HomeApp />, { wrapper: TooltipProvider });
++  await pickNiche("Gaming");
++  fireEvent.click(await screen.findByRole("radio", { name: "Face top · gold" }));
++
++  const body = await submitWithUrl();
++  expect(body.layout_template).toBe("facecam_gold");
++  expect(body).not.toHaveProperty("layout_credit");
++}, 30000);
++
++it("Auto (the default) sends no layout fields", async () => {
++  render(<HomeApp />, { wrapper: TooltipProvider });
++  await pickNiche("Gaming");
++
++  const body = await submitWithUrl();
++  expect(body).not.toHaveProperty("layout_template");
++  expect(body).not.toHaveProperty("layout_credit");
++}, 30000);
+diff --git a/frontend/src/components/home-app.tsx b/frontend/src/components/home-app.tsx
+index 205a05a..a396cc6 100644
+--- a/frontend/src/components/home-app.tsx
++++ b/frontend/src/components/home-app.tsx
+@@ -157,6 +157,11 @@ export default function HomeApp() {
+   // B-roll — and the payload stores an explicit false there, so the
+   // switch is honoured exactly as displayed.
+   const [brollEnabled, setBrollEnabled] = useState(true);
++  // Streamer layout template for gaming clips ("face on top, game below";
++  // backend media/gaming_templates.py). Auto keeps the automatic layout;
++  // the credit line ("@creator") only travels with a picked template.
++  const [layoutTemplate, setLayoutTemplate] = useState<"auto" | "facecam_red" | "facecam_gold">("auto");
++  const [layoutCredit, setLayoutCredit] = useState("");
+   // Brand Kit opt-in for this generation; null = no kit (renders as
+   // before). The kit only fills what the other controls leave unchosen.
+   const [brandKitId, setBrandKitId] = useState<string | null>(null);
+@@ -470,6 +475,14 @@ export default function HomeApp() {
+           // switch. Plain stores an explicit false (Plain never uses
+           // B-roll); in Auto the picked On/Off travels as-is.
+           broll_enabled: templateMode === "plain" ? false : brollEnabled,
++          // Gaming layout: sent only for the Gaming niche with a template
++          // picked, so every other task keeps the automatic layout (NULL).
++          ...(nicheOverride === "gaming" && layoutTemplate !== "auto"
++            ? {
++                layout_template: layoutTemplate,
++                ...(layoutCredit.trim() ? { layout_credit: layoutCredit.trim() } : {}),
++              }
++            : {}),
+           // Omit for no kit so the task stores no opt-in, as before.
+           ...(brandKitId ? { brand_kit_id: brandKitId } : {}),
+           // Omit for Auto so the duration-based formula keeps deciding.
+@@ -923,6 +936,45 @@ export default function HomeApp() {
+                 <ToggleGroupItem value="off" aria-label={`${t("broll")} ${t("brollMode.modeOff")}`} title={templateMode === "plain" ? t("brollMode.plainHint") : undefined}>{t("brollMode.modeOff")}</ToggleGroupItem>
+               </ToggleGroup>
+ 
++              {nicheOverride === "gaming" && (
++                <>
++                  <ToggleGroup
++                    type="single"
++                    variant="outline"
++                    size="sm"
++                    aria-label={t("gamingLayout.modeLabel")}
++                    title={t("gamingLayout.hint")}
++                    value={layoutTemplate}
++                    disabled={controlsDisabled}
++                    onValueChange={(value) => {
++                      if (value === "auto" || value === "facecam_red" || value === "facecam_gold") setLayoutTemplate(value);
++                    }}
++                  >
++                    <ToggleGroupItem value="auto" aria-label={`${t("gamingLayout.modeLabel")} ${t("gamingLayout.modeAuto")}`}>{t("gamingLayout.modeAuto")}</ToggleGroupItem>
++                    <ToggleGroupItem value="facecam_red" aria-label={t("gamingLayout.modeRed")} title={t("gamingLayout.hint")}>
++                      <span aria-hidden className="mr-1 inline-block size-2 rounded-full bg-[#E5262B]" />
++                      {t("gamingLayout.modeRed")}
++                    </ToggleGroupItem>
++                    <ToggleGroupItem value="facecam_gold" aria-label={t("gamingLayout.modeGold")} title={t("gamingLayout.hint")}>
++                      <span aria-hidden className="mr-1 inline-block size-2 rounded-full bg-[#F5B700]" />
++                      {t("gamingLayout.modeGold")}
++                    </ToggleGroupItem>
++                  </ToggleGroup>
++                  {layoutTemplate !== "auto" && (
++                    <input
++                      type="text"
++                      value={layoutCredit}
++                      maxLength={40}
++                      disabled={controlsDisabled}
++                      onChange={(event) => setLayoutCredit(event.target.value)}
++                      placeholder={t("gamingLayout.creditPlaceholder")}
++                      aria-label={t("gamingLayout.creditPlaceholder")}
++                      className="h-8 w-[170px] rounded-md border border-input bg-transparent px-2 text-xs"
++                    />
++                  )}
++                </>
++              )}
++
+               {brollAvailable && (
+                 // Icon-only so the desktop composer stays on one row.
+                 <Chip onClick={() => setIncludeBroll((value) => !value)} disabled={controlsDisabled || templateMode === "plain"} aria-pressed={includeBroll} aria-label={t("broll")} active={includeBroll} title={`${t("broll")}: ${t("brollHint")}`} className="px-2">
+diff --git a/tools/phase2/auto_edit.py b/tools/phase2/auto_edit.py
+index 9eee080..573eeb3 100644
+--- a/tools/phase2/auto_edit.py
++++ b/tools/phase2/auto_edit.py
+@@ -110,7 +110,7 @@ def fixed_windows(words: list[dict], count: int, length: float = 40.0) -> list[d
+ 
+ async def main_async(a) -> int:
+     video = Path(a.video).resolve()
+-    out = ROOT / "test-footage" / "phase2" / video.stem
++    out = ROOT / "test-footage" / "phase2" / (video.stem + (a.out_suffix or ""))
+     out.mkdir(parents=True, exist_ok=True)
+     work = out / "work"
+     work.mkdir(exist_ok=True)
+@@ -136,6 +136,7 @@ async def main_async(a) -> int:
+     from src.auto_director import edl as E
+     from src.media.transcription import get_video_transcript, load_cached_transcript_data
+     from src.video_utils import create_optimized_clip
++    from src.media.gaming_templates import clean_layout_credit
+ 
+     timings: dict[str, float] = {}
+     t = time.time()
+@@ -178,7 +179,9 @@ async def main_async(a) -> int:
+         ok = create_optimized_clip(source, start, end, clip_path, add_subtitles=True,
+                                    caption_template=(profile.get("captions") or {}).get("preset_id") or "default",
+                                    hook_title=s.get("hook_title"), edl=edl, profile_name=a.niche,
+-                                   layout_report=layout_report, framing_mode="auto")
++                                   layout_report=layout_report, framing_mode="auto",
++                                   layout_template=a.layout_template,
++                                   layout_credit=clean_layout_credit(a.credit) if a.layout_template else None)
+         render_s = round(time.time() - t, 1)
+         probe = _probe(clip_path) if ok else {}
+         frames = []
+@@ -252,6 +255,10 @@ def main() -> int:
+     ap.add_argument("--llm", default="auto")
+     ap.add_argument("--select", choices=("ai", "fixed"), default="ai")
+     ap.add_argument("--ollama-url", default="http://localhost:11434/v1")
++    ap.add_argument("--layout-template", choices=("facecam_red", "facecam_gold"),
++                    help="streamer 'face on top, game below' template (clips with a facecam)")
++    ap.add_argument("--credit", help="credit line for the template, e.g. @KaiCenat")
++    ap.add_argument("--out-suffix", default="", help="write to test-footage/phase2/<stem><suffix>")
+     return asyncio.run(main_async(ap.parse_args()))
+ 
+ 
+diff --git a/tools/phase2/run_all.py b/tools/phase2/run_all.py
+index cadd432..0f89bc2 100644
+--- a/tools/phase2/run_all.py
++++ b/tools/phase2/run_all.py
+@@ -54,12 +54,23 @@ def main() -> int:
+         status = "ok" if r.returncode == 0 else f"FAILED (exit {r.returncode})"
+         rows.append((label, profile, f"{status} in {time.time() - t:.0f}s", f"{path.stem}/report.md"))
+         print(f"   {status}", flush=True)
++    out = ROOT / "test-footage" / "phase2" / "INDEX.md"
++    out.parent.mkdir(parents=True, exist_ok=True)
++    if a.only and out.exists():
++        # A single-niche re-run updates its own row and keeps the others.
++        previous = {}
++        for line in out.read_text(encoding="utf-8").splitlines():
++            cells = [c.strip() for c in line.strip().strip("|").split("|")]
++            if len(cells) == 4 and cells[0] not in ("Niche", "---"):
++                previous[cells[0]] = (cells[0], cells[1].strip("`"), cells[2], cells[3])
++        for row in rows:
++            previous[row[0]] = row
++        order = [label for label, *_ in NICHES]
++        rows = sorted(previous.values(), key=lambda r: order.index(r[0]) if r[0] in order else len(order))
+     index = ["# Phase 2 auto-edit runs", "", f"Selection: {a.select}", "",
+              "| Niche | Profile | Result | Report |", "|---|---|---|---|"]
+     index += [f"| {l} | `{p}` | {s} | {r} |" for l, p, s, r in rows]
+     index += ["", "Sources: " + "; ".join(f"{l}: {src}" for l, _p, _v, src in NICHES)]
+-    out = ROOT / "test-footage" / "phase2" / "INDEX.md"
+-    out.parent.mkdir(parents=True, exist_ok=True)
+     out.write_text("\n".join(index), encoding="utf-8")
+     print("done:", out)
+     return 0
+-- 
+2.56.0.windows.2
+

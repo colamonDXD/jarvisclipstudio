@@ -1,0 +1,85 @@
+From 54036ee73a6052347faeade61da19b35b5f29b4d Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Fri, 20 Nov 2026 14:40:48 +0530
+Subject: [PATCH 5/7] Remove YouTube speaker-change marks from karaoke captions
+ and normalize the Kai Cenat title credit
+
+---
+ backend/src/live/finisher.py           | 10 ++++++++++
+ backend/src/media/hook_finish.py       |  3 +++
+ backend/src/media/yt_captions.py       |  7 ++++++-
+ backend/tests/unit/test_yt_captions.py |  4 ++++
+ 4 files changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/backend/src/live/finisher.py b/backend/src/live/finisher.py
+index 233e3f8..f34a4ad 100644
+--- a/backend/src/live/finisher.py
++++ b/backend/src/live/finisher.py
+@@ -116,6 +116,16 @@ def render_live_clip(window: Path, out_path: Path, *, niche: str = "gaming", lay
+             elif not transcribe_with_groq(window):
+                 get_video_transcript(window)
+         data = load_cached_transcript_data(window) or {}
++        if data.get("words"):
++            from ..media.yt_captions import spoken_caption_text
++            cleaned = []
++            for word in data["words"]:
++                text = spoken_caption_text(str(word.get("text") or ""))
++                if text:
++                    cleaned.append({**word, "text": text})
++            if cleaned != data["words"]:
++                data = {**data, "words": cleaned}
++                _write_cache(window.with_suffix(".transcript_cache.json"), data)
+         if data.get("words") and not raw:
+             _write_cache(window.with_suffix(".transcript_cache.full.json"), data)
+     except Exception as exc:  # a clip without captions beats no clip
+diff --git a/backend/src/media/hook_finish.py b/backend/src/media/hook_finish.py
+index d16b3b8..77a6f0d 100644
+--- a/backend/src/media/hook_finish.py
++++ b/backend/src/media/hook_finish.py
+@@ -202,6 +202,9 @@ def quote_title_text(text: str, creator: Optional[str]) -> Optional[str]:
+     if not text:
+         return None
+     text = ensure_third_person_title(text, creator_name=creator, fallback_text=text) or text
++    if (creator or "").strip().lstrip("@").replace(" ", "").casefold() == "kaicenat":
++        import re
++        text = re.sub(r"(?i)\bkaicenat\b", "Kai Cenat", text)
+     words = text.split()
+     if len(words) > 9:
+         text = " ".join(words[:9])
+diff --git a/backend/src/media/yt_captions.py b/backend/src/media/yt_captions.py
+index b96abbc..9bb02e2 100644
+--- a/backend/src/media/yt_captions.py
++++ b/backend/src/media/yt_captions.py
+@@ -45,6 +45,11 @@ from typing import Any, Dict, List, Optional, Sequence
+ 
+ logger = logging.getLogger(__name__)
+ 
++
++def spoken_caption_text(value: str) -> str:
++    """Strip the speaker-change marker used by YouTube's text tracks."""
++    return re.sub(r"^(?:(?:>>|»|&gt;&gt;)\s*)+", "", value.strip(), flags=re.IGNORECASE)
++
+ _VIDEO_ID = re.compile(r"(?:v=|youtu\.be/|shorts/|live/)([A-Za-z0-9_-]{11})")
+ 
+ # video id -> parsed whisper-shaped result (a VOD session slices many
+@@ -80,7 +85,7 @@ def _event_chunks(events: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+     for event in events or []:
+         segs = []
+         for seg in event.get("segs") or []:
+-            text = str(seg.get("utf8", "")).strip()
++            text = spoken_caption_text(str(seg.get("utf8", "")))
+             if not text or text == "\n":
+                 continue
+             if text.startswith("[") and text.endswith("]"):
+diff --git a/backend/tests/unit/test_yt_captions.py b/backend/tests/unit/test_yt_captions.py
+index 852b2eb..355b99d 100644
+--- a/backend/tests/unit/test_yt_captions.py
++++ b/backend/tests/unit/test_yt_captions.py
+@@ -129,3 +129,7 @@ def test_fetch_failure_falls_back_to_none(monkeypatch):
+     monkeypatch.setattr("src.live.yt_dlp_binary", lambda: "yt-dlp")
+     Y._CACHE.clear()
+     assert Y.fetch_youtube_captions("https://www.youtube.com/watch?v=YE7VzlLtp-4") is None
++def test_speaker_change_markers_do_not_become_karaoke_words():
++    from src.media.yt_captions import spoken_caption_text
++    assert [spoken_caption_text(s) for s in (">>", ">> Excuse me.", "&gt;&gt; Hello", "2 > 1")] == [
++        "", "Excuse me.", "Hello", "2 > 1"]

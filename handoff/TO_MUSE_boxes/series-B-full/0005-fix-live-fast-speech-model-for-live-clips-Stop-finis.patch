@@ -1,0 +1,154 @@
+From 6f4f79b715e8600b5c8d08010130e2390e3e091c Mon Sep 17 00:00:00 2001
+From: Prateek <prateekxd15@gmail.com>
+Date: Wed, 18 Nov 2026 21:28:09 +0530
+Subject: [PATCH 05/27] fix(live): fast speech model for live clips; Stop
+ finishes clips already found
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/src/live/session.py            | 17 ++++++++++++++--
+ backend/src/workers/live_worker.py     | 27 ++++++++++++++++++--------
+ backend/tests/unit/test_live_worker.py |  7 ++++++-
+ 3 files changed, 40 insertions(+), 11 deletions(-)
+
+diff --git a/backend/src/live/session.py b/backend/src/live/session.py
+index f62d2a5..e0a29d3 100644
+--- a/backend/src/live/session.py
++++ b/backend/src/live/session.py
+@@ -66,11 +66,13 @@ class LiveSession:
+                                      realtime_file=realtime_file)
+         self.voice = VoiceTrack(baseline_sec=240.0)
+         self._stop = threading.Event()
++        self._analysis_stop = threading.Event()
+         self._renders: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue()
+         self._threads: list = []
+         self._done_flags: set = set()
+         self.moments = 0
+         self._rendering = False
++        self._analysing = False
+ 
+     # -- lifecycle ---------------------------------------------------------
+     def start(self) -> "LiveSession":
+@@ -82,7 +84,14 @@ class LiveSession:
+             self._threads.append(t)
+         return self
+ 
++    def stop_recording(self) -> None:
++        """Stop recording and detecting; queued clips keep rendering
++        (``ended`` turns true once they are done)."""
++        self._analysis_stop.set()
++        self.recorder.stop()
++
+     def stop(self, timeout: float = 15.0) -> None:
++        self._analysis_stop.set()
+         self._stop.set()
+         self.recorder.stop()
+         self._renders.put(None)
+@@ -97,7 +106,8 @@ class LiveSession:
+     def ended(self) -> bool:
+         """The stream is over (the recorder gave up or the source finished)
+         and every queued clip has been rendered."""
+-        return not self.recorder.running and self._renders.empty() and not self._rendering
++        return (not self.recorder.running and self._renders.empty() and not self._rendering
++                and not self._analysing)
+ 
+     def _emit(self, event: Dict[str, Any]) -> None:
+         try:
+@@ -107,7 +117,7 @@ class LiveSession:
+ 
+     # -- analysis ----------------------------------------------------------
+     def _analyse_forever(self) -> None:
+-        while not self._stop.wait(self.settings.tick):
++        while not self._analysis_stop.wait(self.settings.tick):
+             try:
+                 self.voice.update(self.recorder.buffer, self.dir)
+             except Exception as exc:  # keep recording whatever happens to analysis
+@@ -127,11 +137,14 @@ class LiveSession:
+                 if self.moments >= self.settings.max_clips:
+                     continue
+                 try:
++                    self._analysing = True
+                     self._handle_flag(flag)
+                 except Exception as exc:
+                     logger.exception("Live moment failed")
+                     self._emit({"type": "moment", "status": "rejected", "onset_wall": flag["onset"],
+                                 "reason": f"internal error: {exc}"[:300]})
++                finally:
++                    self._analysing = False
+ 
+     def _handle_flag(self, flag: Dict[str, Any]) -> None:
+         onset = float(flag["onset"])
+diff --git a/backend/src/workers/live_worker.py b/backend/src/workers/live_worker.py
+index 2afe4a0..6f15fe8 100644
+--- a/backend/src/workers/live_worker.py
++++ b/backend/src/workers/live_worker.py
+@@ -17,6 +17,12 @@ import os
+ 
+ # Before observability reads it: logs and errors from here are the live worker's.
+ os.environ["SUPOCLIP_SERVICE"] = "live-worker"
++# Live clips must be ready in minutes: the shared worker's speech model
++# (openai-whisper medium on CPU took 8 min just to load) is far too slow.
++# faster-whisper "small" transcribes a 30 s window in seconds. Override with
++# LIVE_TRANSCRIPTION_PROVIDER / LIVE_WHISPER_MODEL.
++os.environ["TRANSCRIPTION_PROVIDER"] = os.getenv("LIVE_TRANSCRIPTION_PROVIDER", "faster_whisper")
++os.environ["WHISPER_MODEL"] = os.getenv("LIVE_WHISPER_MODEL", "small")
+ 
+ import asyncio  # noqa: E402
+ import logging  # noqa: E402
+@@ -88,15 +94,20 @@ async def tick(repo: LiveRepository, worker_id: str, running: Dict[str, Running]
+             run.last_beat = now
+             async with AsyncSessionLocal() as db:
+                 stop = await repo.heartbeat(db, sid, run.last_status or {"recording": run.session.recorder.running})
+-            if stop:
++            if stop and not getattr(run, "stopping", False):
++                # Stop recording and detecting now; clips already found keep
++                # rendering and the session closes once they are done.
+                 logger.info("Live session %s: stop requested", sid)
+-                await asyncio.to_thread(run.session.stop)
+-                await drain(repo, run)
+-                async with AsyncSessionLocal() as db:
+-                    await repo.finish_session(db, sid, "stopped")
+-                running.pop(sid, None)
+-                continue
+-        if run.session.ended:
++                run.stopping = True
++                await asyncio.to_thread(run.session.stop_recording)
++        if getattr(run, "stopping", False) and run.session.ended:
++            await asyncio.to_thread(run.session.stop)
++            await drain(repo, run)
++            async with AsyncSessionLocal() as db:
++                await repo.finish_session(db, sid, "stopped")
++            running.pop(sid, None)
++            continue
++        if run.session.ended and not getattr(run, "stopping", False):
+             # Give the analyst one more pass over the last footage first.
+             run.ended_ticks = getattr(run, "ended_ticks", 0) + 1
+             if run.ended_ticks >= 3:
+diff --git a/backend/tests/unit/test_live_worker.py b/backend/tests/unit/test_live_worker.py
+index b3430d0..5ce2a2c 100644
+--- a/backend/tests/unit/test_live_worker.py
++++ b/backend/tests/unit/test_live_worker.py
+@@ -38,6 +38,11 @@ class FakeSession:
+                        "duration": 21.0, "render_s": 50.0})
+         return self
+ 
++    def stop_recording(self):
++        # The fake has no renders in flight: it ends as soon as recording stops.
++        self.recording_stopped = True
++        self.ended = True
++
+     def stop(self):
+         self.stopped = True
+ 
+@@ -86,7 +91,7 @@ async def test_claim_record_and_stop(worker_env):
+     async with AsyncSessionLocal() as db:
+         assert await LiveRepository().request_stop(db, created["id"], "live-worker-test")
+     await W.tick(LiveRepository(), "w1", running, 200.0)
+-    assert running == {} and FakeSession.instances[0].stopped
++    assert running == {} and FakeSession.instances[0].recording_stopped and FakeSession.instances[0].stopped
+     session, _ = await _get(created["id"])
+     assert session["status"] == "stopped" and session["stopped_at"]
+ 
+-- 
+2.56.0.windows.2
+

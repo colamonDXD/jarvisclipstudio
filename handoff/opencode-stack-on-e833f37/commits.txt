@@ -1,0 +1,9 @@
+3f72d30 chore(fonts): drop THEBOLDFONT (licence unverifiable); alias it to Montserrat-Black
+bcbee95 feat(fonts): add an OFL/Apache caption font pack with a licence manifest
+1b43ce8 feat(media): expose transition library catalogue and previews
+c152b3d feat(media): detect changing burned-in caption bands
+3a7af3d feat(media): add an extended CPU-only transition library
+0246e1d test(export): scope two pins to what they were written for
+9cdcf1d test(tools): add the xfade transition proof reel
+05a623e feat(export): add 16:9 and 1:1 export profiles
+a344284 fix(media): pass the NVENC probe graph inline

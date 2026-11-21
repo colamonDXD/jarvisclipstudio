@@ -1,0 +1,6 @@
+6f7b1ae36547c09fe112f813865e9bb6b69e1ce512f139e52014afc94750d6ea *./series/0001-feat-reframe-no-blurred-copy-fill-analyse-4K-sources.patch
+942c68db64e6c68aba9110424dbcca14c59547fbb67311501c279d426553db7c *./series/0002-feat-captions-drop-transcription-repetition-loops-sp.patch
+50c1f8acf97dac37bd93db3945a63995e3ea88c0244d96aabc6d8138370660d0 *./series/0003-feat-selection-see-visual-story-moments-keep-a-clip-.patch
+e5a3298dfe31bc21891121a8d32e38e84dfd13162e8d1716865f35fe099ef545 *./series/0004-feat-reframe-show-the-screen-being-reacted-to-stacke.patch
+f580e3add00b37fdf14646a5e64cc1230ca079865deefba839ca9556a393e63b *./series/0005-fix-reframe-screen-framing-only-when-the-screen-is-a.patch
+b286b910b33f14ba978a773d35ab4a12d7e46491504378dbda4e625557d34cdc *./series/0006-fix-reframe-never-unify-or-screen-replan-away-split-.patch
